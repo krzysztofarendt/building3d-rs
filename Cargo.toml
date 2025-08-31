@@ -1,0 +1,8 @@
+[package]
+name = "building3d"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "Towards 3D building modeling and simulation"
+
+[dependencies]
