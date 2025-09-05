@@ -1,3 +1,6 @@
 pub mod geom;
 
-pub use geom::points::Point;
+// Prelude
+pub use geom::point::Point;
+pub use geom::polygon::Polygon;
+pub use geom::vector::Vector;
