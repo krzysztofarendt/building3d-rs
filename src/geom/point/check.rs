@@ -1,16 +1,71 @@
 use super::*;
 use crate::Vector;
+use crate::geom::EPS;
 use crate::geom::vector::check::are_vectors_close;
 
-pub fn are_points_coplanar(pts: Vec<Point>) -> bool {
+/// Checks if (multiple) points are coplanar.
+pub fn are_points_coplanar(pts: &[Point]) -> bool {
     if pts.len() <= 3 {
         return true;
     }
-    // TODO: Finish. It will require a dot product of 2 vectors.
+
+    // Calculate normal vector based on 3 points from pts,
+    // however some points may be collinear, so we need to search
+    // for a triplet of non-collinear points.
+    let triplet = first_3_noncollinear(pts);
+    if triplet.is_none() {
+        // All points must be collinear
+        // Collinear points are also coplanar
+        return true;
+    }
+    let (i, j, k) = triplet.unwrap();
+
+    // I can unwrap, because I already know the points are not collinear
+    // so the normal must exist
+    let vn = Vector::normal(pts[i], pts[j], pts[k]).unwrap();
+
+    // Plane equation:
+    // ax + by + cz + d = 0
+    // (a, b, c) are taken from the normal vector
+    // d is calculated by substituting one of the points
+    let r: usize = 0; // Reference point index
+    let pt_r = pts[r];
+    let d = -vn.dot(Vector::from_a_point(pt_r));
+
+    // Check if all points lay on the same plane
+    for pt in pts.iter() {
+        let coplanar: bool = (d + vn.dot(Vector::from_a_point(*pt))).abs() < EPS;
+        if !coplanar {
+            return false;
+        }
+    }
     true
 }
 
-/// Checks if (multiple) points are collinear
+/// Returns indices of the first 3 noncollinear points from the slice.
+///
+/// If all points are collinear, returns None.
+/// Complexity: O(n^2)
+fn first_3_noncollinear(pts: &[Point]) -> Option<(usize, usize, usize)> {
+    // It works by first finding a pair of different points (i, j)
+    // and then searching for the third noncollinear point (k).
+    let n = pts.len();
+    for i in 0..n {
+        for j in i + 1..n {
+            if pts[i].is_close(&pts[j]) {
+                continue;
+            }
+            for k in j + 1..n {
+                if !are_points_collinear(&[pts[i], pts[j], pts[k]]) {
+                    return Some((i, j, k));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Checks if (multiple) points are collinear.
 pub fn are_points_collinear(pts: &[Point]) -> bool {
     if pts.len() <= 2 {
         return true; // 1 or 2 points are always collinear
@@ -27,7 +82,6 @@ pub fn are_points_collinear(pts: &[Point]) -> bool {
     are_vectors_close(&unit_vectors)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,11 +92,34 @@ mod tests {
         let p0 = Point::new(0., 0., 0.);
         let p1 = Point::new(1., 0., 0.);
         let p2 = Point::new(2., 0., 0.);
+        let p3 = Point::new(3., 0., 0.);
+        let p4 = Point::new(4., 0., 0.);
+        let p5 = Point::new(5., 0., 0.);
         assert!(are_points_collinear(&[p0]));
         assert!(are_points_collinear(&[p0, p1]));
         assert!(are_points_collinear(&[p0, p1, p2]));
+        assert!(are_points_collinear(&[p0, p1, p2, p3]));
+        assert!(are_points_collinear(&[p0, p1, p2, p3, p4]));
+        assert!(are_points_collinear(&[p0, p1, p2, p3, p4, p5]));
+        assert!(first_3_noncollinear(&[p0, p1, p2, p3, p4, p5]).is_none());
         // Not collinear
         let p3 = Point::new(1., 1., 0.);
         assert!(!are_points_collinear(&[p0, p1, p2, p3]));
+    }
+
+    #[test]
+    fn test_are_points_coplanar() {
+    // Coplanar (z = 0)
+    let p0 = Point::new(0., 0., 0.);
+    let p1 = Point::new(1., 0., 0.);
+    let p2 = Point::new(0., 1., 0.);
+    let p3 = Point::new(2., 3., 0.);
+    assert!(are_points_coplanar(&[p0, p1]));
+    assert!(are_points_coplanar(&[p0, p1, p2]));
+    assert!(are_points_coplanar(&[p0, p1, p2, p3]));
+
+    // Non-coplanar: p4 is off the plane z = 0
+    let p4 = Point::new(3., 1., 1.);
+    assert!(!are_points_coplanar(&[p0, p1, p2, p3, p4]));
     }
 }

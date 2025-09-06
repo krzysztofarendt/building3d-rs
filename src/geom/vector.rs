@@ -17,6 +17,10 @@ impl Vector {
         Self { dx, dy, dz }
     }
 
+    pub fn from_a_point(pt: Point) -> Self {
+        Self::from_points(Point::new(0., 0., 0.), pt)
+    }
+
     pub fn from_points(beg: Point, end: Point) -> Self {
         Self {
             dx: end.x - beg.x,
@@ -32,6 +36,11 @@ impl Vector {
             dy: self.dz * other.dx - self.dx * other.dz,
             dz: self.dx * other.dy - self.dy * other.dx,
         }
+    }
+
+    /// Dot product between 2 vectors.
+    pub fn dot(self, other: Self) -> f64 {
+        self.dx * other.dx + self.dy * other.dy + self.dz * other.dz
     }
 
     /// Returns the length of the vector.
@@ -59,10 +68,10 @@ impl Vector {
         }
     }
 
-    // Calculates vector normal to the surface defined with 3 points.
-    //
-    // If the normal does not exist, returns None.
-    // The normal might not exist e.g. if t he points are collinear.
+    /// Calculates vector normal to the surface defined with 3 points.
+    ///
+    /// If the normal does not exist, returns None.
+    /// The normal does not exist if the points are collinear.
     pub fn normal(pt0: Point, pt1: Point, pt2: Point) -> Option<Self> {
         let v01 = Self::from_points(pt0, pt1);
         let v02 = Self::from_points(pt0, pt2);
