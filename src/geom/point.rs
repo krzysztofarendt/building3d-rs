@@ -62,6 +62,28 @@ impl Point {
 
         vecs
     }
+
+    /// Checks if the point lies on the line segment defined by points `pt1` and `pt2`.
+    pub fn is_on_segment(self, pt1: Self, pt2: Self) -> bool {
+        if self.is_close(&pt1) || self.is_close(&pt2) {
+            return true;
+        }
+        if !check::are_points_collinear(&[self, pt1, pt2]) {
+            return false;
+        }
+        // Check if the point lies within the segment bounds
+        let v_self = Vector::from_a_point(self);
+        let v_pt1 = Vector::from_a_point(pt1);
+        let v_seg = Vector::from_points(pt1, pt2);
+        let dot_prod = (v_self - v_pt1).dot(v_seg);
+        let sq_len_seg = v_seg.length().powi(2);
+
+        if dot_prod < -EPS || dot_prod > (sq_len_seg + EPS) {
+            return false;
+        }
+
+        true
+    }
 }
 
 impl fmt::Display for Point {
@@ -146,5 +168,25 @@ mod tests {
         for (pa, pb) in pt_all.iter().zip(expected) {
             assert!(pa.is_close(&pb));
         }
+    }
+
+    #[test]
+    fn test_is_on_segment() {
+        let p_beg = Point::new(0., 0., 0.);
+        let p_end = Point::new(1., 1., 1.);
+        // True
+        let p_test = Point::new(0.5, 0.5, 0.5);
+        assert!(p_test.is_on_segment(p_beg, p_end));
+        let p_test = Point::new(0.0, 0.0, 0.0);
+        assert!(p_test.is_on_segment(p_beg, p_end));
+        let p_test = Point::new(1.0, 1.0, 1.0);
+        assert!(p_test.is_on_segment(p_beg, p_end));
+        // False
+        let p_test = Point::new(0.6, 0.5, 0.5);
+        assert!(!p_test.is_on_segment(p_beg, p_end));
+        let p_test = Point::new(-0.1, -0.1, -0.1);
+        assert!(!p_test.is_on_segment(p_beg, p_end));
+        let p_test = Point::new(1.1, 1.1, 1.1);
+        assert!(!p_test.is_on_segment(p_beg, p_end));
     }
 }

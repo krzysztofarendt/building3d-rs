@@ -91,8 +91,18 @@ pub fn are_points_collinear(pts: &[Point]) -> bool {
             .unwrap_or(Vector::new(0., 0., 0.));
         unit_vectors.push(v);
     }
-    // Unit vectors must be equal if points are collinear
-    are_vectors_close(&unit_vectors)
+    // Unit vectors must be equal or exactly negative if points are collinear
+    let mut are_collinear = true;
+    let v0 = &unit_vectors[0];
+    let v0_rev = &(-1. * unit_vectors[0]);
+    for uv in unit_vectors.iter().skip(1) {
+        if !(uv.is_close(v0) || uv.is_close(v0_rev)) {
+            are_collinear = false;
+            break;
+        }
+    }
+
+    are_collinear
 }
 
 #[cfg(test)]
@@ -128,6 +138,7 @@ mod tests {
         assert!(are_points_collinear(&[p0, p1, p2, p3]));
         assert!(are_points_collinear(&[p0, p1, p2, p3, p4]));
         assert!(are_points_collinear(&[p0, p1, p2, p3, p4, p5]));
+        assert!(are_points_collinear(&[p5, p1, p2, p4, p3, p0]));  // Shuffled order
         assert!(first_3_noncollinear(&[p0, p1, p2, p3, p4, p5]).is_none());
         // Not collinear
         let p3 = Point::new(1., 1., 0.);
