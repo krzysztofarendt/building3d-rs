@@ -105,6 +105,26 @@ impl Add for Vector {
         }
     }
 }
+impl Add<f64> for Vector {
+    type Output = Self;
+    fn add(self, other: f64) -> Self {
+        Self {
+            dx: self.dx + other,
+            dy: self.dy + other,
+            dz: self.dz + other,
+        }
+    }
+}
+impl Add<Vector> for f64 {
+    type Output = Vector;
+    fn add(self, other: Vector) -> Vector {
+        Vector {
+            dx: self + other.dx,
+            dy: self + other.dy,
+            dz: self + other.dz,
+        }
+    }
+}
 
 // Implement +
 impl Sub for Vector {
@@ -117,8 +137,38 @@ impl Sub for Vector {
         }
     }
 }
+impl Sub<f64> for Vector {
+    type Output = Self;
+    fn sub(self, other: f64) -> Self {
+        Self {
+            dx: self.dx - other,
+            dy: self.dy - other,
+            dz: self.dz - other,
+        }
+    }
+}
+impl Sub<Vector> for f64 {
+    type Output = Vector;
+    fn sub(self, other: Vector) -> Vector {
+        Vector {
+            dx: self - other.dx,
+            dy: self - other.dy,
+            dz: self - other.dz,
+        }
+    }
+}
 
 // Implement *
+impl Mul for Vector {
+    type Output = Self;
+    fn mul(self, other: Self) -> Self {
+        Self {
+            dx: self.dx * other.dx,
+            dy: self.dy * other.dy,
+            dz: self.dz * other.dz,
+        }
+    }
+}
 impl Mul<f64> for Vector {
     type Output = Self;
     fn mul(self, other: f64) -> Self {
@@ -129,8 +179,32 @@ impl Mul<f64> for Vector {
         }
     }
 }
+impl Mul<Vector> for f64 {
+    type Output = Vector;
+    fn mul(self, other: Vector) -> Vector {
+        Vector {
+            dx: self * other.dx,
+            dy: self * other.dy,
+            dz: self * other.dz,
+        }
+    }
+}
 
 // Implement /
+impl Div for Vector {
+    type Output = Option<Self>;
+    fn div(self, other: Self) -> Option<Self> {
+        if other.dx.abs() < EPS || other.dy.abs() < EPS || other.dz.abs() < EPS {
+            None
+        } else {
+            Some(Self {
+                dx: self.dx * other.dx,
+                dy: self.dy * other.dy,
+                dz: self.dz * other.dz,
+            })
+        }
+    }
+}
 impl Div<f64> for Vector {
     type Output = Option<Self>;
     fn div(self, other: f64) -> Option<Self> {
@@ -141,6 +215,20 @@ impl Div<f64> for Vector {
                 dx: self.dx / other,
                 dy: self.dy / other,
                 dz: self.dz / other,
+            })
+        }
+    }
+}
+impl Div<Vector> for f64 {
+    type Output = Option<Vector>;
+    fn div(self, other: Vector) -> Option<Vector> {
+        if other.dx.abs() < EPS || other.dy.abs() < EPS || other.dz.abs() < EPS {
+            None
+        } else {
+            Some(Vector {
+                dx: self / other.dx,
+                dy: self / other.dy,
+                dz: self / other.dz,
             })
         }
     }
@@ -190,5 +278,21 @@ mod tests {
         assert!(vn.is_some());
         let expected = Vector::new(0., 0., 1.);
         assert!(vn.unwrap().is_close(&expected));
+    }
+
+    #[test]
+    fn test_ops() {
+        let v1 = Vector::new(1., 1., 1.);
+        let v2 = Vector::new(0., 0., 0.);
+        let _ = v1 + v2;
+        let _ = v1 - v2;
+        let _ = v1 * v2;
+        assert!((v2 / v1).is_some());
+        assert!((v1 / v2).is_none());
+        let _ = v1 * 2.;
+        let _ = v1 / 2.;
+        let _ = 2. * v1;
+        let _ = 2. / v1;
+        assert!((1. / v2).is_none());
     }
 }

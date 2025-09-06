@@ -32,6 +32,15 @@ impl Point {
             z: self.z * scale,
         }
     }
+
+    // Creates a new point along the edge pt1->pt2 with some relative distance from pt1.
+    pub fn new_between_2_points(pt1: Self, pt2: Self, rel_d: f64) -> Self {
+        let alpha_v = Vector::new(rel_d, rel_d, rel_d);
+        let v_pt1 = Vector::from_a_point(pt1);
+        let v_pt2 = Vector::from_a_point(pt2);
+        let new_v = v_pt1 * (1. - alpha_v) + v_pt2 * alpha_v;
+        Self::new(new_v.dx, new_v.dy, new_v.dz)
+    }
 }
 
 impl fmt::Display for Point {
@@ -79,5 +88,23 @@ mod tests {
         let p1 = Point::new(1., 2., 3.);
         let p2 = p1.scale(10.);
         assert!(p2.is_close(&Point::new(10., 20., 30.)));
+    }
+
+    #[test]
+    fn test_new_between_2_points() {
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 1., 1.);
+        let ptest = Point::new_between_2_points(p0, p1, 0.5);
+        assert!(ptest.is_close(&Point::new(0.5, 0.5, 0.5)));
+        let ptest = Point::new_between_2_points(p0, p1, 0.0);
+        assert!(ptest.is_close(&p0));
+        let ptest = Point::new_between_2_points(p0, p1, 1.0);
+        assert!(ptest.is_close(&p1));
+        let ptest = Point::new_between_2_points(p0, p0, 0.5);
+        assert!(ptest.is_close(&p0));
+        let ptest = Point::new_between_2_points(p0, p0, 0.0);
+        assert!(ptest.is_close(&p0));
+        let ptest = Point::new_between_2_points(p0, p0, 1.0);
+        assert!(ptest.is_close(&p0));
     }
 }
