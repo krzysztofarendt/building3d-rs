@@ -100,6 +100,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_are_points_close() {
+        // Close
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(EPS * 0.5, 0., 0.);
+        let p2 = Point::new(EPS * 0.5, EPS * 0.5, EPS * 0.5);
+        assert!(are_points_close(&[p0, p1, p2]));
+        // Not close
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 0., 0.);
+        let p2 = Point::new(2., 0., 0.);
+        assert!(!are_points_close(&[p0, p1, p2]));
+    }
+
+    #[test]
     fn test_are_points_collinear() {
         // Collinear
         let p0 = Point::new(0., 0., 0.);
@@ -122,17 +136,17 @@ mod tests {
 
     #[test]
     fn test_are_points_coplanar() {
-    // Coplanar (z = 0)
-    let p0 = Point::new(0., 0., 0.);
-    let p1 = Point::new(1., 0., 0.);
-    let p2 = Point::new(0., 1., 0.);
-    let p3 = Point::new(2., 3., 0.);
-    assert!(are_points_coplanar(&[p0, p1]));
-    assert!(are_points_coplanar(&[p0, p1, p2]));
-    assert!(are_points_coplanar(&[p0, p1, p2, p3]));
+        // Coplanar (z = 0)
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 0., 0.);
+        let p2 = Point::new(0., 1., 0.);
+        let p3 = Point::new(2., 3., 0.);
+        assert!(are_points_coplanar(&[p0, p1]));
+        assert!(are_points_coplanar(&[p0, p1, p2]));
+        assert!(are_points_coplanar(&[p0, p1, p2, p3]));
 
-    // Non-coplanar: p4 is off the plane z = 0
-    let p4 = Point::new(3., 1., 1.);
-    assert!(!are_points_coplanar(&[p0, p1, p2, p3, p4]));
+        // Non-coplanar: p4 is off the plane z = 0
+        let p4 = Point::new(3., 1., 1.);
+        assert!(!are_points_coplanar(&[p0, p1, p2, p3, p4]));
     }
 }
