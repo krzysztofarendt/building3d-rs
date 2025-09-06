@@ -3,6 +3,19 @@ use crate::Vector;
 use crate::geom::EPS;
 use crate::geom::vector::check::are_vectors_close;
 
+/// Checks if all points are (almost) equal
+pub fn are_points_close(pts: &[Point]) -> bool {
+    let mut all_close = true;
+    let p0 = pts[0];
+    for p in pts.iter().skip(1) {
+        if !p.is_close(&p0) {
+            all_close = false;
+            break;
+        }
+    }
+    all_close
+}
+
 /// Checks if (multiple) points are coplanar.
 pub fn are_points_coplanar(pts: &[Point]) -> bool {
     if pts.len() <= 3 {
