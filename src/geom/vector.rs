@@ -1,5 +1,7 @@
 use crate::Point;
 use crate::geom::EPS;
+use crate::geom::IsClose;
+use std::f64::consts::PI;
 use std::fmt;
 use std::ops::{Add, Div, Mul, Sub};
 
@@ -30,7 +32,7 @@ impl Vector {
     }
 
     /// Cross product between 2 vectors.
-    pub fn cross(self, other: Self) -> Self {
+    pub fn cross(&self, other: &Self) -> Self {
         Self {
             dx: self.dy * other.dz - self.dz * other.dy,
             dy: self.dz * other.dx - self.dx * other.dz,
@@ -39,7 +41,7 @@ impl Vector {
     }
 
     /// Dot product between 2 vectors.
-    pub fn dot(self, other: Self) -> f64 {
+    pub fn dot(&self, other: &Self) -> f64 {
         self.dx * other.dx + self.dy * other.dy + self.dz * other.dz
     }
 
@@ -49,9 +51,7 @@ impl Vector {
     }
 
     pub fn is_close(&self, other: &Self) -> bool {
-        (self.dx - other.dx).abs() < EPS
-            && (self.dy - other.dy).abs() < EPS
-            && (self.dz - other.dz).abs() < EPS
+        self.dx.is_close(&other.dx) && self.dy.is_close(&other.dy) && self.dz.is_close(&other.dz)
     }
 
     /// Normalizes the vector (divides by its length) and returns a copy.
@@ -75,8 +75,29 @@ impl Vector {
     pub fn normal(pt0: Point, pt1: Point, pt2: Point) -> Option<Self> {
         let v01 = Self::from_points(pt0, pt1);
         let v02 = Self::from_points(pt0, pt2);
-        let vn = v01.cross(v02);
+        let vn = v01.cross(&v02);
         vn.normalize()
+    }
+
+    /// Calculates angle in radians between two vectors.
+    ///
+    /// The output range is within 0 and PI.
+    /// Returns None if any of the vectors is zero-length.
+    pub fn angle(&self, other: &Self) -> Option<f64> {
+        let self_opt_norm = self.normalize();
+        let other_opt_norm = other.normalize();
+        let self_norm: Vector;
+        let other_norm: Vector;
+        if let (Some(v1), Some(v2)) = (self_opt_norm, other_opt_norm) {
+            self_norm = v1;
+            other_norm = v2;
+        } else {
+            return None;
+        }
+        let dot = self_norm.dot(&other_norm).clamp(-1.0, 1.0);
+        let rad = dot.acos();
+        assert!((0.0..=PI).contains(&rad));
+        Some(rad)
     }
 }
 
@@ -251,7 +272,7 @@ mod tests {
     fn test_cross() {
         let vx = Vector::new(1., 0., 0.);
         let vy = Vector::new(0., 1., 0.);
-        let v_cross = vx.cross(vy);
+        let v_cross = vx.cross(&vy);
         assert_eq!(v_cross, Vector::new(0., 0., 1.));
         let len = v_cross.length();
         assert_eq!(len, 1.);
@@ -294,5 +315,23 @@ mod tests {
         let _ = 2. * v1;
         let _ = 2. / v1;
         assert!((1. / v2).is_none());
+    }
+
+    #[test]
+    fn test_angle() {
+        let vx = Vector::new(1., 0., 0.); // 3 orthogonal vectors
+        let vy = Vector::new(0., 1., 0.); // 3 orthogonal vectors
+        let vz = Vector::new(0., 0., 1.); // 3 orthogonal vectors
+        let vxy = Vector::new(1., 1., 0.); // 45 degrees w.r.t. vx
+        let deg90 = PI / 2.0;
+        let deg45 = PI / 4.0;
+        let angle = vx.angle(&vy).unwrap();
+        assert!(angle.is_close(&deg90));
+        let angle = vx.angle(&vz).unwrap();
+        assert!(angle.is_close(&deg90));
+        let angle = vy.angle(&vz).unwrap();
+        assert!(angle.is_close(&deg90));
+        let angle = vx.angle(&vxy).unwrap();
+        assert!(angle.is_close(&deg45));
     }
 }

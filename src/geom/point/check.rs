@@ -1,7 +1,6 @@
 use super::*;
 use crate::Vector;
 use crate::geom::EPS;
-use crate::geom::vector::check::are_vectors_close;
 
 /// Checks if all points are (almost) equal
 pub fn are_points_close(pts: &[Point]) -> bool {
@@ -43,11 +42,11 @@ pub fn are_points_coplanar(pts: &[Point]) -> bool {
     // d is calculated by substituting one of the points
     let r: usize = 0; // Reference point index
     let pt_r = pts[r];
-    let d = -vn.dot(Vector::from_a_point(pt_r));
+    let d = -vn.dot(&Vector::from_a_point(pt_r));
 
     // Check if all points lay on the same plane
     for pt in pts.iter() {
-        let coplanar: bool = (d + vn.dot(Vector::from_a_point(*pt))).abs() < EPS;
+        let coplanar: bool = (d + vn.dot(&Vector::from_a_point(*pt))).abs() < EPS;
         if !coplanar {
             return false;
         }

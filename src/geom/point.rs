@@ -1,5 +1,5 @@
 use crate::Vector;
-use crate::geom::EPS;
+use crate::geom::{EPS, IsClose};
 use std::fmt;
 use std::ops::Add;
 
@@ -19,9 +19,7 @@ impl Point {
 
     /// Returns true if both points are very close to each other.
     pub fn is_close(&self, other: &Self) -> bool {
-        (self.x - other.x).abs() < EPS
-            && (self.y - other.y).abs() < EPS
-            && (self.z - other.z).abs() < EPS
+        self.x.is_close(&other.x) && self.y.is_close(&other.y) && self.z.is_close(&other.z)
     }
 
     /// Multiplies all coordinates by a scalar and returns a copy.
@@ -75,7 +73,7 @@ impl Point {
         let v_self = Vector::from_a_point(self);
         let v_pt1 = Vector::from_a_point(pt1);
         let v_seg = Vector::from_points(pt1, pt2);
-        let dot_prod = (v_self - v_pt1).dot(v_seg);
+        let dot_prod = (v_self - v_pt1).dot(&v_seg);
         let sq_len_seg = v_seg.length().powi(2);
 
         if dot_prod < -EPS || dot_prod > (sq_len_seg + EPS) {
