@@ -26,6 +26,7 @@ use crate::geom::polygon::Polygon;
 use crate::geom::triangles::TriangleIndex;
 
 const MAX_DISTANCE: f32 = 1000.0;
+const VERTEX_SPHERE_SIZE: f32 = 1.0; // percent of bounding radius for vertex sphere scale (and mesh resolution)
 
 fn points_to_positions(pts: &[Point]) -> Positions {
     Positions::F64(pts.iter().map(|p| vec3(p.x, p.y, p.z)).collect())
@@ -46,8 +47,6 @@ pub fn draw_polygon(polygons: &[Polygon]) -> Result<()> {
         ..Default::default()
     })?;
     let context = window.gl();
-
-    // Build per-polygon meshes below
 
     // Translucent fill for each polygon
     let mut fill_gms = Vec::new();
@@ -83,8 +82,6 @@ pub fn draw_polygon(polygons: &[Polygon]) -> Result<()> {
             ..Default::default()
         },
     );
-    wire_mat.render_states.cull = Cull::Back;
-
     wire_mat.render_states.cull = Cull::Back;
 
     // Gather all vertices, triangle-edges, and boundary-edges across polygons
@@ -135,12 +132,8 @@ pub fn draw_polygon(polygons: &[Polygon]) -> Result<()> {
     }
 
     // Compute camera frame from all vertices
-    let center = flat_positions
-        .iter()
-        .copied()
-        .reduce(|a, b| a + b)
-        .unwrap()
-        / flat_positions.len() as f32;
+    let center =
+        flat_positions.iter().copied().reduce(|a, b| a + b).unwrap() / flat_positions.len() as f32;
     let radius = flat_positions
         .iter()
         .map(|p| (p - center).magnitude())
@@ -161,30 +154,77 @@ pub fn draw_polygon(polygons: &[Polygon]) -> Result<()> {
 
     // Build instanced meshes for vertices, triangle-edges, and boundary-edges
     let mut sphere_cpu = CpuMesh::sphere(16);
-    sphere_cpu.transform(Mat4::from_scale(radius * 0.03))?;
+    // scale sphere radius as percentage of bounding radius
+    let sphere_scale = radius * (VERTEX_SPHERE_SIZE / 100.0);
+    sphere_cpu.transform(Mat4::from_scale(sphere_scale))?;
     let vertex_gm = Gm::new(
         InstancedMesh::new(
             &context,
-            &Instances { transformations: vertex_transforms, ..Default::default() },
+            &Instances {
+                transformations: vertex_transforms,
+                ..Default::default()
+            },
             &sphere_cpu,
         ),
         ColorMaterial {
             color: Srgba::new_opaque(255, 0, 0),
-            render_states: RenderStates { depth_test: DepthTest::Always, write_mask: WriteMask::COLOR, ..Default::default() },
+            render_states: RenderStates {
+                depth_test: DepthTest::Always,
+                write_mask: WriteMask::COLOR,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
     let mut cyl_bound = CpuMesh::cylinder(12);
-    cyl_bound.transform(Mat4::from_nonuniform_scale(1.0, radius * 0.005, radius * 0.005))?;
+    cyl_bound.transform(Mat4::from_nonuniform_scale(
+        1.0,
+        radius * 0.005,
+        radius * 0.005,
+    ))?;
     let bound_gm = Gm::new(
-        InstancedMesh::new(&context, &Instances { transformations: bound_transforms, ..Default::default() }, &cyl_bound),
-        ColorMaterial { color: Srgba::new_opaque(100, 100, 100), render_states: RenderStates { depth_test: DepthTest::Always, write_mask: WriteMask::COLOR, ..Default::default() }, ..Default::default() },
+        InstancedMesh::new(
+            &context,
+            &Instances {
+                transformations: bound_transforms,
+                ..Default::default()
+            },
+            &cyl_bound,
+        ),
+        ColorMaterial {
+            color: Srgba::new_opaque(100, 100, 100),
+            render_states: RenderStates {
+                depth_test: DepthTest::Always,
+                write_mask: WriteMask::COLOR,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
     );
     let mut cyl_tri = CpuMesh::cylinder(12);
-    cyl_tri.transform(Mat4::from_nonuniform_scale(1.0, radius * 0.002, radius * 0.002))?;
+    cyl_tri.transform(Mat4::from_nonuniform_scale(
+        1.0,
+        radius * 0.002,
+        radius * 0.002,
+    ))?;
     let tri_gm = Gm::new(
-        InstancedMesh::new(&context, &Instances { transformations: tri_transforms, ..Default::default() }, &cyl_tri),
-        ColorMaterial { color: Srgba::new_opaque(200, 200, 200), render_states: RenderStates { depth_test: DepthTest::Always, write_mask: WriteMask::COLOR, ..Default::default() }, ..Default::default() },
+        InstancedMesh::new(
+            &context,
+            &Instances {
+                transformations: tri_transforms,
+                ..Default::default()
+            },
+            &cyl_tri,
+        ),
+        ColorMaterial {
+            color: Srgba::new_opaque(200, 200, 200),
+            render_states: RenderStates {
+                depth_test: DepthTest::Always,
+                write_mask: WriteMask::COLOR,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
     );
 
     // Render loop
