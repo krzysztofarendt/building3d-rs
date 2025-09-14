@@ -16,12 +16,16 @@ use three_d::WriteMask;
 use three_d::control::OrbitControl;
 use three_d::degrees;
 use three_d::vec3;
-use three_d::{ClearState, FrameOutput, InnerSpace, InstancedMesh, Instances, Mat4, Quat, Vec3};
+use three_d::{
+    ClearState, DepthTest, FrameOutput, InnerSpace, InstancedMesh, Instances, Mat4, Quat, Vec3,
+};
 use three_d::{Window, WindowSettings};
 
 use crate::geom::point::Point;
 use crate::geom::polygon::Polygon;
 use crate::geom::triangles::TriangleIndex;
+
+const MAX_DISTANCE: f32 = 1000.0;
 
 fn points_to_positions(pts: &[Point]) -> Positions {
     Positions::F64(pts.iter().map(|p| vec3(p.x, p.y, p.z)).collect())
@@ -58,6 +62,7 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         ColorMaterial {
             color: Srgba::new(0, 90, 255, 160),
             render_states: RenderStates {
+                depth_test: DepthTest::Always,
                 write_mask: WriteMask::COLOR,
                 blend: Blend::TRANSPARENCY,
                 ..Default::default()
@@ -85,6 +90,7 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         .iter()
         .map(|p| vec3(p.x as f32, p.y as f32, p.z as f32))
         .collect::<Vec<Vec3>>();
+
     // Compute center and radius for camera framing and scaling
     let center = positions.iter().copied().reduce(|a, b| a + b).unwrap() / positions.len() as f32;
     let radius = positions
@@ -100,9 +106,9 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         vec3(0.0, 1.0, 0.0),
         degrees(45.0),
         0.1,
-        radius * 10.0,
+        radius * MAX_DISTANCE,
     );
-    let mut control = OrbitControl::new(center, radius * 0.5, radius * 10.0);
+    let mut control = OrbitControl::new(center, radius * 0.5, radius * MAX_DISTANCE);
 
     // Prepare instanced meshes for vertices and edges
     let mut sphere_cpu = CpuMesh::sphere(16);
@@ -119,11 +125,17 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         InstancedMesh::new(&context, &vertex_instances, &sphere_cpu),
         ColorMaterial {
             color: Srgba::new_opaque(255, 0, 0),
+            render_states: RenderStates {
+                depth_test: DepthTest::Always,
+                write_mask: WriteMask::COLOR,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
 
     let base_cylinder = CpuMesh::cylinder(12);
+
     // Outer polygon boundary edges (gray, slightly thicker)
     let mut cyl_bound = base_cylinder.clone();
     cyl_bound.transform(Mat4::from_nonuniform_scale(
@@ -131,6 +143,7 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         radius * 0.005,
         radius * 0.005,
     ))?;
+
     // Triangle edges (light gray, thinner)
     let mut cyl_tri = base_cylinder;
     cyl_tri.transform(Mat4::from_nonuniform_scale(
@@ -171,6 +184,11 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         InstancedMesh::new(&context, &tri_instances, &cyl_tri),
         ColorMaterial {
             color: Srgba::new_opaque(200, 200, 200),
+            render_states: RenderStates {
+                depth_test: DepthTest::Always,
+                write_mask: WriteMask::COLOR,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
@@ -202,6 +220,11 @@ pub fn draw_polygon(poly: &Polygon) -> Result<()> {
         InstancedMesh::new(&context, &bound_instances, &cyl_bound),
         ColorMaterial {
             color: Srgba::new_opaque(100, 100, 100),
+            render_states: RenderStates {
+                depth_test: DepthTest::Always,
+                write_mask: WriteMask::COLOR,
+                ..Default::default()
+            },
             ..Default::default()
         },
     );
