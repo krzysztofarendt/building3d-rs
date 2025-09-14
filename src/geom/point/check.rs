@@ -1,6 +1,66 @@
 use super::*;
 use crate::Vector;
 use crate::geom::EPS;
+use crate::vecutils::roll;
+use anyhow::{Result, anyhow};
+
+/// Tests if two sequences of Points are close to each other (element-wise).
+pub fn are_point_sequences_close(a: &[Point], b: &[Point]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(a, b)| a.is_close(b))
+}
+
+/// Tests if two sequences of Points are close to each other (with rotation allowed).
+///
+/// This is NOT an element-wise comparison. The points must be ordered same, but can be rotated (rolled).
+/// E.g. `[p1, p2, p3] == [p1, p2, p3] == [p2, p3, p1] == [p3, p1, p2]`
+/// But `[p1, p2, p3] != [p1, p3, p2]`
+pub fn are_point_sequences_close_rot(a: &[Point], b: &[Point]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    if a.is_empty() && b.is_empty() {
+        return true;
+    }
+    // Find a pair of equal points in a and b
+    let mut b_start: Option<usize> = None;
+    for (j, pb) in b.iter().enumerate() {
+        if a[0].is_close(pb) {
+            b_start = Some(j);
+            break;
+        }
+    }
+    if b_start.is_none() {
+        // There are no close points in a and b
+        return false;
+    }
+    let mut b_rolled = b.to_vec();
+    let move_left = b.len() - b_start.unwrap();
+    roll(&mut b_rolled, move_left);
+
+    are_point_sequences_close(a, &b_rolled)
+}
+
+/// Tests if ptest is on the same side of the vector p1->p2 as ptref
+///
+/// Returns Err if ptest or ptref are collinear with p1 or p2
+pub fn is_point_on_same_side(p1: Point, p2: Point, ptest: Point, pref: Point) -> Result<bool> {
+    let mut vtest = (p2 - p1).cross(&(ptest - p1));
+    let mut vref = (p2 - p1).cross(&(pref - p1));
+    if let Ok(v) = vtest.normalize() {
+        vtest = v;
+    } else {
+        return Err(anyhow!("vtest is collinear with p1 and p2"));
+    }
+    if let Ok(v) = vref.normalize() {
+        vref = v;
+    } else {
+        return Err(anyhow!("vref is collinear with p1 and p2"));
+    }
+    Ok(vtest.is_close(&vref))
+}
 
 /// Checks if all points are (almost) equal
 pub fn are_points_close(pts: &[Point]) -> bool {
@@ -100,13 +160,57 @@ pub fn are_points_collinear(pts: &[Point]) -> bool {
             break;
         }
     }
-
     are_collinear
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_are_point_sequences_close() {
+        let a = vec![
+            Point::new(0., 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let b = vec![
+            Point::new(0., 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let c = vec![
+            Point::new(0.1, 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        assert!(are_point_sequences_close(&a, &b));
+        assert!(!are_point_sequences_close(&a, &c));
+    }
+
+    #[test]
+    fn test_are_point_sequences_close_rot() {
+        let mut a = vec![
+            Point::new(0., 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let b = vec![
+            Point::new(0., 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let c = vec![
+            Point::new(0.1, 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        for i in 0..a.len() {
+            roll(&mut a, i);
+            assert!(are_point_sequences_close_rot(&a, &b));
+            assert!(!are_point_sequences_close_rot(&a, &c));
+        }
+    }
 
     #[test]
     fn test_are_points_close() {
@@ -137,7 +241,7 @@ mod tests {
         assert!(are_points_collinear(&[p0, p1, p2, p3]));
         assert!(are_points_collinear(&[p0, p1, p2, p3, p4]));
         assert!(are_points_collinear(&[p0, p1, p2, p3, p4, p5]));
-        assert!(are_points_collinear(&[p5, p1, p2, p4, p3, p0]));  // Shuffled order
+        assert!(are_points_collinear(&[p5, p1, p2, p4, p3, p0])); // Shuffled order
         assert!(first_3_noncollinear(&[p0, p1, p2, p3, p4, p5]).is_none());
         // Not collinear
         let p3 = Point::new(1., 1., 0.);
@@ -158,5 +262,38 @@ mod tests {
         // Non-coplanar: p4 is off the plane z = 0
         let p4 = Point::new(3., 1., 1.);
         assert!(!are_points_coplanar(&[p0, p1, p2, p3, p4]));
+    }
+
+    #[test]
+    fn test_is_point_on_same_side() {
+        // Points on different sides
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 0., 0.);
+        let ptest = Point::new(0.5, 1., 0.);
+        let pref = Point::new(0.5, -1., 0.);
+        let result = is_point_on_same_side(p0, p1, ptest, pref);
+        if let Ok(r) = result {
+            assert!(!r);
+        } else {
+            panic!("Function returned an unexpected error");
+        }
+        // Points on same sides
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 0., 0.);
+        let ptest = Point::new(1., 1., 0.);
+        let pref = Point::new(0.0, 1., 0.);
+        let result = is_point_on_same_side(p0, p1, ptest, pref);
+        if let Ok(r) = result {
+            assert!(r);
+        } else {
+            panic!("Function returned an unexpected error");
+        }
+        // Collinear points
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 0., 0.);
+        let ptest = Point::new(0.5, 0., 0.);
+        let pref = Point::new(0.0, 0., 0.);
+        let result = is_point_on_same_side(p0, p1, ptest, pref);
+        assert!(result.is_err());
     }
 }

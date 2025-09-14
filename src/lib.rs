@@ -1,5 +1,7 @@
 pub mod geom;
 mod id;
+pub mod vecutils;
+// mod draw;
 
 // Prelude
 pub use geom::point::Point;

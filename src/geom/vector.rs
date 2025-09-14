@@ -1,6 +1,7 @@
 use crate::Point;
 use crate::geom::EPS;
 use crate::geom::IsClose;
+use anyhow::{Result, anyhow};
 use std::f64::consts::PI;
 use std::fmt;
 use std::ops::{Add, Div, Mul, Sub};
@@ -51,16 +52,16 @@ impl Vector {
     }
 
     pub fn is_close(&self, other: &Self) -> bool {
-        self.dx.is_close(&other.dx) && self.dy.is_close(&other.dy) && self.dz.is_close(&other.dz)
+        self.dx.is_close(other.dx) && self.dy.is_close(other.dy) && self.dz.is_close(other.dz)
     }
 
     /// Normalizes the vector (divides by its length) and returns a copy.
-    pub fn normalize(&self) -> Option<Self> {
+    pub fn normalize(&self) -> Result<Self> {
         let len = self.length();
         if len < EPS {
-            None
+            Err(anyhow!("Cannot normalize a zero-length vector"))
         } else {
-            Some(Self {
+            Ok(Self {
                 dx: self.dx / len,
                 dy: self.dy / len,
                 dz: self.dz / len,
@@ -70,11 +71,11 @@ impl Vector {
 
     /// Calculates vector normal to the surface defined with 3 points.
     ///
-    /// If the normal does not exist, returns None.
+    /// If the normal does not exist, returns Err.
     /// The normal does not exist if the points are collinear.
-    pub fn normal(pt0: Point, pt1: Point, pt2: Point) -> Option<Self> {
-        let v01 = Self::from_points(pt0, pt1);
-        let v02 = Self::from_points(pt0, pt2);
+    pub fn normal(p0: Point, p1: Point, p2: Point) -> Result<Self> {
+        let v01 = Self::from_points(p0, p1);
+        let v02 = Self::from_points(p0, p2);
         let vn = v01.cross(&v02);
         vn.normalize()
     }
@@ -88,7 +89,7 @@ impl Vector {
         let other_opt_norm = other.normalize();
         let self_norm: Vector;
         let other_norm: Vector;
-        if let (Some(v1), Some(v2)) = (self_opt_norm, other_opt_norm) {
+        if let (Ok(v1), Ok(v2)) = (self_opt_norm, other_opt_norm) {
             self_norm = v1;
             other_norm = v2;
         } else {
@@ -283,11 +284,11 @@ mod tests {
         // Non-zero-length vector
         let v = Vector::new(9., 0., 0.);
         let vnorm = v.normalize();
-        assert!(vnorm.is_some());
+        assert!(vnorm.is_ok());
         assert_eq!(vnorm.unwrap(), Vector::new(1., 0., 0.));
         // Zero-length vector
         let v = Vector::new(0., 0., 0.);
-        assert!(v.normalize().is_none());
+        assert!(v.normalize().is_err());
     }
 
     #[test]
@@ -296,7 +297,7 @@ mod tests {
         let p1 = Point::new(1., 1., 0.);
         let p2 = Point::new(0., 1., 0.);
         let vn = Vector::normal(p0, p1, p2);
-        assert!(vn.is_some());
+        assert!(vn.is_ok());
         let expected = Vector::new(0., 0., 1.);
         assert!(vn.unwrap().is_close(&expected));
     }
@@ -326,12 +327,12 @@ mod tests {
         let deg90 = PI / 2.0;
         let deg45 = PI / 4.0;
         let angle = vx.angle(&vy).unwrap();
-        assert!(angle.is_close(&deg90));
+        assert!(angle.is_close(deg90));
         let angle = vx.angle(&vz).unwrap();
-        assert!(angle.is_close(&deg90));
+        assert!(angle.is_close(deg90));
         let angle = vy.angle(&vz).unwrap();
-        assert!(angle.is_close(&deg90));
+        assert!(angle.is_close(deg90));
         let angle = vx.angle(&vxy).unwrap();
-        assert!(angle.is_close(&deg45));
+        assert!(angle.is_close(deg45));
     }
 }

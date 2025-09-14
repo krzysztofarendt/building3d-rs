@@ -1,12 +1,14 @@
 use crate::Point;
 use crate::Vector;
 use crate::geom;
+use crate::geom::point::check::are_point_sequences_close_rot;
 use crate::geom::point::check::are_points_coplanar;
+use crate::geom::triangles::{TriangleIndex, triangulate};
 use crate::random_id;
 use anyhow::{Result, anyhow};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Polygon {
     /// Polygon name
     pub name: String,
@@ -15,7 +17,7 @@ pub struct Polygon {
     /// Normal vector
     pub vn: Vector,
     /// Triangles (flat list with triangle indices)
-    tri: Vec<usize>,
+    tri: Vec<TriangleIndex>,
     /// Unique identifier
     uid: String,
     // TODO: Add parent (wall)
@@ -43,20 +45,31 @@ impl Polygon {
             None => {
                 let last = pts.len() - 1;
                 match Vector::normal(pts[last], pts[0], pts[1]) {
-                    Some(v) => v,
-                    None => return Err(anyhow!("Normal vector invalid.")),
+                    Ok(v) => v,
+                    Err(_) => return Err(anyhow!("Normal vector invalid.")),
                 }
             }
         };
+
+        let (pts, tri) = triangulate(pts, vn, 0)?;
+
         Ok(Self {
             name,
             pts,
             vn,
-            tri: Vec::new(), // TODO: Add triangulation
+            tri,
             uid: random_id(),
         })
     }
 }
+
+impl PartialEq for Polygon {
+    fn eq(&self, other: &Self) -> bool {
+        are_point_sequences_close_rot(&self.pts, &other.pts)
+    }
+}
+
+impl Eq for Polygon {}
 
 impl fmt::Display for Polygon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,5 +82,36 @@ impl fmt::Display for Polygon {
             write!(f, "{:.prec$}", p, prec = prec)?;
         }
         write!(f, ")")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_eq() -> Result<()> {
+        let pts_a = vec![
+            Point::new(0., 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let pts_b = vec![
+            Point::new(0., 0., 0.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let pts_c = vec![
+            Point::new(0., 0., 1.),
+            Point::new(0.5, 0.5, 0.5),
+            Point::new(1.0, 2.0, 3.0),
+        ];
+        let poly_a = Polygon::new("a".to_string(), pts_a, None)?;
+        let poly_b = Polygon::new("b".to_string(), pts_b, None)?;
+        let poly_c = Polygon::new("c".to_string(), pts_c, None)?;
+        assert!(poly_a == poly_b);
+        assert!(poly_a != poly_c);
+
+        Ok(())
     }
 }
