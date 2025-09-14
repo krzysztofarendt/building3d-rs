@@ -17,9 +17,9 @@ pub struct Polygon {
     /// Normal vector
     pub vn: Vector,
     /// Triangles (flat list with triangle indices)
-    tri: Vec<TriangleIndex>,
+    pub tri: Vec<TriangleIndex>,
     /// Unique identifier
-    uid: String,
+    pub uid: String,
     // TODO: Add parent (wall)
 }
 

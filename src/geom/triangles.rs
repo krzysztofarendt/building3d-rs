@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 
 /// Type for holding vertex indices for a triangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TriangleIndex(usize, usize, usize);
+pub struct TriangleIndex(pub usize, pub usize, pub usize);
 
 /// Triangulates the polygon defined by points `pts` and normal `vn`.
 pub fn triangulate(
