@@ -1,4 +1,4 @@
-use building3d::{Point, Polygon, draw_polygon};
+uszye building3d::{Point, Polygon, draw_polygons};
 use anyhow::Result;
 
 fn main() -> Result<()> {
@@ -38,6 +38,6 @@ fn main() -> Result<()> {
         ],
         None,
     )?;
-    draw_polygon(&[u_shape, tri, l_shape])?;
+    draw_polygons(&[u_shape, tri, l_shape])?;
     Ok(())
 }
