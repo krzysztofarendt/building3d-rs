@@ -1,5 +1,5 @@
-uszye building3d::{Point, Polygon, draw_polygons};
 use anyhow::Result;
+use building3d::{Point, Polygon, Wall, draw_polygons};
 
 fn main() -> Result<()> {
     // Draw multiple polygons in a 3D window
@@ -38,6 +38,11 @@ fn main() -> Result<()> {
         ],
         None,
     )?;
-    draw_polygons(&[u_shape, tri, l_shape])?;
+
+    let wall = Wall::new("wall".to_string(), vec![u_shape, tri, l_shape]);
+    println!("{wall:?}");
+
+    draw_polygons(wall.polygons())?;
+
     Ok(())
 }

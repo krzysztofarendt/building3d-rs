@@ -18,9 +18,10 @@ pub struct Polygon {
     pub vn: Vector,
     /// Triangles (flat list with triangle indices)
     pub tri: Vec<TriangleIndex>,
-    /// Unique identifier
+    /// Unique identifier of this polygon
     pub uid: String,
-    // TODO: Add parent (wall)
+    /// Unique identifier of the parent wall
+    pub parent: Option<String>,
 }
 
 impl Polygon {
@@ -59,6 +60,7 @@ impl Polygon {
             vn,
             tri,
             uid: random_id(),
+            parent: None,
         })
     }
 }
