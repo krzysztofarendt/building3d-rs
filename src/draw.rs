@@ -40,7 +40,7 @@ fn triangles_to_indices(tri: &[TriangleIndex]) -> Indices {
     )
 }
 
-pub fn draw_polygons(polygons: &[Polygon]) -> Result<()> {
+pub fn draw_polygons(polygons: &[&Polygon]) -> Result<()> {
     // Window & GL
     let window = Window::new(WindowSettings {
         title: "Polygon".into(),

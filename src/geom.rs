@@ -6,6 +6,7 @@ pub mod vector;
 pub mod bboxes;
 pub mod triangles;
 pub mod wall;
+pub mod solid;
 
 /// Path separator (building/zone/solid/wall/polygon)
 const SEP: char = '/';

@@ -1,12 +1,14 @@
 use crate::geom::polygon::Polygon;
 use crate::random_id;
-// use anyhow::Result;
+use anyhow::{Result, anyhow};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Wall {
     pub name: String,
-    pub polygons: Vec<Polygon>,
     pub uid: String,
+    pub parent: Option<String>,
+    polygons: HashMap<String, Polygon>,
 }
 
 impl Wall {
@@ -15,14 +17,28 @@ impl Wall {
         for p in polygons.iter_mut() {
             p.parent = Some(uid.clone());
         }
+        let parent = None;
+        let polygons: HashMap<String, Polygon> =
+            polygons.into_iter().map(|x| (x.name.clone(), x)).collect();
         Self {
             name,
-            polygons,
             uid,
+            parent,
+            polygons,
         }
     }
 
-    pub fn polygons(&self) -> &[Polygon] {
-        &self.polygons
+    pub fn polygons(&self) -> Vec<&Polygon> {
+        self.polygons.values().collect()
+    }
+
+    pub fn add_polygon(&mut self, mut polygon: Polygon) -> Result<()> {
+        if self.polygons.contains_key(&polygon.name) {
+            return Err(anyhow!("Polygon is already present: {}", &polygon.name));
+        }
+        polygon.parent = Some(self.uid.clone());
+        self.polygons.insert(polygon.name.clone(), polygon);
+
+        Ok(())
     }
 }

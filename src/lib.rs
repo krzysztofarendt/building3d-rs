@@ -8,6 +8,7 @@ pub use geom::point::Point;
 pub use geom::polygon::Polygon;
 pub use geom::wall::Wall;
 pub use geom::vector::Vector;
+pub use geom::solid::Solid;
 use id::random_id;
 // Drawing utility
 pub use draw::draw_polygons;

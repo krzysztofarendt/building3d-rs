@@ -28,7 +28,7 @@ impl Polygon {
     /// Returns a new polygon.
     ///
     /// The normal vector is optional. If it is provided, its validity isn't checked.
-    /// If it isn't provided, the normal will be calculate based on the first corner
+    /// If it isn't provided, the normal will be calculated based on the first corner
     /// defined by points: last (-1), first (0), second (1).
     pub fn new(name: String, pts: Vec<Point>, normal: Option<Vector>) -> Result<Self> {
         if !are_points_coplanar(&pts) || pts.len() < 3 {
@@ -41,6 +41,7 @@ impl Polygon {
         // then calculate it from the points of the first corner: last, 0, 1.
         // If the calculated normal is None, the corner points are collinear so go panic.
         // The first corner must be convex.
+        // TODO: Validate the normal vector if it is provided (check if it's orthogonal).
         let vn = match normal {
             Some(v) => v,
             None => {
