@@ -5,6 +5,7 @@ use std::ops::Add;
 use std::ops::Sub;
 
 pub mod check;
+pub mod convert;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {

@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let wall = Wall::new("wall".to_string(), vec![u_shape, tri, l_shape]);
     println!("{wall:?}");
 
-    draw_polygons(wall.polygons())?;
+    draw_polygons(&wall.polygons())?;
 
     Ok(())
 }

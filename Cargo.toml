@@ -9,3 +9,4 @@ description = "Towards 3D building modeling and simulation"
 anyhow = "1.0.99"
 uuid = { version = "1.18.1", features = ["fast-rng", "v4"] }
 three-d = { version = "0.18", features = ["window"] }
+ndarray = "0.16.1"
