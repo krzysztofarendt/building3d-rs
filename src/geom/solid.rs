@@ -67,7 +67,7 @@ impl Solid {
     /// - ceiling/ceiling
     ///
     /// The solid will be named `name` (random if not given).
-    pub fn make_box(
+    pub fn from_box(
         x: f64,
         y: f64,
         z: f64,
