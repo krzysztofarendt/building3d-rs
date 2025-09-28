@@ -64,6 +64,14 @@ impl Polygon {
             parent: None,
         })
     }
+
+    // Copies, flips points, renames, resets parent
+    pub fn flip(&self, new_name: String) -> Result<Self> {
+        let mut pts = self.pts.clone();
+        pts.reverse();
+
+        Self::new(new_name, pts, None)
+    }
 }
 
 impl PartialEq for Polygon {

@@ -41,4 +41,16 @@ impl Wall {
 
         Ok(())
     }
+
+    pub fn replace_polygon(&mut self, old_name: &str, new_poly: Vec<Polygon>) -> Result<()> {
+        let removed: Option<_> = self.polygons.remove(old_name);
+        if removed.is_none() {
+            return Err(anyhow!("No such polygon ({}) in this wall ({})", old_name, &self.name));
+        }
+        for pl in new_poly.into_iter() {
+            self.add_polygon(pl)?;  // TODO: Add some check, e.g. compare surface area
+        }
+
+        Ok(())
+    }
 }

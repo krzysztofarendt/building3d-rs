@@ -4,6 +4,16 @@ use crate::geom::EPS;
 use crate::vecutils::roll;
 use anyhow::{Result, anyhow};
 
+/// Tests if Point is in the sequence
+pub fn is_point_in_sequence(pt: &Point, seq: &[Point]) -> bool {
+    for pt_seq in seq {
+        if pt.is_close(pt_seq) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Tests if two sequences of Points are close to each other (element-wise).
 pub fn are_point_sequences_close(a: &[Point], b: &[Point]) -> bool {
     if a.len() != b.len() {

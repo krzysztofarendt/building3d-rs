@@ -35,7 +35,7 @@ use ndarray as nd;
 /// Method 2 (more stable numerically):
 /// https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
 /// https://math.stackexchange.com/questions/142821/matrix-for-rotation-around-a-vector
-pub fn rotation_matrix(u: Vector, phi: f64) -> nd::Array2<f64> {
+pub fn rotation_matrix(u: &Vector, phi: f64) -> nd::Array2<f64> {
     if !u.length().is_close(1.) {
         panic!("rotation_matrix() requires u to be a unit vector");
     }
@@ -62,7 +62,7 @@ pub fn rotate_points(pts: &[Point], rot: &nd::ArrayView2<f64>) -> Vec<Point> {
 ///
 /// Returns:
 /// rotated points
-pub fn rotate_points_around_vector(pts: &[Point], u: Vector, phi: f64) -> Vec<Point> {
+pub fn rotate_points_around_vector(pts: &[Point], u: &Vector, phi: f64) -> Vec<Point> {
     if u.length().is_close(0.) || phi.abs().is_close(0.) {
         // No need to rotate
         return pts.to_vec();
@@ -88,7 +88,7 @@ mod tests {
         let u = Vector::new(0., 1., 0.);
         let phi = -std::f64::consts::PI / 2.;
 
-        let rotated_points = rotate_points_around_vector(&[p0, p1, p2], u, phi);
+        let rotated_points = rotate_points_around_vector(&[p0, p1, p2], &u, phi);
         println!("{:?}", rotated_points);
 
         assert!(rotated_points[0].is_close(&Point::new(0.0, 0.0, 1.0)));

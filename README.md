@@ -2,8 +2,6 @@
 
 Under construction...
 
-## Checklist
+# TODO
 
-- [-] Point (current: `is_point_on_segment()`)
-- [-] Vector
-- [ ] Polygon
+- [ ] Floor plan tests
