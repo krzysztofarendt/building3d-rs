@@ -5,7 +5,7 @@ use crate::geom::vector::Vector;
 use crate::geom::wall::Wall;
 use crate::geom::{IsClose, point::Point};
 use crate::random_id;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, Context};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -142,14 +142,14 @@ impl Solid {
 
         // Prepare wall names
         let wall_names: Vec<String> = match fp.wall_names {
-            Some(names) => {
+            Some(names) => names,
+            None => {
                 let mut wall_names: Vec<String> = Vec::new();
-                for i in 0..names.len() {
+                for i in 0..fp.plan.len() {
                     wall_names.push(format!("wall-{i}"));
                 }
                 wall_names
-            }
-            None => fp.wall_names.as_ref().unwrap().clone(),
+            },
         };
         let floor_name: String = match fp.floor_name {
             Some(name) => name,
@@ -157,7 +157,7 @@ impl Solid {
         };
         let ceil_name: String = match fp.ceiling_name {
             Some(name) => name,
-            None => String::from("floor"),
+            None => String::from("ceiling"),
         };
 
         // Set up floor and ceiling points
@@ -198,10 +198,11 @@ impl Solid {
 
             let p0 = floor_pts[ths];
             let p1 = floor_pts[nxt];
-            let p2 = ceil_pts[ths];
-            let p3 = ceil_pts[nxt];
+            let p2 = ceil_pts[nxt];
+            let p3 = ceil_pts[ths];
 
-            let poly = Polygon::new(w_name.clone(), vec![p0, p1, p2, p3], None)?;
+            let poly = Polygon::new(w_name.clone(), vec![p0, p1, p2, p3], None)
+                .context(format!("Failed to create Polygon from {p0}, {p1}, {p2}, {p3}"))?;
             walls.push(Wall::new(w_name.clone(), vec![poly]));
         }
 
