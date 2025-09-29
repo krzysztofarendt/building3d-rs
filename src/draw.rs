@@ -227,6 +227,44 @@ pub fn draw_polygons(polygons: &[&Polygon]) -> Result<()> {
         },
     );
 
+    // --- Axes gizmo (X=red, Y=green, Z=blue) anchored at (0, 0, 0) ---
+    let axis_len = (radius * 1.25).max(1.0);
+    let axis_radius = (radius * 0.01).max(0.002);
+
+    let mut axis_cyl = CpuMesh::cylinder(24);
+    axis_cyl.transform(Mat4::from_nonuniform_scale(1.0, axis_radius, axis_radius))?;
+
+    let make_axis = |dir: Vec3, color: Srgba| -> Gm<InstancedMesh, ColorMaterial> {
+        let p1 = vec3(0.0, 0.0, 0.0);                   // anchor at origin
+        let p2 = p1 + dir.normalize() * axis_len;
+        let m = Mat4::from_translation(p1)
+            * Into::<Mat4>::into(Quat::from_arc(vec3(1.0, 0.0, 0.0), (p2 - p1).normalize(), None))
+            * Mat4::from_nonuniform_scale((p2 - p1).magnitude(), 1.0, 1.0);
+        Gm::new(
+            InstancedMesh::new(
+                &context,
+                &Instances {
+                    transformations: vec![m],
+                    ..Default::default()
+                },
+                &axis_cyl,
+            ),
+            ColorMaterial {
+                color,
+                render_states: RenderStates {
+                    depth_test: DepthTest::LessOrEqual,
+                    write_mask: WriteMask::COLOR,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    };
+
+    let x_axis_gm = make_axis(vec3(1.0, 0.0, 0.0), Srgba::new_opaque(255, 0, 0));   // +X red
+    let y_axis_gm = make_axis(vec3(0.0, 1.0, 0.0), Srgba::new_opaque(0, 255, 0));   // +Y green
+    let z_axis_gm = make_axis(vec3(0.0, 0.0, 1.0), Srgba::new_opaque(0, 128, 255)); // +Z blue
+
     // Render loop
     window.render_loop(move |mut frame_input| {
         camera.set_viewport(frame_input.viewport);
@@ -237,7 +275,11 @@ pub fn draw_polygons(polygons: &[&Polygon]) -> Result<()> {
             .flat_map(|g| g.into_iter())
             .chain(&tri_gm)
             .chain(&bound_gm)
-            .chain(&vertex_gm);
+            .chain(&vertex_gm)
+            .chain(&x_axis_gm)
+            .chain(&y_axis_gm)
+            .chain(&z_axis_gm);
+
         frame_input
             .screen()
             .clear(ClearState::color_and_depth(0.9, 0.9, 0.9, 1.0, 1.0))
@@ -245,5 +287,6 @@ pub fn draw_polygons(polygons: &[&Polygon]) -> Result<()> {
 
         FrameOutput::default()
     });
+
     Ok(())
 }
