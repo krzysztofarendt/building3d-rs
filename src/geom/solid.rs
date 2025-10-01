@@ -1,11 +1,10 @@
 use crate::geom::point::check::is_point_in_sequence;
 use crate::geom::polygon::Polygon;
-use crate::geom::rotation::rotate_points_around_vector;
 use crate::geom::vector::Vector;
 use crate::geom::wall::Wall;
 use crate::geom::{IsClose, point::Point};
 use crate::random_id;
-use anyhow::{Result, anyhow, Context};
+use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -50,6 +49,20 @@ impl Solid {
         Ok(())
     }
 
+    pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
+        let mut walls: Vec<&mut Wall> = self.walls.values_mut().collect();
+        for wall in walls.iter_mut() {
+            wall.rotate(angle, rot_vec);
+        }
+    }
+
+    pub fn translate(&mut self, vec: &Vector) {
+        let mut walls: Vec<&mut Wall> = self.walls.values_mut().collect();
+        for wall in walls.iter_mut() {
+            wall.translate(vec);
+        }
+    }
+
     /// Return a solid with given dimensions and location.
     ///
     /// `x` is the dimension along the X axis.
@@ -76,8 +89,6 @@ impl Solid {
         origin: Option<(f64, f64, f64)>,
         name: Option<&str>,
     ) -> Self {
-        // TODO: Add rotation
-
         let origin_vec = match origin {
             Some((dx, dy, dz)) => Vector::new(dx, dy, dz),
             None => Vector::new(0., 0., 0.),
@@ -137,9 +148,6 @@ impl Solid {
             assert_eq!(num_names, num_unique_names);
         }
 
-        // Define the rotation vector (it is hardcoded, floor and ceiling must be horizontal)
-        let rot_vec: Vector = Vector::new(0., 0., 1.);
-
         // Prepare wall names
         let wall_names: Vec<String> = match fp.wall_names {
             Some(names) => names,
@@ -149,7 +157,7 @@ impl Solid {
                     wall_names.push(format!("wall-{i}"));
                 }
                 wall_names
-            },
+            }
         };
         let floor_name: String = match fp.floor_name {
             Some(name) => name,
@@ -168,24 +176,8 @@ impl Solid {
             ceil_pts.push(Point::new(*x, *y, fp.height));
         }
 
-        // Rotate
-        if !fp.rot_angle.is_close(0.) {
-            floor_pts = rotate_points_around_vector(&floor_pts, &rot_vec, fp.rot_angle);
-            ceil_pts = rotate_points_around_vector(&ceil_pts, &rot_vec, fp.rot_angle);
-        }
-
-        // Translate
-        let mut z0: f64 = 0.;
-
-        if !fp.translate.length().is_close(0.) {
-            for pt in floor_pts.iter_mut() {
-                *pt = *pt + fp.translate;
-            }
-            for pt in ceil_pts.iter_mut() {
-                *pt = *pt + fp.translate;
-            }
-            z0 = fp.translate.dz;
-        }
+        // Floor height
+        let z0: f64 = 0.;
 
         // Make polygons and walls
         let mut walls: Vec<Wall> = Vec::new();
@@ -201,8 +193,9 @@ impl Solid {
             let p2 = ceil_pts[nxt];
             let p3 = ceil_pts[ths];
 
-            let poly = Polygon::new(w_name.clone(), vec![p0, p1, p2, p3], None)
-                .context(format!("Failed to create Polygon from {p0}, {p1}, {p2}, {p3}"))?;
+            let poly = Polygon::new(w_name.clone(), vec![p0, p1, p2, p3], None).context(
+                format!("Failed to create Polygon from {p0}, {p1}, {p2}, {p3}"),
+            )?;
             walls.push(Wall::new(w_name.clone(), vec![poly]));
         }
 
@@ -232,10 +225,10 @@ impl Solid {
             let w_pts: &Vec<Point> = &w_poly.pts;
 
             // Wall bottom vertices
-            let mut wall_z0_pts: Vec<Point> = Vec::new();
+            let mut wall_pts: Vec<Point> = Vec::new();
             for pt in w_pts.iter() {
                 if pt.z.is_close(z0) {
-                    wall_z0_pts.push(*pt);
+                    wall_pts.push(*pt);
                 }
             }
 
@@ -243,7 +236,7 @@ impl Solid {
 
             let mut prev_taken: Option<usize> = None;
             for (i, fpt) in f_pts.iter().enumerate() {
-                if is_point_in_sequence(fpt, &wall_z0_pts) {
+                if is_point_in_sequence(fpt, &wall_pts) {
                     floor_adjacent_pts.push(*fpt);
                     if prev_taken.is_none() {
                         prev_taken = Some(i);
@@ -259,8 +252,8 @@ impl Solid {
                 }
             }
 
-            if !wall_z0_pts[0].is_close(&floor_adjacent_pts[1])
-                || !wall_z0_pts[1].is_close(&floor_adjacent_pts[0])
+            if !wall_pts[0].is_close(&floor_adjacent_pts[1])
+                || !wall_pts[1].is_close(&floor_adjacent_pts[0])
             {
                 // Wrong direction. Need to reverse the order of polygon vertices
                 to_flip.push((w.name.clone(), w_poly.name.clone()));
@@ -293,8 +286,6 @@ impl Solid {
 pub struct FloorPlan {
     pub plan: Vec<(f64, f64)>,
     pub height: f64,
-    pub translate: Vector, // TODO: this should be a method on a solid
-    pub rot_angle: f64,    // TODO: this should be a method on a solid
     pub name: Option<String>,
     pub wall_names: Option<Vec<String>>,
     pub floor_name: Option<String>,
@@ -305,8 +296,6 @@ impl Default for FloorPlan {
     fn default() -> Self {
         let plan = vec![(0., 0.), (1., 0.), (1., 1.), (0., 1.)];
         let height = 2.;
-        let translate = Vector::new(0., 0., 0.);
-        let rot_angle = 0.;
         let name = None;
         let wall_names = None;
         let floor_name = None;
@@ -315,8 +304,6 @@ impl Default for FloorPlan {
         Self {
             plan,
             height,
-            translate,
-            rot_angle,
             name,
             wall_names,
             floor_name,

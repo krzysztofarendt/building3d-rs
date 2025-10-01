@@ -2,6 +2,7 @@ use crate::Vector;
 use crate::geom::{EPS, IsClose};
 use std::fmt;
 use std::ops::Add;
+use std::ops::AddAssign;
 use std::ops::Sub;
 
 pub mod check;
@@ -110,6 +111,27 @@ impl Add<Vector> for Point {
             y: self.y + other.dy,
             z: self.z + other.dz,
         }
+    }
+}
+
+impl Add<&Vector> for Point {
+    type Output = Point;
+    fn add(self, other: &Vector) -> Point {
+        Point {
+            x: self.x + other.dx,
+            y: self.y + other.dy,
+            z: self.z + other.dz,
+        }
+    }
+}
+
+// Implement +=
+// Point += Vector
+impl AddAssign<&Vector> for Point {
+    fn add_assign(&mut self, other: &Vector) {
+        self.x += other.dx;
+        self.y += other.dy;
+        self.z += other.dz;
     }
 }
 

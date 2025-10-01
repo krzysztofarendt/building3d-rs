@@ -1,5 +1,6 @@
 use crate::geom::polygon::Polygon;
 use crate::random_id;
+use crate::Vector;
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
@@ -30,6 +31,20 @@ impl Wall {
 
     pub fn polygons(&self) -> Vec<&Polygon> {
         self.polygons.values().collect()
+    }
+
+    pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
+        let mut polygons: Vec<&mut Polygon> = self.polygons.values_mut().collect();
+        for poly in polygons.iter_mut() {
+            poly.rotate(angle, rot_vec);
+        }
+    }
+
+    pub fn translate(&mut self, vec: &Vector) {
+        let mut polygons: Vec<&mut Polygon> = self.polygons.values_mut().collect();
+        for poly in polygons.iter_mut() {
+            poly.translate(vec);
+        }
     }
 
     pub fn add_polygon(&mut self, mut polygon: Polygon) -> Result<()> {

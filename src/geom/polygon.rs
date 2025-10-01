@@ -4,6 +4,7 @@ use crate::geom;
 use crate::geom::point::check::are_point_sequences_close_rot;
 use crate::geom::point::check::are_points_coplanar;
 use crate::geom::triangles::{TriangleIndex, triangulate};
+use crate::geom::rotation::rotate_points_around_vector;
 use crate::random_id;
 use anyhow::{Result, anyhow};
 use std::fmt;
@@ -71,6 +72,16 @@ impl Polygon {
         pts.reverse();
 
         Self::new(new_name, pts, None)
+    }
+
+    pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
+        self.pts = rotate_points_around_vector(&self.pts, rot_vec, angle);
+    }
+
+    pub fn translate(&mut self, vec: &Vector) {
+        for pt in self.pts.iter_mut() {
+            *pt += vec;
+        }
     }
 }
 

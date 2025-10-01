@@ -1,5 +1,6 @@
 use building3d::Solid;
 use building3d::FloorPlan;
+use building3d::Vector;
 use building3d::draw_polygons;
 use anyhow::Result;
 
@@ -10,6 +11,8 @@ fn main() -> Result<()> {
         (0., 0.), (5., 0.), (5., 2.), (3., 2.), (3., 7.), (0., 5.)
     ];
     let height: f64 = 1.8;
+    let rot_angle: f64 = 1.0;
+    let translation: Vector = Vector::new(1., 1., 1.);
     let name = Some("building".to_string());
 
     let fp = FloorPlan {
@@ -18,7 +21,11 @@ fn main() -> Result<()> {
         name,
         ..Default::default()
     };
-    let sld = Solid::from_floor_plan(fp)?;
+    let mut sld = Solid::from_floor_plan(fp)?;
+
+    sld.rotate(rot_angle, &Vector::new(0., 0., 1.));
+    sld.translate(&translation);
+
     draw_polygons(&sld.polygons())?;
 
     Ok(())
