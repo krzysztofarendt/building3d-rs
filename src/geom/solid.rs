@@ -1,8 +1,10 @@
+use crate::Point;
+use crate::Polygon;
+use crate::Vector;
+use crate::Wall;
+use crate::geom::IsClose;
 use crate::geom::point::check::is_point_in_sequence;
-use crate::geom::polygon::Polygon;
-use crate::geom::vector::Vector;
-use crate::geom::wall::Wall;
-use crate::geom::{IsClose, point::Point};
+use crate::geom::tetrahedron::tetrahedron_volume;
 use crate::random_id;
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
@@ -49,6 +51,7 @@ impl Solid {
         Ok(())
     }
 
+    /// Rotates the solid based on the rotation vector and angle (in place)
     pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
         let mut walls: Vec<&mut Wall> = self.walls.values_mut().collect();
         for wall in walls.iter_mut() {
@@ -56,11 +59,41 @@ impl Solid {
         }
     }
 
+    /// Moves the solid by a vector (in place)
     pub fn translate(&mut self, vec: &Vector) {
         let mut walls: Vec<&mut Wall> = self.walls.values_mut().collect();
         for wall in walls.iter_mut() {
             wall.translate(vec);
         }
+    }
+
+    /// Calculates the volume of the solid.
+    ///
+    /// Based on: http://chenlab.ece.cornell.edu/Publication/Cha/icip01_Cha.pdf
+    pub fn volume(&self) -> f64 {
+        let mut total_volume = 0.;
+        let polygons = self.polygons();
+        let p0 = Point::new(0., 0., 0.);
+        for poly in polygons.iter() {
+            for tri in poly.tri.iter() {
+                let p1 = poly.pts[tri.0];
+                let p2 = poly.pts[tri.1];
+                let p3 = poly.pts[tri.2];
+                let v = tetrahedron_volume(p0, p1, p2, p3);
+
+                let mut pos_wrt_origin = poly.vn.dot(&(p1 - p0));
+                if pos_wrt_origin.is_close(0.) {
+                    pos_wrt_origin = poly.vn.dot(&(p2 - p0));
+                }
+
+                let mut sign = -1.;
+                if pos_wrt_origin > 0. {
+                    sign = 1.;
+                }
+                total_volume += sign * v;
+            }
+        }
+        total_volume
     }
 
     /// Return a solid with given dimensions and location.
@@ -309,5 +342,17 @@ impl Default for FloorPlan {
             floor_name,
             ceiling_name,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_box() {
+        let sld = Solid::from_box(1., 2., 3., None, None);
+        let expected_vol = 1. * 2. * 3.;
+        assert!((sld.volume() - expected_vol).abs() < 1e-4);
     }
 }

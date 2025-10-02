@@ -5,6 +5,7 @@ mod draw;
 
 // Prelude
 pub use geom::point::Point;
+pub use geom::building::Building;
 pub use geom::polygon::Polygon;
 pub use geom::wall::Wall;
 pub use geom::vector::Vector;
