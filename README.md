@@ -4,4 +4,5 @@ Under construction...
 
 # TODO
 
-- [ ] Floor plan tests
+- [ ] Zones
+- [ ] Rays
