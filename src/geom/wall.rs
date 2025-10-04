@@ -1,6 +1,7 @@
+use crate::Vector;
 use crate::geom::polygon::Polygon;
 use crate::random_id;
-use crate::Vector;
+use crate::sortbyname::{HasName, SortByName};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
@@ -10,6 +11,12 @@ pub struct Wall {
     pub uid: String,
     pub parent: Option<String>,
     polygons: HashMap<String, Polygon>,
+}
+
+impl HasName for Wall {
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl Wall {
@@ -30,7 +37,10 @@ impl Wall {
     }
 
     pub fn polygons(&self) -> Vec<&Polygon> {
-        self.polygons.values().collect()
+        let mut polygons: Vec<&Polygon> = self.polygons.values().collect();
+        polygons.as_mut_slice().sort_by_name();
+
+        polygons
     }
 
     pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
@@ -60,10 +70,14 @@ impl Wall {
     pub fn replace_polygon(&mut self, old_name: &str, new_poly: Vec<Polygon>) -> Result<()> {
         let removed: Option<_> = self.polygons.remove(old_name);
         if removed.is_none() {
-            return Err(anyhow!("No such polygon ({}) in this wall ({})", old_name, &self.name));
+            return Err(anyhow!(
+                "No such polygon ({}) in this wall ({})",
+                old_name,
+                &self.name
+            ));
         }
         for pl in new_poly.into_iter() {
-            self.add_polygon(pl)?;  // TODO: Add some check, e.g. compare surface area
+            self.add_polygon(pl)?; // TODO: Add some check, e.g. compare surface area
         }
 
         Ok(())

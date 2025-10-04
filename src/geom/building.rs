@@ -1,9 +1,18 @@
+use crate::Point;
 use crate::Polygon;
 use crate::Solid;
 use crate::Vector;
 use crate::Wall;
+use crate::geom::triangles::TriangleIndex;
 use crate::random_id;
+use crate::sortbyname::{HasName, SortByName};
 use std::collections::HashMap;
+
+#[derive(Debug)]
+pub struct Mesh {
+    pub vertices: Vec<Point>,
+    pub triangles: Vec<TriangleIndex>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Building {
@@ -11,6 +20,12 @@ pub struct Building {
     pub uid: String,
     pub parent: Option<String>,
     solids: HashMap<String, Solid>,
+}
+
+impl HasName for Building {
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl Building {
@@ -31,20 +46,51 @@ impl Building {
         }
     }
 
+    /// Return solids sorted by name
     pub fn solids(&self) -> Vec<&Solid> {
-        self.solids.values().collect()
+        let mut solids: Vec<&Solid> = self.solids.values().collect();
+        solids.as_mut_slice().sort_by_name();
+
+        solids
     }
 
+    /// Return walls sorted by name
     pub fn walls(&self) -> Vec<&Wall> {
-        self.solids.values().flat_map(|s| s.walls()).collect()
+        let solids = self.solids();
+        let walls: Vec<&Wall> = solids.iter().flat_map(|s| s.walls()).collect();
+        // NOTE: Walls are already sorted
+
+        walls
     }
 
     pub fn polygons(&self) -> Vec<&Polygon> {
-        self.solids
-            .values()
-            .flat_map(|s| s.walls())
-            .flat_map(|w| w.polygons())
-            .collect()
+        let walls = self.walls();
+        let polygons: Vec<&Polygon> = walls.iter().flat_map(|w| w.polygons()).collect();
+        // NOTE: Polygons are already sorted
+
+        polygons
+    }
+
+    pub fn mesh(&self) -> Mesh {
+        let polygons = self.polygons();
+        let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
+        let mut triangles: Vec<TriangleIndex> = Vec::new();
+        let mut num_vertices = 0;
+
+        for &poly in polygons.iter() {
+            let mut tri: Vec<TriangleIndex> = poly.tri.clone();
+            tri = tri
+                .into_iter()
+                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
+                .collect();
+            triangles.extend(tri.into_iter());
+            num_vertices += poly.pts.len();
+        }
+
+        Mesh {
+            vertices,
+            triangles,
+        }
     }
 
     pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {

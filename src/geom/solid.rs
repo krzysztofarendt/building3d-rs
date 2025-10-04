@@ -6,6 +6,7 @@ use crate::geom::IsClose;
 use crate::geom::point::check::is_point_in_sequence;
 use crate::geom::tetrahedron::tetrahedron_volume;
 use crate::random_id;
+use crate::sortbyname::{HasName, SortByName};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +16,12 @@ pub struct Solid {
     pub uid: String,
     pub parent: Option<String>,
     walls: HashMap<String, Wall>,
+}
+
+impl HasName for Solid {
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl Solid {
@@ -34,11 +41,18 @@ impl Solid {
     }
 
     pub fn walls(&self) -> Vec<&Wall> {
-        self.walls.values().collect()
+        let mut walls: Vec<&Wall> = self.walls.values().collect();
+        walls.as_mut_slice().sort_by_name();
+
+        walls
     }
 
     pub fn polygons(&self) -> Vec<&Polygon> {
-        self.walls.values().flat_map(|w| w.polygons()).collect()
+        let walls = self.walls();
+        let polygons: Vec<&Polygon> = walls.iter().flat_map(|w| w.polygons()).collect();
+        // NOTE: Polygons are already sorted
+
+        polygons
     }
 
     pub fn add_wall(&mut self, mut wall: Wall) -> Result<()> {

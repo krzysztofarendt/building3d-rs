@@ -3,9 +3,10 @@ use crate::Vector;
 use crate::geom;
 use crate::geom::point::check::are_point_sequences_close_rot;
 use crate::geom::point::check::are_points_coplanar;
-use crate::geom::triangles::{TriangleIndex, triangulate};
 use crate::geom::rotation::rotate_points_around_vector;
+use crate::geom::triangles::{TriangleIndex, triangulate};
 use crate::random_id;
+use crate::sortbyname::HasName;
 use anyhow::{Result, anyhow};
 use std::fmt;
 
@@ -23,6 +24,12 @@ pub struct Polygon {
     pub uid: String,
     /// Unique identifier of the parent wall
     pub parent: Option<String>,
+}
+
+impl HasName for Polygon {
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl Polygon {
