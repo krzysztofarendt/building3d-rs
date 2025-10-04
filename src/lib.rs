@@ -13,5 +13,3 @@ pub use geom::solid::Solid;
 pub use geom::vector::Vector;
 pub use geom::wall::Wall;
 use id::random_id;
-// Drawing utility
-pub use draw::simple::draw_polygons;

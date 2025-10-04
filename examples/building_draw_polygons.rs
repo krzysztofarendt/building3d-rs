@@ -1,9 +1,8 @@
-use building3d::FloorPlan;
-use building3d::Solid;
-// use building3d::Vector;
 use anyhow::Result;
 use building3d::Building;
-use building3d::draw::rerun::show;
+use building3d::FloorPlan;
+use building3d::Solid;
+use building3d::draw::simple::draw_polygons;
 
 fn main() -> Result<()> {
     let plan: Vec<(f64, f64)> = vec![(0., 0.), (5., 0.), (5., 2.), (3., 2.), (3., 7.), (0., 5.)];
@@ -22,7 +21,7 @@ fn main() -> Result<()> {
 
     let bdg = Building::new("building".to_string(), vec![sld1, sld2]);
 
-    show(&bdg)?;
+    draw_polygons(&bdg.polygons())?;
 
     Ok(())
 }

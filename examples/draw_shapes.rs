@@ -1,5 +1,6 @@
 use anyhow::Result;
-use building3d::{Point, Polygon, Wall, draw_polygons};
+use building3d::draw::simple::draw_polygons;
+use building3d::{Point, Polygon, Wall};
 
 fn main() -> Result<()> {
     // Draw multiple polygons in a 3D window

@@ -4,12 +4,16 @@ use crate::geom::triangles::TriangleIndex;
 use anyhow::Result;
 use rerun as rr;
 
-impl From<Point> for rr::Position3D {
+const SESSION_NAME: &str = "Building3d";
+
+/// Converts Point to native format of Rerun
+impl From<Point> for rr::Vec3D {
     fn from(val: Point) -> Self {
-        rr::Position3D(rr::Vec3D([val.x as f32, val.y as f32, val.z as f32]))
+        rr::Vec3D([val.x as f32, val.y as f32, val.z as f32])
     }
 }
 
+/// Converts TriangleIndex to native format of Rerun
 impl From<TriangleIndex> for rr::TriangleIndices {
     fn from(val: TriangleIndex) -> Self {
         rr::TriangleIndices(rr::datatypes::UVec3D([
@@ -20,26 +24,71 @@ impl From<TriangleIndex> for rr::TriangleIndices {
     }
 }
 
-pub fn show(building: &Building) -> Result<()> {
+/// Starts a Rerun session and draws the building with a given opacity.
+///
+/// # Arguments
+/// * building - reference to the building model
+/// * opacity - controls opacity (0-1)
+///
+/// # Returns
+/// Rerun's RecordingStream
+pub fn start_session(
+    building: &Building,
+    rgba: (f32, f32, f32, f32),
+) -> Result<rr::RecordingStream> {
     let mesh = building.mesh();
     let vertices: Vec<Point> = mesh.vertices;
     let triangles: Vec<TriangleIndex> = mesh.triangles;
 
-    let alpha: f32 = 0.2;
-    let red: f32 = 1.;
-    let green: f32 = 1.;
-    let blue: f32 = 1.;
+    let (r, g, b, a) = rgba;
 
     // Connect to the Rerun gRPC server using the default address and port: localhost:9876
-    let rec = rr::RecordingStreamBuilder::new("building3d").spawn()?;
-    rec.log_static(
-        "model",
+    let session = rr::RecordingStreamBuilder::new("building3d").spawn()?;
+    session.log_static(
+        SESSION_NAME,
         &rr::Mesh3D::new(vertices)
             .with_triangle_indices(triangles)
-            .with_albedo_factor(rr::Rgba32::from_linear_unmultiplied_rgba_f32(
-                red, green, blue, alpha,
-            )),
+            .with_albedo_factor(rr::Rgba32::from_linear_unmultiplied_rgba_f32(r, g, b, a)),
+    )?;
+
+    Ok(session)
+}
+
+pub fn draw_mesh(
+    session: &rr::RecordingStream,
+    building: &Building,
+    radius: f32,
+    rgba: (f32, f32, f32, f32),
+) -> Result<()> {
+    let mesh = building.mesh();
+    let vertices: Vec<Point> = mesh.vertices;
+    let triangles: Vec<TriangleIndex> = mesh.triangles;
+
+    let mut lines: Vec<Vec<rr::Vec3D>> = Vec::new();
+    let mut radii: Vec<f32> = Vec::new();
+    let mut colors: Vec<rr::Color> = Vec::new();
+
+    for t in triangles.iter() {
+        lines.push(Vec::new());
+        let index = lines.len() - 1;
+        lines[index].push(rr::Vec3D::from(vertices[t.0]));
+        lines[index].push(rr::Vec3D::from(vertices[t.1]));
+        lines[index].push(rr::Vec3D::from(vertices[t.2]));
+        radii.push(radius);
+        colors.push(color(rgba));
+    }
+
+    session.log_static(
+        SESSION_NAME,
+        &rr::LineStrips3D::new(lines)
+            .with_radii(radii)
+            .with_colors(colors),
     )?;
 
     Ok(())
+}
+
+fn color(rgba: (f32, f32, f32, f32)) -> rr::Color {
+    let (r, g, b, a) = rgba;
+    rr::Color(rr::Rgba32::from_linear_unmultiplied_rgba_f32(r, g, b, a))
 }
