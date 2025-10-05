@@ -1,6 +1,6 @@
-use crate::Building;
 use crate::Point;
 use crate::geom::triangles::TriangleIndex;
+use crate::{GetMesh, Mesh};
 use anyhow::Result;
 use rerun as rr;
 
@@ -24,26 +24,24 @@ impl From<TriangleIndex> for rr::TriangleIndices {
     }
 }
 
-/// Starts a Rerun session and draws the building with a given opacity.
-///
-/// # Arguments
-/// * building - reference to the building model
-/// * opacity - controls opacity (0-1)
-///
-/// # Returns
-/// Rerun's RecordingStream
-pub fn start_session(
-    building: &Building,
+pub fn start_session() -> Result<rr::RecordingStream> {
+    // Connect to the Rerun gRPC server using the default address and port: localhost:9876
+    let session = rr::RecordingStreamBuilder::new("building3d").spawn()?;
+
+    Ok(session)
+}
+
+pub fn draw_surfaces<T: GetMesh>(
+    session: &rr::RecordingStream,
+    model: &T,
     rgba: (f32, f32, f32, f32),
-) -> Result<rr::RecordingStream> {
-    let mesh = building.mesh();
+) -> Result<()> {
+    let mesh: Mesh = model.get_mesh();
     let vertices: Vec<Point> = mesh.vertices;
     let triangles: Vec<TriangleIndex> = mesh.triangles;
 
     let (r, g, b, a) = rgba;
 
-    // Connect to the Rerun gRPC server using the default address and port: localhost:9876
-    let session = rr::RecordingStreamBuilder::new("building3d").spawn()?;
     session.log_static(
         SESSION_NAME,
         &rr::Mesh3D::new(vertices)
@@ -51,16 +49,16 @@ pub fn start_session(
             .with_albedo_factor(rr::Rgba32::from_linear_unmultiplied_rgba_f32(r, g, b, a)),
     )?;
 
-    Ok(session)
+    Ok(())
 }
 
-pub fn draw_mesh(
+pub fn draw_edges<T: GetMesh>(
     session: &rr::RecordingStream,
-    building: &Building,
+    model: &T,
     radius: f32,
     rgba: (f32, f32, f32, f32),
 ) -> Result<()> {
-    let mesh = building.mesh();
+    let mesh: Mesh = model.get_mesh();
     let vertices: Vec<Point> = mesh.vertices;
     let triangles: Vec<TriangleIndex> = mesh.triangles;
 

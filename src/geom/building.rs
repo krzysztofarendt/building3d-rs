@@ -1,18 +1,13 @@
 use crate::Point;
 use crate::Polygon;
 use crate::Solid;
+use crate::TriangleIndex;
 use crate::Vector;
 use crate::Wall;
-use crate::geom::triangles::TriangleIndex;
 use crate::random_id;
 use crate::sortbyname::{HasName, SortByName};
+use crate::{GetMesh, Mesh};
 use std::collections::HashMap;
-
-#[derive(Debug)]
-pub struct Mesh {
-    pub vertices: Vec<Point>,
-    pub triangles: Vec<TriangleIndex>,
-}
 
 #[derive(Debug, Clone)]
 pub struct Building {
@@ -25,6 +20,30 @@ pub struct Building {
 impl HasName for Building {
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+impl GetMesh for Building {
+    fn get_mesh(&self) -> Mesh {
+        let polygons = self.polygons();
+        let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
+        let mut triangles: Vec<TriangleIndex> = Vec::new();
+        let mut num_vertices = 0;
+
+        for &poly in polygons.iter() {
+            let mut tri: Vec<TriangleIndex> = poly.tri.clone();
+            tri = tri
+                .into_iter()
+                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
+                .collect();
+            triangles.extend(tri.into_iter());
+            num_vertices += poly.pts.len();
+        }
+
+        Mesh {
+            vertices,
+            triangles,
+        }
     }
 }
 
@@ -69,28 +88,6 @@ impl Building {
         // NOTE: Polygons are already sorted
 
         polygons
-    }
-
-    pub fn mesh(&self) -> Mesh {
-        let polygons = self.polygons();
-        let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
-        let mut triangles: Vec<TriangleIndex> = Vec::new();
-        let mut num_vertices = 0;
-
-        for &poly in polygons.iter() {
-            let mut tri: Vec<TriangleIndex> = poly.tri.clone();
-            tri = tri
-                .into_iter()
-                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
-                .collect();
-            triangles.extend(tri.into_iter());
-            num_vertices += poly.pts.len();
-        }
-
-        Mesh {
-            vertices,
-            triangles,
-        }
     }
 
     pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {

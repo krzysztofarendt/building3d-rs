@@ -1,15 +1,16 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 
 pub mod bboxes;
 pub mod building;
+pub mod mesh;
 pub mod point;
 pub mod polygon;
 pub mod rotation;
 pub mod solid;
+pub mod tetrahedron;
 pub mod triangles;
 pub mod vector;
 pub mod wall;
-pub mod tetrahedron;
 
 /// Path separator (building/zone/solid/wall/polygon)
 const SEP: char = '/';
