@@ -1,12 +1,12 @@
+use crate::random_id;
 use crate::Point;
 use crate::Polygon;
 use crate::Solid;
 use crate::TriangleIndex;
 use crate::Vector;
 use crate::Wall;
-use crate::random_id;
-use crate::{HasName, SortByName};
 use crate::{HasMesh, Mesh};
+use crate::{HasName, SortByName};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -24,20 +24,24 @@ impl HasName for Building {
 }
 
 impl HasMesh for Building {
-    fn get_mesh(&self) -> Mesh {
+    fn copy_mesh(&self) -> Mesh {
         let polygons = self.polygons();
-        let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
+        // TODO: Move to the for loop to avoid double copy of the mesh.
+        let vertices: Vec<Point> = polygons
+            .iter()
+            .flat_map(|&p| p.copy_mesh().vertices)
+            .collect();
         let mut triangles: Vec<TriangleIndex> = Vec::new();
         let mut num_vertices = 0;
 
         for &poly in polygons.iter() {
-            let mut tri: Vec<TriangleIndex> = poly.tri.clone();
+            let mut tri: Vec<TriangleIndex> = poly.copy_mesh().faces.unwrap();
             tri = tri
                 .into_iter()
                 .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
                 .collect();
             triangles.extend(tri.into_iter());
-            num_vertices += poly.pts.len();
+            num_vertices += poly.mesh_ref().vertices.len();
         }
 
         Mesh {

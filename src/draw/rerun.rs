@@ -42,7 +42,7 @@ pub fn draw_faces<T: HasMesh + HasName>(
     model: &T,
     rgba: (f32, f32, f32, f32),
 ) -> Result<()> {
-    let mesh: Mesh = model.get_mesh();
+    let mesh: Mesh = model.copy_mesh();
     let vertices: Vec<Point> = mesh.vertices;
     let triangles: Vec<TriangleIndex> = mesh.faces.unwrap_or_default();
 
@@ -65,7 +65,7 @@ pub fn draw_edges<T: HasMesh + HasName>(
     radius: f32,
     rgba: (f32, f32, f32, f32),
 ) -> Result<()> {
-    let mesh: Mesh = model.get_mesh();
+    let mesh: Mesh = model.copy_mesh();
     let vertices: Vec<Point> = mesh.vertices;
     let triangles: Vec<TriangleIndex> = mesh.faces.unwrap_or_default();
 
@@ -79,6 +79,7 @@ pub fn draw_edges<T: HasMesh + HasName>(
         lines[index].push(rr::Vec3D::from(vertices[t.0]));
         lines[index].push(rr::Vec3D::from(vertices[t.1]));
         lines[index].push(rr::Vec3D::from(vertices[t.2]));
+        lines[index].push(rr::Vec3D::from(vertices[t.0]));
         radii.push(radius);
         colors.push(color(rgba));
     }
@@ -100,7 +101,7 @@ pub fn draw_points<T: HasMesh + HasName>(
     radius: f32,
     rgba: (f32, f32, f32, f32),
 ) -> Result<()> {
-    let mesh: Mesh = model.get_mesh();
+    let mesh: Mesh = model.copy_mesh();
     let vertices: Vec<Point> = mesh.vertices;
 
     let mut radii: Vec<f32> = Vec::new();

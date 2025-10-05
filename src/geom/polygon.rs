@@ -1,26 +1,24 @@
-use crate::Point;
-use crate::Vector;
 use crate::geom;
 use crate::geom::point::check::are_point_sequences_close_rot;
 use crate::geom::point::check::are_points_coplanar;
 use crate::geom::rotation::rotate_points_around_vector;
-use crate::geom::triangles::{TriangleIndex, triangulate};
+use crate::geom::triangles::triangulate;
 use crate::random_id;
 use crate::HasName;
+use crate::Point;
+use crate::Vector;
 use crate::{HasMesh, Mesh};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct Polygon {
     /// Polygon name
     pub name: String,
-    /// Polygon points
-    pub pts: Vec<Point>,
+    /// Polygon mesh
+    mesh: Mesh,
     /// Normal vector
     pub vn: Vector,
-    /// Triangles (flat list with triangle indices)
-    pub tri: Vec<TriangleIndex>,
     /// Unique identifier of this polygon
     pub uid: String,
     /// Unique identifier of the parent wall
@@ -34,14 +32,8 @@ impl HasName for Polygon {
 }
 
 impl HasMesh for Polygon {
-    fn get_mesh(&self) -> Mesh {
-        let vertices: Vec<Point> = self.pts.clone();
-        let triangles: Vec<TriangleIndex> = self.tri.clone();
-
-        Mesh {
-            vertices,
-            faces: Some(triangles),
-        }
+    fn copy_mesh(&self) -> Mesh {
+        self.mesh.clone()
     }
 }
 
@@ -76,30 +68,38 @@ impl Polygon {
 
         let (pts, tri) = triangulate(pts, vn, 0)?;
 
+        let mesh = Mesh {
+            vertices: pts,
+            faces: Some(tri),
+        };
+
         Ok(Self {
             name,
-            pts,
+            mesh,
             vn,
-            tri,
             uid: random_id(),
             parent: None,
         })
     }
 
+    pub fn mesh_ref(&self) -> &Mesh {
+        &self.mesh
+    }
+
     // Copies, flips points, renames, resets parent
     pub fn flip(&self, new_name: String) -> Result<Self> {
-        let mut pts = self.pts.clone();
-        pts.reverse();
+        let mut vertices = self.mesh.vertices.clone();
+        vertices.reverse();
 
-        Self::new(new_name, pts, None)
+        Self::new(new_name, vertices, None)
     }
 
     pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
-        self.pts = rotate_points_around_vector(&self.pts, rot_vec, angle);
+        self.mesh.vertices = rotate_points_around_vector(&self.mesh.vertices, rot_vec, angle);
     }
 
     pub fn translate(&mut self, vec: &Vector) {
-        for pt in self.pts.iter_mut() {
+        for pt in self.mesh.vertices.iter_mut() {
             *pt += vec;
         }
     }
@@ -107,7 +107,7 @@ impl Polygon {
 
 impl PartialEq for Polygon {
     fn eq(&self, other: &Self) -> bool {
-        are_point_sequences_close_rot(&self.pts, &other.pts)
+        are_point_sequences_close_rot(&self.mesh.vertices, &other.mesh.vertices)
     }
 }
 
@@ -117,7 +117,7 @@ impl fmt::Display for Polygon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let prec = f.precision().unwrap_or(2); // Default 2 decimals
         write!(f, "Polygon(\"{}\", ", self.name)?;
-        for (i, p) in self.pts.iter().enumerate() {
+        for (i, p) in self.mesh.vertices.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }

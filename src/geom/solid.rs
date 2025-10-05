@@ -1,15 +1,15 @@
+use crate::geom::point::check::is_point_in_sequence;
+use crate::geom::tetrahedron::tetrahedron_volume;
+use crate::geom::IsClose;
+use crate::random_id;
 use crate::Point;
 use crate::Polygon;
 use crate::TriangleIndex;
 use crate::Vector;
 use crate::Wall;
-use crate::geom::IsClose;
-use crate::geom::point::check::is_point_in_sequence;
-use crate::geom::tetrahedron::tetrahedron_volume;
-use crate::random_id;
-use crate::{HasName, SortByName};
 use crate::{HasMesh, Mesh};
-use anyhow::{Context, Result, anyhow};
+use crate::{HasName, SortByName};
+use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -27,20 +27,24 @@ impl HasName for Solid {
 }
 
 impl HasMesh for Solid {
-    fn get_mesh(&self) -> Mesh {
+    fn copy_mesh(&self) -> Mesh {
         let polygons = self.polygons();
-        let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
+        // TODO: Move to the for loop to avoid double copy of the mesh.
+        let vertices: Vec<Point> = polygons
+            .iter()
+            .flat_map(|&p| p.copy_mesh().vertices)
+            .collect();
         let mut triangles: Vec<TriangleIndex> = Vec::new();
         let mut num_vertices = 0;
 
         for &poly in polygons.iter() {
-            let mut tri: Vec<TriangleIndex> = poly.tri.clone();
+            let mut tri: Vec<TriangleIndex> = poly.copy_mesh().faces.unwrap();
             tri = tri
                 .into_iter()
                 .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
                 .collect();
             triangles.extend(tri.into_iter());
-            num_vertices += poly.pts.len();
+            num_vertices += poly.mesh_ref().vertices.len();
         }
 
         Mesh {
@@ -115,10 +119,10 @@ impl Solid {
         let polygons = self.polygons();
         let p0 = Point::new(0., 0., 0.);
         for poly in polygons.iter() {
-            for tri in poly.tri.iter() {
-                let p1 = poly.pts[tri.0];
-                let p2 = poly.pts[tri.1];
-                let p3 = poly.pts[tri.2];
+            for tri in poly.mesh_ref().faces.as_ref().unwrap().iter() {
+                let p1 = poly.mesh_ref().vertices[tri.0];
+                let p2 = poly.mesh_ref().vertices[tri.1];
+                let p3 = poly.mesh_ref().vertices[tri.2];
                 let v = tetrahedron_volume(p0, p1, p2, p3);
 
                 let mut pos_wrt_origin = poly.vn.dot(&(p1 - p0));
@@ -290,12 +294,12 @@ impl Solid {
         // Make sure all polygon normals point outwards the zone.
         // Compare the order of wall bottom vertices to the order
         // of floor vertices - they should be opposite.
-        let f_pts: &Vec<Point> = &floor_poly.pts;
+        let f_pts: &Vec<Point> = &floor_poly.mesh_ref().vertices;
         let mut to_flip: Vec<(String, String)> = Vec::new();
 
         for w in walls.iter() {
             let w_poly: &Polygon = w.polygons()[0]; // There is only 1 polygon
-            let w_pts: &Vec<Point> = &w_poly.pts;
+            let w_pts: &Vec<Point> = &w_poly.mesh_ref().vertices;
 
             // Wall bottom vertices
             let mut wall_pts: Vec<Point> = Vec::new();

@@ -2,7 +2,7 @@ use anyhow::Result;
 use building3d::FloorPlan;
 use building3d::Solid;
 use building3d::Vector;
-use building3d::draw::simple::draw_polygons;
+use building3d::draw::rerun::{draw_edges, draw_faces, draw_points, start_session};
 
 fn main() -> Result<()> {
     let plan: Vec<(f64, f64)> = vec![(0., 0.), (5., 0.), (5., 2.), (3., 2.), (3., 7.), (0., 5.)];
@@ -22,7 +22,18 @@ fn main() -> Result<()> {
     sld.rotate(rot_angle, &Vector::new(0., 0., 1.));
     sld.translate(&translation);
 
-    draw_polygons(&sld.polygons())?;
+    let session = start_session()?;
+
+    let rgba: (f32, f32, f32, f32) = (1., 1., 1., 0.2);
+    draw_faces(&session, &sld, rgba)?;
+
+    let radius: f32 = 0.01;
+    let rgba: (f32, f32, f32, f32) = (0., 0., 1., 0.5);
+    draw_edges(&session, &sld, radius, rgba)?;
+
+    let radius: f32 = 0.05;
+    let rgba: (f32, f32, f32, f32) = (0., 1., 0., 1.);
+    draw_points(&session, &sld, radius, rgba)?;
 
     Ok(())
 }
