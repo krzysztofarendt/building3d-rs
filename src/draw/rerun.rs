@@ -1,3 +1,4 @@
+use crate::sortbyname::HasName;
 use crate::Point;
 use crate::geom::triangles::TriangleIndex;
 use crate::{GetMesh, Mesh};
@@ -31,7 +32,7 @@ pub fn start_session() -> Result<rr::RecordingStream> {
     Ok(session)
 }
 
-pub fn draw_surfaces<T: GetMesh>(
+pub fn draw_surfaces<T: GetMesh + HasName>(
     session: &rr::RecordingStream,
     model: &T,
     rgba: (f32, f32, f32, f32),
@@ -42,8 +43,9 @@ pub fn draw_surfaces<T: GetMesh>(
 
     let (r, g, b, a) = rgba;
 
+    let name = format!("{}/{}", SESSION_NAME, model.name());
     session.log_static(
-        SESSION_NAME,
+        name,
         &rr::Mesh3D::new(vertices)
             .with_triangle_indices(triangles)
             .with_albedo_factor(rr::Rgba32::from_linear_unmultiplied_rgba_f32(r, g, b, a)),
@@ -52,7 +54,7 @@ pub fn draw_surfaces<T: GetMesh>(
     Ok(())
 }
 
-pub fn draw_edges<T: GetMesh>(
+pub fn draw_edges<T: GetMesh + HasName>(
     session: &rr::RecordingStream,
     model: &T,
     radius: f32,
@@ -76,8 +78,9 @@ pub fn draw_edges<T: GetMesh>(
         colors.push(color(rgba));
     }
 
+    let name = format!("{}/{}", SESSION_NAME, model.name());
     session.log_static(
-        SESSION_NAME,
+        name,
         &rr::LineStrips3D::new(lines)
             .with_radii(radii)
             .with_colors(colors),

@@ -18,15 +18,21 @@ fn main() -> Result<()> {
     };
     let sld1 = Solid::from_floor_plan(fp)?;
     let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), Some("box"));
-    let building = Building::new("building".to_string(), vec![sld1, sld2]);
+    let building = Building::new("building".to_string(), vec![sld1.clone(), sld2.clone()]);
 
     // Draw
-    let rgba: (f32, f32, f32, f32) = (1., 1., 1., 0.2);
     let session = start_session()?;
+
+    let rgba: (f32, f32, f32, f32) = (1., 1., 1., 0.2);
     draw_surfaces(&session, &building, rgba)?;
+
     let radius: f32 = 0.01;
     let rgba: (f32, f32, f32, f32) = (0., 0., 1., 0.5);
-    draw_edges(&session, &building, radius, rgba)?;
+    draw_edges(&session, &sld1, radius, rgba)?;
+
+    let radius: f32 = 0.01;
+    let rgba: (f32, f32, f32, f32) = (1., 0., 0., 0.5);
+    draw_edges(&session, &sld2, radius, rgba)?;
 
     Ok(())
 }

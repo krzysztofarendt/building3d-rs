@@ -1,5 +1,6 @@
 use crate::Point;
 use crate::Polygon;
+use crate::TriangleIndex;
 use crate::Vector;
 use crate::Wall;
 use crate::geom::IsClose;
@@ -7,6 +8,7 @@ use crate::geom::point::check::is_point_in_sequence;
 use crate::geom::tetrahedron::tetrahedron_volume;
 use crate::random_id;
 use crate::sortbyname::{HasName, SortByName};
+use crate::{GetMesh, Mesh};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
@@ -21,6 +23,30 @@ pub struct Solid {
 impl HasName for Solid {
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+impl GetMesh for Solid {
+    fn get_mesh(&self) -> Mesh {
+        let polygons = self.polygons();
+        let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
+        let mut triangles: Vec<TriangleIndex> = Vec::new();
+        let mut num_vertices = 0;
+
+        for &poly in polygons.iter() {
+            let mut tri: Vec<TriangleIndex> = poly.tri.clone();
+            tri = tri
+                .into_iter()
+                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
+                .collect();
+            triangles.extend(tri.into_iter());
+            num_vertices += poly.pts.len();
+        }
+
+        Mesh {
+            vertices,
+            triangles,
+        }
     }
 }
 

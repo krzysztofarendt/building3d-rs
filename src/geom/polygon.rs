@@ -7,6 +7,7 @@ use crate::geom::rotation::rotate_points_around_vector;
 use crate::geom::triangles::{TriangleIndex, triangulate};
 use crate::random_id;
 use crate::sortbyname::HasName;
+use crate::{GetMesh, Mesh};
 use anyhow::{Result, anyhow};
 use std::fmt;
 
@@ -29,6 +30,18 @@ pub struct Polygon {
 impl HasName for Polygon {
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+impl GetMesh for Polygon {
+    fn get_mesh(&self) -> Mesh {
+        let vertices: Vec<Point> = self.pts.clone();
+        let triangles: Vec<TriangleIndex> = self.tri.clone();
+
+        Mesh {
+            vertices,
+            triangles,
+        }
     }
 }
 
