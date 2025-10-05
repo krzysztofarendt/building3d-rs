@@ -6,8 +6,8 @@ use crate::geom::point::check::are_points_coplanar;
 use crate::geom::rotation::rotate_points_around_vector;
 use crate::geom::triangles::{TriangleIndex, triangulate};
 use crate::random_id;
-use crate::sortbyname::HasName;
-use crate::{GetMesh, Mesh};
+use crate::HasName;
+use crate::{HasMesh, Mesh};
 use anyhow::{Result, anyhow};
 use std::fmt;
 
@@ -28,19 +28,19 @@ pub struct Polygon {
 }
 
 impl HasName for Polygon {
-    fn name(&self) -> &str {
+    fn get_name(&self) -> &str {
         &self.name
     }
 }
 
-impl GetMesh for Polygon {
+impl HasMesh for Polygon {
     fn get_mesh(&self) -> Mesh {
         let vertices: Vec<Point> = self.pts.clone();
         let triangles: Vec<TriangleIndex> = self.tri.clone();
 
         Mesh {
             vertices,
-            triangles,
+            faces: Some(triangles),
         }
     }
 }

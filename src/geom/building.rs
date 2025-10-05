@@ -5,8 +5,8 @@ use crate::TriangleIndex;
 use crate::Vector;
 use crate::Wall;
 use crate::random_id;
-use crate::sortbyname::{HasName, SortByName};
-use crate::{GetMesh, Mesh};
+use crate::{HasName, SortByName};
+use crate::{HasMesh, Mesh};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -18,12 +18,12 @@ pub struct Building {
 }
 
 impl HasName for Building {
-    fn name(&self) -> &str {
+    fn get_name(&self) -> &str {
         &self.name
     }
 }
 
-impl GetMesh for Building {
+impl HasMesh for Building {
     fn get_mesh(&self) -> Mesh {
         let polygons = self.polygons();
         let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
@@ -42,7 +42,7 @@ impl GetMesh for Building {
 
         Mesh {
             vertices,
-            triangles,
+            faces: Some(triangles),
         }
     }
 }

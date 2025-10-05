@@ -2,7 +2,7 @@ use anyhow::Result;
 use building3d::Building;
 use building3d::FloorPlan;
 use building3d::Solid;
-use building3d::draw::rerun::{draw_edges, draw_surfaces, start_session};
+use building3d::draw::rerun::{draw_edges, draw_faces, draw_points, start_session};
 
 fn main() -> Result<()> {
     // Make model
@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     let session = start_session()?;
 
     let rgba: (f32, f32, f32, f32) = (1., 1., 1., 0.2);
-    draw_surfaces(&session, &building, rgba)?;
+    draw_faces(&session, &building, rgba)?;
 
     let radius: f32 = 0.01;
     let rgba: (f32, f32, f32, f32) = (0., 0., 1., 0.5);
@@ -33,6 +33,10 @@ fn main() -> Result<()> {
     let radius: f32 = 0.01;
     let rgba: (f32, f32, f32, f32) = (1., 0., 0., 0.5);
     draw_edges(&session, &sld2, radius, rgba)?;
+
+    let radius: f32 = 0.05;
+    let rgba: (f32, f32, f32, f32) = (0., 1., 0., 1.);
+    draw_points(&session, &sld1, radius, rgba)?;
 
     Ok(())
 }

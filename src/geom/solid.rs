@@ -7,8 +7,8 @@ use crate::geom::IsClose;
 use crate::geom::point::check::is_point_in_sequence;
 use crate::geom::tetrahedron::tetrahedron_volume;
 use crate::random_id;
-use crate::sortbyname::{HasName, SortByName};
-use crate::{GetMesh, Mesh};
+use crate::{HasName, SortByName};
+use crate::{HasMesh, Mesh};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
@@ -21,12 +21,12 @@ pub struct Solid {
 }
 
 impl HasName for Solid {
-    fn name(&self) -> &str {
+    fn get_name(&self) -> &str {
         &self.name
     }
 }
 
-impl GetMesh for Solid {
+impl HasMesh for Solid {
     fn get_mesh(&self) -> Mesh {
         let polygons = self.polygons();
         let vertices: Vec<Point> = polygons.iter().flat_map(|&p| p.pts.clone()).collect();
@@ -45,7 +45,7 @@ impl GetMesh for Solid {
 
         Mesh {
             vertices,
-            triangles,
+            faces: Some(triangles),
         }
     }
 }
