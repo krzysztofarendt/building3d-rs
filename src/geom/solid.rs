@@ -29,15 +29,13 @@ impl HasName for Solid {
 impl HasMesh for Solid {
     fn copy_mesh(&self) -> Mesh {
         let polygons = self.polygons();
-        // TODO: Move to the for loop to avoid double copy of the mesh.
-        let vertices: Vec<Point> = polygons
-            .iter()
-            .flat_map(|&p| p.copy_mesh().vertices)
-            .collect();
+        let mut vertices: Vec<Point> = Vec::new();
         let mut triangles: Vec<TriangleIndex> = Vec::new();
         let mut num_vertices = 0;
 
         for &poly in polygons.iter() {
+            let mesh = poly.copy_mesh();
+            vertices.extend(mesh.vertices);
             let mut tri: Vec<TriangleIndex> = poly.copy_mesh().faces.unwrap();
             tri = tri
                 .into_iter()

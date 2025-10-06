@@ -4,7 +4,6 @@ Under construction...
 
 # TODO
 
-- [ ] Mesh -> optional faces
-- [ ] Rotation & translation on GetMesh
+- [x] Mesh -> optional faces
 - [ ] Zones?
 - [ ] Rays
