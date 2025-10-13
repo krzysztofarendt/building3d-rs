@@ -20,7 +20,7 @@ pub struct Polygon {
     /// Normal vector
     pub vn: Vector,
     /// Unique identifier of this polygon
-    pub uid: String,
+    uid: String,
     /// Unique identifier of the parent wall
     pub parent: Option<String>,
 }
@@ -43,7 +43,7 @@ impl Polygon {
     /// The normal vector is optional. If it is provided, its validity isn't checked.
     /// If it isn't provided, the normal will be calculated based on the first corner
     /// defined by points: last (-1), first (0), second (1).
-    pub fn new(name: String, pts: Vec<Point>, normal: Option<Vector>) -> Result<Self> {
+    pub fn new(name: &str, pts: Vec<Point>, normal: Option<Vector>) -> Result<Self> {
         if !are_points_coplanar(&pts) || pts.len() < 3 {
             return Err(anyhow!("Polygon points are invalid."));
         }
@@ -74,7 +74,7 @@ impl Polygon {
         };
 
         Ok(Self {
-            name,
+            name: name.to_string(),
             mesh,
             vn,
             uid: random_id(),
@@ -82,12 +82,16 @@ impl Polygon {
         })
     }
 
+    pub fn uid(&self) -> String {
+        self.uid.clone()
+    }
+
     pub fn mesh_ref(&self) -> &Mesh {
         &self.mesh
     }
 
     // Copies, flips points, renames, resets parent
-    pub fn flip(&self, new_name: String) -> Result<Self> {
+    pub fn flip(&self, new_name: &str) -> Result<Self> {
         let mut vertices = self.mesh.vertices.clone();
         vertices.reverse();
 
@@ -148,9 +152,9 @@ mod tests {
             Point::new(0.5, 0.5, 0.5),
             Point::new(1.0, 2.0, 3.0),
         ];
-        let poly_a = Polygon::new("a".to_string(), pts_a, None)?;
-        let poly_b = Polygon::new("b".to_string(), pts_b, None)?;
-        let poly_c = Polygon::new("c".to_string(), pts_c, None)?;
+        let poly_a = Polygon::new("a", pts_a, None)?;
+        let poly_b = Polygon::new("b", pts_b, None)?;
+        let poly_c = Polygon::new("c", pts_c, None)?;
         assert!(poly_a == poly_b);
         assert!(poly_a != poly_c);
 

@@ -14,11 +14,11 @@ fn main() -> Result<()> {
     let p6 = Point::new(3., 2., 0.);
     let p7 = Point::new(0., 2., 0.);
     let pts = vec![p0, p1, p2, p3, p4, p5, p6, p7];
-    let u_shape = Polygon::new("u-shape".to_string(), pts, None)?;
+    let u_shape = Polygon::new("u-shape", pts, None)?;
 
     // A triangle offset along X
     let tri = Polygon::new(
-        "triangle".to_string(),
+        "triangle",
         vec![
             Point::new(2.0, 0.0, 0.0),
             Point::new(3.0, 0.0, 0.0),
@@ -28,7 +28,7 @@ fn main() -> Result<()> {
     )?;
     // A right-angled L-shape polygon lifted in Z
     let l_shape = Polygon::new(
-        "l-shape".to_string(),
+        "l-shape",
         vec![
             Point::new(0.0, 2.0, 0.5),
             Point::new(1.0, 2.0, 0.5),
@@ -40,7 +40,7 @@ fn main() -> Result<()> {
         None,
     )?;
 
-    let wall = Wall::new("wall".to_string(), vec![u_shape, tri, l_shape]);
+    let wall = Wall::new("wall", vec![u_shape, tri, l_shape]);
     println!("{wall:?}");
 
     let session = start_session()?;

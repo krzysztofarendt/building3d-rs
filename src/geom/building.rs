@@ -50,7 +50,7 @@ impl HasMesh for Building {
 }
 
 impl Building {
-    pub fn new(name: String, mut solids: Vec<Solid>) -> Self {
+    pub fn new(name: &str, mut solids: Vec<Solid>) -> Self {
         let uid = random_id();
         for s in solids.iter_mut() {
             s.parent = Some(uid.clone());
@@ -60,7 +60,7 @@ impl Building {
             solids.into_iter().map(|x| (x.name.clone(), x)).collect();
 
         Self {
-            name,
+            name: name.to_string(),
             uid,
             parent,
             solids,
@@ -123,7 +123,7 @@ mod tests {
     fn test_volume() {
         let s0 = Solid::from_box(1., 1., 1., None, None);
         let s1 = Solid::from_box(1., 2., 3., None, None);
-        let bdg = Building::new("building".to_string(), vec![s0, s1]);
+        let bdg = Building::new("building", vec![s0, s1]);
         let expected_vol = 1. * 2. * 3. + 1.;
         assert!((bdg.volume() - expected_vol).abs() < 1e-4);
     }

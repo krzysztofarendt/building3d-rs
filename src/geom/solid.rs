@@ -53,7 +53,7 @@ impl HasMesh for Solid {
 }
 
 impl Solid {
-    pub fn new(name: String, mut walls: Vec<Wall>) -> Self {
+    pub fn new(name: &str, mut walls: Vec<Wall>) -> Self {
         let uid = random_id();
         for w in walls.iter_mut() {
             w.parent = Some(uid.clone());
@@ -61,7 +61,7 @@ impl Solid {
         let parent = None;
         let walls: HashMap<String, Wall> = walls.into_iter().map(|x| (x.name.clone(), x)).collect();
         Self {
-            name,
+            name: name.to_string(),
             uid,
             parent,
             walls,
@@ -178,19 +178,19 @@ impl Solid {
         let p6 = Point::new(x, y, z) + origin_vec;
         let p7 = Point::new(0., y, z) + origin_vec;
 
-        let poly_fl = Polygon::new("floor".to_string(), vec![p0, p3, p2, p1], None).unwrap();
-        let poly_w0 = Polygon::new("poly_0".to_string(), vec![p0, p1, p5, p4], None).unwrap();
-        let poly_w1 = Polygon::new("poly_1".to_string(), vec![p1, p2, p6, p5], None).unwrap();
-        let poly_w2 = Polygon::new("poly_2".to_string(), vec![p3, p7, p6, p2], None).unwrap();
-        let poly_w3 = Polygon::new("poly_3".to_string(), vec![p0, p4, p7, p3], None).unwrap();
-        let poly_rf = Polygon::new("ceiling".to_string(), vec![p4, p5, p6, p7], None).unwrap();
+        let poly_fl = Polygon::new("floor", vec![p0, p3, p2, p1], None).unwrap();
+        let poly_w0 = Polygon::new("poly_0", vec![p0, p1, p5, p4], None).unwrap();
+        let poly_w1 = Polygon::new("poly_1", vec![p1, p2, p6, p5], None).unwrap();
+        let poly_w2 = Polygon::new("poly_2", vec![p3, p7, p6, p2], None).unwrap();
+        let poly_w3 = Polygon::new("poly_3", vec![p0, p4, p7, p3], None).unwrap();
+        let poly_rf = Polygon::new("ceiling", vec![p4, p5, p6, p7], None).unwrap();
 
-        let wall_fl = Wall::new("floor".to_string(), vec![poly_fl]);
-        let wall_0 = Wall::new("wall_0".to_string(), vec![poly_w0]);
-        let wall_1 = Wall::new("wall_1".to_string(), vec![poly_w1]);
-        let wall_2 = Wall::new("wall_2".to_string(), vec![poly_w2]);
-        let wall_3 = Wall::new("wall_3".to_string(), vec![poly_w3]);
-        let wall_rf = Wall::new("ceiling".to_string(), vec![poly_rf]);
+        let wall_fl = Wall::new("floor", vec![poly_fl]);
+        let wall_0 = Wall::new("wall_0", vec![poly_w0]);
+        let wall_1 = Wall::new("wall_1", vec![poly_w1]);
+        let wall_2 = Wall::new("wall_2", vec![poly_w2]);
+        let wall_3 = Wall::new("wall_3", vec![poly_w3]);
+        let wall_rf = Wall::new("ceiling", vec![poly_rf]);
 
         let mut walls: HashMap<String, Wall> = HashMap::new();
         for w in [wall_fl, wall_0, wall_1, wall_2, wall_3, wall_rf] {
@@ -268,26 +268,26 @@ impl Solid {
             let p2 = ceil_pts[nxt];
             let p3 = ceil_pts[ths];
 
-            let poly = Polygon::new(w_name.clone(), vec![p0, p1, p2, p3], None).context(
-                format!("Failed to create Polygon from {p0}, {p1}, {p2}, {p3}"),
-            )?;
-            walls.push(Wall::new(w_name.clone(), vec![poly]));
+            let poly = Polygon::new(w_name, vec![p0, p1, p2, p3], None).context(format!(
+                "Failed to create Polygon from {p0}, {p1}, {p2}, {p3}"
+            ))?;
+            walls.push(Wall::new(w_name, vec![poly]));
         }
 
-        let mut floor_poly = Polygon::new(floor_name.clone(), floor_pts, None)?;
+        let mut floor_poly = Polygon::new(&floor_name, floor_pts, None)?;
         // Floor's normal should point downwards
         if !floor_poly.vn.is_close(&Vector::new(0., 0., -1.)) {
-            floor_poly = floor_poly.flip(floor_poly.name.clone())?;
+            floor_poly = floor_poly.flip(&floor_poly.name)?;
         }
 
-        let mut ceil_poly = Polygon::new(ceil_name.clone(), ceil_pts, None)?;
+        let mut ceil_poly = Polygon::new(&ceil_name, ceil_pts, None)?;
         // Ceiling normal should point upwards
         if !ceil_poly.vn.is_close(&Vector::new(0., 0., 1.)) {
-            ceil_poly = ceil_poly.flip(ceil_poly.name.clone())?;
+            ceil_poly = ceil_poly.flip(&ceil_poly.name)?;
         }
 
-        let floor = Wall::new(floor_name, vec![floor_poly.clone()]);
-        let ceil = Wall::new(ceil_name, vec![ceil_poly]);
+        let floor = Wall::new(&floor_name, vec![floor_poly.clone()]);
+        let ceil = Wall::new(&ceil_name, vec![ceil_poly]);
 
         // Make sure all polygon normals point outwards the zone.
         // Compare the order of wall bottom vertices to the order
@@ -340,7 +340,7 @@ impl Solid {
             for w in walls.iter_mut() {
                 if w.name == *w_name {
                     let w_poly = w.polygons()[0];
-                    let flipped_poly = w_poly.flip(p_name.clone())?;
+                    let flipped_poly = w_poly.flip(p_name)?;
                     w.replace_polygon(p_name, vec![flipped_poly])?;
                 }
             }
@@ -352,7 +352,7 @@ impl Solid {
 
         // Make solid
         let solid_name = fp.name.unwrap_or(random_id());
-        let solid = Solid::new(solid_name, walls);
+        let solid = Solid::new(&solid_name, walls);
 
         Ok(solid)
     }

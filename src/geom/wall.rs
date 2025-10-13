@@ -49,7 +49,7 @@ impl HasMesh for Wall {
 }
 
 impl Wall {
-    pub fn new(name: String, mut polygons: Vec<Polygon>) -> Self {
+    pub fn new(name: &str, mut polygons: Vec<Polygon>) -> Self {
         let uid = random_id();
         for p in polygons.iter_mut() {
             p.parent = Some(uid.clone());
@@ -58,7 +58,7 @@ impl Wall {
         let polygons: HashMap<String, Polygon> =
             polygons.into_iter().map(|x| (x.name.clone(), x)).collect();
         Self {
-            name,
+            name: name.to_string(),
             uid,
             parent,
             polygons,
