@@ -1,15 +1,15 @@
-use crate::geom::point::check::is_point_in_sequence;
-use crate::geom::tetrahedron::tetrahedron_volume;
-use crate::geom::IsClose;
-use crate::random_id;
 use crate::Point;
 use crate::Polygon;
 use crate::TriangleIndex;
 use crate::Vector;
 use crate::Wall;
+use crate::geom::IsClose;
+use crate::geom::point::check::is_point_in_sequence;
+use crate::geom::tetrahedron::tetrahedron_volume;
+use crate::random_id;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
