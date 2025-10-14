@@ -1,12 +1,12 @@
 use crate::Point;
 use crate::Polygon;
 use crate::TriangleIndex;
+use crate::UID;
 use crate::Vector;
 use crate::Wall;
 use crate::geom::IsClose;
 use crate::geom::point::check::is_point_in_sequence;
 use crate::geom::tetrahedron::tetrahedron_volume;
-use crate::random_id;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
 use anyhow::{Context, Result, anyhow};
@@ -15,8 +15,8 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone)]
 pub struct Solid {
     pub name: String,
-    pub uid: String,
-    pub parent: Option<String>,
+    pub uid: UID,
+    pub parent: Option<UID>,
     walls: HashMap<String, Wall>,
 }
 
@@ -54,7 +54,7 @@ impl HasMesh for Solid {
 
 impl Solid {
     pub fn new(name: &str, mut walls: Vec<Wall>) -> Self {
-        let uid = random_id();
+        let uid = UID::new();
         for w in walls.iter_mut() {
             w.parent = Some(uid.clone());
         }
@@ -162,7 +162,7 @@ impl Solid {
         y: f64,
         z: f64,
         origin: Option<(f64, f64, f64)>,
-        name: Option<&str>,
+        name: &str,
     ) -> Self {
         let origin_vec = match origin {
             Some((dx, dy, dz)) => Vector::new(dx, dy, dz),
@@ -197,12 +197,8 @@ impl Solid {
             walls.insert(w.name.clone(), w);
         }
 
-        let name: String = match name {
-            Some(n) => n.to_string(),
-            None => random_id(),
-        };
-
-        let uid = random_id();
+        let name: String = name.to_string();
+        let uid = UID::new();
         let parent = None;
 
         Self {
@@ -351,7 +347,7 @@ impl Solid {
         walls.push(ceil);
 
         // Make solid
-        let solid_name = fp.name.unwrap_or(random_id());
+        let solid_name = fp.name;
         let solid = Solid::new(&solid_name, walls);
 
         Ok(solid)
@@ -361,7 +357,7 @@ impl Solid {
 pub struct FloorPlan {
     pub plan: Vec<(f64, f64)>,
     pub height: f64,
-    pub name: Option<String>,
+    pub name: String,
     pub wall_names: Option<Vec<String>>,
     pub floor_name: Option<String>,
     pub ceiling_name: Option<String>,
@@ -371,7 +367,7 @@ impl Default for FloorPlan {
     fn default() -> Self {
         let plan = vec![(0., 0.), (1., 0.), (1., 1.), (0., 1.)];
         let height = 2.;
-        let name = None;
+        let name = "default_solid".to_string();
         let wall_names = None;
         let floor_name = None;
         let ceiling_name = None;
@@ -393,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_box() {
-        let sld = Solid::from_box(1., 2., 3., None, None);
+        let sld = Solid::from_box(1., 2., 3., None, "box");
         let expected_vol = 1. * 2. * 3.;
         assert!((sld.volume() - expected_vol).abs() < 1e-4);
     }

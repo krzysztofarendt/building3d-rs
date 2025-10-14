@@ -9,7 +9,7 @@ fn main() -> Result<()> {
     let height: f64 = 1.8;
     let rot_angle: f64 = 1.0;
     let translation: Vector = Vector::new(1., 1., 1.);
-    let name = Some("building".to_string());
+    let name = "building".to_string();
 
     let fp = FloorPlan {
         plan,

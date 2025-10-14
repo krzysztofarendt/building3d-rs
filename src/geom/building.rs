@@ -1,8 +1,8 @@
-use crate::random_id;
 use crate::Point;
 use crate::Polygon;
 use crate::Solid;
 use crate::TriangleIndex;
+use crate::UID;
 use crate::Vector;
 use crate::Wall;
 use crate::{HasMesh, Mesh};
@@ -12,8 +12,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct Building {
     pub name: String,
-    pub uid: String,
-    pub parent: Option<String>,
+    pub uid: UID,
+    pub parent: Option<UID>,
     solids: HashMap<String, Solid>,
 }
 
@@ -51,7 +51,7 @@ impl HasMesh for Building {
 
 impl Building {
     pub fn new(name: &str, mut solids: Vec<Solid>) -> Self {
-        let uid = random_id();
+        let uid = UID::new();
         for s in solids.iter_mut() {
             s.parent = Some(uid.clone());
         }
@@ -121,8 +121,8 @@ mod tests {
 
     #[test]
     fn test_volume() {
-        let s0 = Solid::from_box(1., 1., 1., None, None);
-        let s1 = Solid::from_box(1., 2., 3., None, None);
+        let s0 = Solid::from_box(1., 1., 1., None, "box_0");
+        let s1 = Solid::from_box(1., 2., 3., None, "box_1");
         let bdg = Building::new("building", vec![s0, s1]);
         let expected_vol = 1. * 2. * 3. + 1.;
         assert!((bdg.volume() - expected_vol).abs() < 1e-4);

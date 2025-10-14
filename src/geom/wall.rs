@@ -1,18 +1,18 @@
-use crate::geom::polygon::Polygon;
-use crate::random_id;
 use crate::Point;
 use crate::TriangleIndex;
+use crate::UID;
 use crate::Vector;
+use crate::geom::polygon::Polygon;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Wall {
     pub name: String,
-    pub uid: String,
-    pub parent: Option<String>,
+    pub uid: UID,
+    pub parent: Option<UID>,
     polygons: HashMap<String, Polygon>,
 }
 
@@ -50,7 +50,7 @@ impl HasMesh for Wall {
 
 impl Wall {
     pub fn new(name: &str, mut polygons: Vec<Polygon>) -> Self {
-        let uid = random_id();
+        let uid = UID::new();
         for p in polygons.iter_mut() {
             p.parent = Some(uid.clone());
         }

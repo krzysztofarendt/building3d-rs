@@ -8,7 +8,7 @@ fn main() -> Result<()> {
     // Make model
     let plan: Vec<(f64, f64)> = vec![(0., 0.), (5., 0.), (5., 2.), (3., 2.), (3., 7.), (0., 5.)];
     let height: f64 = 1.8;
-    let name = Some("building".to_string());
+    let name = "building".to_string();
 
     let fp = FloorPlan {
         plan,
@@ -17,7 +17,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
     let sld1 = Solid::from_floor_plan(fp)?;
-    let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), Some("box"));
+    let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), "box");
     let building = Building::new("building", vec![sld1.clone(), sld2.clone()]);
 
     // Draw

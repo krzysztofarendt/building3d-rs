@@ -1,14 +1,14 @@
+use crate::HasName;
+use crate::Point;
+use crate::UID;
+use crate::Vector;
 use crate::geom;
 use crate::geom::point::check::are_point_sequences_close_rot;
 use crate::geom::point::check::are_points_coplanar;
 use crate::geom::rotation::rotate_points_around_vector;
 use crate::geom::triangles::triangulate;
-use crate::random_id;
-use crate::HasName;
-use crate::Point;
-use crate::Vector;
 use crate::{HasMesh, Mesh};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -20,9 +20,9 @@ pub struct Polygon {
     /// Normal vector
     pub vn: Vector,
     /// Unique identifier of this polygon
-    uid: String,
+    pub uid: UID,
     /// Unique identifier of the parent wall
-    pub parent: Option<String>,
+    pub parent: Option<UID>,
 }
 
 impl HasName for Polygon {
@@ -48,7 +48,7 @@ impl Polygon {
             return Err(anyhow!("Polygon points are invalid."));
         }
 
-        let name = geom::validate_name(&name)?;
+        let name = geom::validate_name(name)?;
 
         // Assign normal vector. If it is provided, take it. If None is passed
         // then calculate it from the points of the first corner: last, 0, 1.
@@ -77,13 +77,13 @@ impl Polygon {
             name: name.to_string(),
             mesh,
             vn,
-            uid: random_id(),
+            uid: UID::new(),
             parent: None,
         })
     }
 
-    pub fn uid(&self) -> String {
-        self.uid.clone()
+    pub fn uid(&self) -> &str {
+        self.uid.as_str()
     }
 
     pub fn mesh_ref(&self) -> &Mesh {
