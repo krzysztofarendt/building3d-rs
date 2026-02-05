@@ -4,181 +4,67 @@ Review of the Rust rewrite against REWRITE_PLAN.md and the Python source.
 
 ---
 
-## Critical Bugs
+## Critical Bugs (ALL FIXED)
 
-### 1. Vector / Vector performs multiplication
+### 1. ~~Vector / Vector performs multiplication~~ FIXED (commit 3aaf2e6)
 
-**File:** `src/geom/vector.rs:224-226`
+Removed the `Div<Vector> for Vector` impl entirely. Component-wise division
+of vectors is not a meaningful geometric operation.
 
-`Div for Vector` uses `*` instead of `/`:
+### 2. ~~Bounding box containment check is wrong~~ FIXED (commit fe4054f)
 
-```rust
-dx: self.dx * other.dx,  // should be /
-dy: self.dy * other.dy,
-dz: self.dz * other.dz,
-```
+Rewritten with correct `||` logic and empty-input guard.
 
-Any code path using `Vector / Vector` silently returns wrong results.
-The `f64 / Vector` impl (line 252) is correct.
+### 3. ~~Vector / f64 rejects negative divisors~~ FIXED (commit 3aaf2e6)
 
-**Fix:** Change `*` to `/` on lines 224-226.
+Removed the EPS guard entirely. `Div<f64> for Vector` now does plain division.
 
----
+### 4. ~~`from_box()` doesn't set wall parent UIDs~~ FIXED (commit 3aaf2e6)
 
-### 2. Bounding box containment check is wrong
+`from_box()` delegates to `Solid::new()` which sets parent UIDs.
 
-**File:** `src/geom/bboxes.rs:7-8`
+### 5. ~~`volume()` missing `abs()`~~ FIXED (commit fe4054f)
 
-`is_point_inside_bbox` uses `&&` within each branch:
-
-```rust
-if (ptest.x < pmin.x && ptest.y < pmin.y && ptest.z < pmin.z)
-    || (ptest.x > pmax.x && ptest.y > pmax.y && ptest.z > pmax.z)
-```
-
-A point at `(pmin.x - 1, pmax.y, pmax.z)` is outside the box but passes
-this check. Each coordinate must be checked independently:
-
-```rust
-if ptest.x < pmin.x || ptest.x > pmax.x
-    || ptest.y < pmin.y || ptest.y > pmax.y
-    || ptest.z < pmin.z || ptest.z > pmax.z
-```
-
-This affects every containment test that uses bbox pre-filtering.
-
-**Fix:** Replace `&&` with `||` so any single out-of-range coordinate rejects.
+Returns `total_volume.abs()`.
 
 ---
 
-### 3. Vector / f64 rejects negative divisors
+## Panic-Prone Library Code (ALL FIXED)
 
-**File:** `src/geom/vector.rs:234`
+### 6. ~~`copy_mesh()` unwraps `Option<faces>`~~ FIXED (commit fe4054f)
 
-```rust
-if other < EPS {  // negative values pass, but so does -1e-14
-```
+All `copy_mesh()` implementations now use `if let Some(faces)` pattern.
 
-Should be `other.abs() < EPS`. Currently `Vector / (-0.5)` returns `None`.
+### 7. ~~`bounding_box()` panics on empty or NaN input~~ FIXED (commit fe4054f)
 
-**Fix:** Use `other.abs() < EPS`.
+Returns `(zero, zero)` for empty input, uses `total_cmp` for NaN safety.
 
----
+### 8. ~~`are_points_close()` panics on empty slice~~ FIXED (commit fe4054f)
 
-### 4. `from_box()` doesn't set wall parent UIDs
-
-**File:** `src/geom/solid.rs:237-251`
-
-`Solid::new()` (line 62-63) sets `w.parent = Some(uid.clone())` for each wall.
-`Solid::from_box()` builds the HashMap directly and never sets parent UIDs.
-All walls created via `from_box()` have `parent = None`, breaking the hierarchy.
-
-**Fix:** Loop over walls and set parent before inserting into HashMap,
-or delegate to `Solid::new()`.
+Guards for empty input with early return `true`.
 
 ---
 
-### 5. `volume()` missing `abs()`
+## Algorithmic Issues (MOSTLY FIXED)
 
-**File:** `src/geom/solid.rs:142`
+### 9. ~~Triangulation retry doesn't reset failure counter~~ NOT A BUG
 
-```rust
-total_volume  // Python returns abs(total_volume)
-```
+The recursive call creates a new stack frame where `num_fail` is initialized
+to 0. The counter does not actually carry over between attempts.
 
-For solids with inverted winding order, this returns a negative volume.
+### 10. ~~Sutherland-Hodgman unprojection assumes axis-aligned planes~~ FIXED
 
-**Fix:** Return `total_volume.abs()`.
+Rewritten to use a proper `PlaneBasis` with orthonormal vectors in the polygon
+plane. Projection and unprojection work correctly for any plane orientation.
 
----
+### 11. ~~Polygon slicing fails when edges are collinear with slice line~~ FIXED
 
-## Panic-Prone Library Code
-
-### 6. `copy_mesh()` unwraps `Option<faces>` at every hierarchy level
-
-**Files:**
-- `src/geom/wall.rs:36`
-- `src/geom/solid.rs:43, 124`
-- `src/geom/zone.rs:44`
-- `src/geom/building/mod.rs:46`
-
-All do `.faces.unwrap()` on `Mesh.faces: Option<Vec<TriangleIndex>>`.
-If any polygon has `faces = None`, the library panics.
-
-**Fix:** Handle `None` with `unwrap_or_default()` or propagate as `Result`.
+Added deduplication and extreme-point reduction for collinear intersections
+(keeps only the two most extreme points along the slice direction).
 
 ---
 
-### 7. `bounding_box()` panics on empty or NaN input
-
-**File:** `src/geom/bboxes.rs:50-55`
-
-```rust
-let xmin = *x.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-```
-
-Two panic sources: `partial_cmp()` returns `None` for NaN, outer `unwrap()`
-panics on empty iterator. Same issue in `vecutils::min/max` (lines 2-8).
-
-**Fix:** Return `Option<(Point, Point)>` or validate input.
-
----
-
-### 8. `are_points_close()` panics on empty slice
-
-**File:** `src/geom/point/check.rs:78`
-
-```rust
-let p0 = pts[0];  // panics if pts is empty
-```
-
-Same pattern in `are_vectors_close()` (`src/geom/vector/check.rs:6`).
-
-**Fix:** Return `true` for empty (vacuously true) or guard with `is_empty()`.
-
----
-
-## Algorithmic Issues
-
-### 9. Triangulation retry doesn't reset failure counter
-
-**File:** `src/geom/triangles.rs:41`
-
-When ear-clipping fails and retries with flipped winding, `num_fail` carries
-over from the previous attempt. The existing TODO comment confirms this.
-Python resets it. This causes premature failure on valid non-convex polygons.
-
-**Fix:** Reset `num_fail` to 0 on retry, or pass it as 0 in the recursive call.
-
----
-
-### 10. Sutherland-Hodgman unprojection assumes axis-aligned planes
-
-**File:** `src/geom/polygon/boolean.rs:168-187`
-
-When projecting 3D polygons to 2D for clipping, the unprojection uses a
-constant coordinate from `subject[0]` (e.g., `z_val = subject[0].z`).
-For tilted polygons, intersection points will be placed at the wrong
-z-coordinate instead of on the actual plane.
-
-**Fix:** After unprojection, reproject each result point onto the plane
-equation of the original polygon.
-
----
-
-### 11. Polygon slicing fails when edges are collinear with slice line
-
-**File:** `src/geom/polygon/slice.rs:84-98`
-
-When polygon edges are collinear with the slice line, both edge endpoints
-are added as intersections. Two consecutive collinear edges produce 3-4
-intersections, causing the `intersections.len() != 2` guard (line 104)
-to reject the slice.
-
-**Fix:** After collecting intersections, deduplicate and keep only the
-two extreme points along the slice direction.
-
----
+## Open Issues
 
 ### 12. STL reader duplicates all vertices
 
@@ -260,15 +146,10 @@ line) but not the segment-clamped variant.
 
 ## Design Issues
 
-### 19. No name validation
+### 19. ~~No name validation~~ FIXED (commit 3aaf2e6)
 
-CLAUDE.md states `/` is forbidden in entity names (path separator).
-No constructor (`Polygon::new`, `Wall::new`, `Solid::new`, `Zone::new`,
-`Building::new`) validates this. Users can silently break path-based access.
-
-**Fix:** Validate in constructors and return `Result` (or at least assert).
-
----
+All constructors and `add_*` methods now call `geom::validate_name()` and
+return `Result`. Names containing `/` are rejected.
 
 ### 20. B3D deserialization doesn't validate hierarchy integrity
 
@@ -309,27 +190,27 @@ solids, even if only one interface is incorrect.
 
 ## Summary
 
-| #  | Severity     | Category        | Location                      |
-|----|-------------|-----------------|-------------------------------|
-| 1  | Critical    | Wrong operator  | `vector.rs:224`               |
-| 2  | Critical    | Wrong logic     | `bboxes.rs:7`                 |
-| 3  | Critical    | Missing check   | `vector.rs:234`               |
-| 4  | Critical    | Missing parent  | `solid.rs:237`                |
-| 5  | Critical    | Missing abs()   | `solid.rs:142`                |
-| 6  | High        | Panic           | wall/solid/zone/building      |
-| 7  | High        | Panic           | `bboxes.rs:50`                |
-| 8  | High        | Panic           | `point/check.rs:78`           |
-| 9  | High        | Algorithm       | `triangles.rs:41`             |
-| 10 | High        | Precision       | `polygon/boolean.rs:168`      |
-| 11 | High        | Edge case       | `polygon/slice.rs:84`         |
-| 12 | High        | Data loss       | `stl.rs:232`                  |
-| 13 | Medium      | Waste/topology  | `copy_mesh()` everywhere      |
-| 14 | Medium      | Missing feature | `graph.rs` stitch             |
-| 15 | Medium      | Missing feature | polygon methods               |
-| 16 | Medium      | Missing feature | polygon slicing               |
-| 17 | Medium      | Missing feature | distance to edge              |
-| 18 | Low         | Missing feature | path access depth             |
-| 19 | Low         | Validation      | name validation               |
-| 20 | Low         | Validation      | B3D deserialization           |
-| 21 | Low         | Data loss       | BIM round-trip                |
-| 22 | Low         | Logic           | stitch interface check        |
+| #  | Severity     | Category        | Status  |
+|----|-------------|-----------------|---------|
+| 1  | Critical    | Wrong operator  | FIXED   |
+| 2  | Critical    | Wrong logic     | FIXED   |
+| 3  | Critical    | Missing check   | FIXED   |
+| 4  | Critical    | Missing parent  | FIXED   |
+| 5  | Critical    | Missing abs()   | FIXED   |
+| 6  | High        | Panic           | FIXED   |
+| 7  | High        | Panic           | FIXED   |
+| 8  | High        | Panic           | FIXED   |
+| 9  | High        | Algorithm       | Not a bug |
+| 10 | High        | Precision       | FIXED   |
+| 11 | High        | Edge case       | FIXED   |
+| 12 | High        | Data loss       | Open    |
+| 13 | Medium      | Waste/topology  | Open    |
+| 14 | Medium      | Missing feature | Open    |
+| 15 | Medium      | Missing feature | Open    |
+| 16 | Medium      | Missing feature | Open    |
+| 17 | Medium      | Missing feature | Open    |
+| 18 | Low         | Missing feature | Open    |
+| 19 | Low         | Validation      | FIXED   |
+| 20 | Low         | Validation      | Open    |
+| 21 | Low         | Data loss       | Open    |
+| 22 | Low         | Logic           | Open    |

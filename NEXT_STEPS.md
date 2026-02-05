@@ -2,31 +2,25 @@
 
 Prioritized improvements and next steps for building3d-rs.
 
-## Critical: Fix Known Bugs
-
-There are 17 documented issues in `ISSUES_CLAUDE.md`, several of which cause silent incorrect results:
-
-1. **Vector/Vector division** uses `*` instead of `/` (`vector.rs:224-226`)
-2. **Bounding box containment** has wrong boolean logic (`&&` should be `||`)
-3. **Vector/f64 division** incorrectly rejects negative divisors
-4. **`from_box()` doesn't set wall parent UIDs** — breaks hierarchy invariant
-5. **`volume()` missing `abs()`** — returns negative for inverted winding
-
-These should be the top priority since they produce wrong results silently.
+All critical bugs (issues #1-#5) and most high-severity issues (#6-#11, #19)
+from ISSUES_CLAUDE.md have been fixed. The items below are what remains.
 
 ## High Priority
 
-### 1. Remove panic-prone code in library functions
-
-~20 `unwrap()` calls in non-test code. Functions like `bounding_box()`, `are_points_close()`, and `copy_mesh()` will panic on empty inputs. A library should return `Result` or `Option` instead.
-
-### 2. Add CI/CD
+### 1. Add CI/CD
 
 No `.github/workflows/` exists. A basic pipeline running `cargo test`, `cargo clippy`, and `cargo fmt --check` on PRs would catch regressions early.
 
-### 3. Audit/remove unused dependency
+### 2. Audit/remove unused dependency
 
 `three-d = "0.18"` appears in `Cargo.toml` but doesn't seem to be used in the code. Unused deps increase compile time significantly.
+
+### 3. Path-based access is O(n) with allocations
+
+`Building::get_solid/get_wall/get_polygon` call `.solids()` / `.walls()` which
+allocate and sort a `Vec`, then do linear search. Adding direct `HashMap` getters
+(`Zone::get_solid(&str)`, `Solid::get_wall(&str)`, `Wall::get_polygon(&str)`)
+would make path access O(1) with no allocation.
 
 ## Medium Priority
 
@@ -38,16 +32,18 @@ No `.github/workflows/` exists. A basic pipeline running `cargo test`, `cargo cl
 
 Currently creates one `Polygon` per triangle with no topology reconstruction. Importing a real-world STL produces degenerate structures. Grouping coplanar adjacent triangles into polygons would make round-tripping useful.
 
-### 6. Fix Sutherland-Hodgman unprojection
-
-Polygon boolean operations (`polygon/boolean.rs`) assume axis-aligned planes during unprojection. Tilted polygons get wrong z-coordinates. Needs reprojection onto the actual plane equation.
-
-### 7. Documentation
+### 6. Documentation
 
 - No module-level docs on `lib.rs`
 - Public API items (~226) are moderately documented (~120 doc comments)
 - Advanced features (tetrahedralization, visibility, adjacency) lack usage examples
 - Running `cargo doc` with `#![warn(missing_docs)]` would highlight gaps
+
+### 7. B3D deserialization validation
+
+After `serde_json::from_reader`, parent UIDs are not checked for existence,
+uniqueness, or hierarchy consistency. A corrupted B3D file creates a building
+with broken references. Add a `validate()` method called after deserialization.
 
 ## Lower Priority / Feature Ideas
 
@@ -71,16 +67,20 @@ No `benches/` directory. Adding benchmarks for hot paths (triangulation, contain
 
 With 194 unit tests passing, the next level would be property-based tests (e.g., with `proptest`) for geometry invariants: "translating then inverse-translating returns the original point", "triangulated mesh area equals polygon area", etc.
 
+### 13. BIM round-trip fidelity
+
+Export flattens zones into a flat list of solids; import puts everything into
+a single zone named `"imported"`. Zone structure is lost on round-trip.
+
 ## Summary
 
 | Priority | Area | Effort |
 |----------|------|--------|
-| Critical | Fix 5 silent-wrong-result bugs | Small |
-| High | Replace `unwrap()` with `Result` | Medium |
 | High | Add CI pipeline | Small |
 | High | Remove unused `three-d` dep | Trivial |
+| High | O(1) path-based access | Small |
 | Medium | Vertex deduplication | Medium |
 | Medium | STL topology reconstruction | Large |
-| Medium | Fix polygon boolean unprojection | Medium |
 | Medium | Documentation pass | Medium |
+| Medium | B3D validation | Small |
 | Low | World module, benchmarks, more examples | Ongoing |
