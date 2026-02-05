@@ -16,6 +16,7 @@ cargo test <test_name>
 
 # Run examples (visualization requires Rerun viewer running)
 cargo run --example draw_faces
+cargo run --example draw_many
 cargo run --example draw_shapes
 cargo run --example floor_plan
 
@@ -88,6 +89,7 @@ src/
 │   ├── mesh.rs
 │   ├── triangles.rs    # Ear-clipping triangulation
 │   ├── rotation.rs     # Rodrigues rotation
+│   ├── tetrahedron.rs  # Tetrahedron volume/centroid (used by Solid::volume())
 │   └── bboxes.rs
 └── draw/
     └── rerun.rs
