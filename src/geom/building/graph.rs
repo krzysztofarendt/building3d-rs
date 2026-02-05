@@ -473,20 +473,20 @@ mod tests {
 
     fn make_adjacent_building() -> Building {
         // Create two adjacent boxes sharing a face
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2");
-        Building::from_solids("building", vec![s1, s2])
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
+        Building::from_solids("building", vec![s1, s2]).unwrap()
     }
 
     fn make_building_with_zones() -> Building {
         // Create building with two zones
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let z1 = Zone::new("zone1", vec![s1]).unwrap();
 
-        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2");
-        let z2 = Zone::new("zone2", vec![s2]);
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
+        let z2 = Zone::new("zone2", vec![s2]).unwrap();
 
-        Building::new("building", vec![z1, z2])
+        Building::new("building", vec![z1, z2]).unwrap()
     }
 
     #[test]
@@ -512,9 +512,9 @@ mod tests {
     #[test]
     fn test_solid_graph_not_adjacent() {
         // Two solids with a gap
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((3.0, 0.0, 0.0)), "box2");
-        let building = Building::from_solids("building", vec![s1, s2]);
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((3.0, 0.0, 0.0)), "box2").unwrap();
+        let building = Building::from_solids("building", vec![s1, s2]).unwrap();
 
         let params = GraphParams::default();
         let graph = get_graph(&building, params);
@@ -571,9 +571,9 @@ mod tests {
     #[test]
     fn test_stitch_solids_incorrect_interface() {
         // Two solids with different face sizes
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(1.0, 2.0, 2.0, Some((1.0, 0.0, 0.0)), "box2");
-        let building = Building::from_solids("building", vec![s1, s2]);
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let s2 = Solid::from_box(1.0, 2.0, 2.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
+        let building = Building::from_solids("building", vec![s1, s2]).unwrap();
 
         let stitches = stitch_solids(&building);
 

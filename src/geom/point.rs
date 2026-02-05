@@ -37,10 +37,9 @@ impl Point {
 
     // Creates a new point along the edge p1->p2 with some relative distance from p1.
     pub fn new_between_2_points(p1: Self, p2: Self, rel_d: f64) -> Self {
-        let alpha_v = Vector::new(rel_d, rel_d, rel_d);
         let v_p1 = Vector::from_a_point(p1);
         let v_p2 = Vector::from_a_point(p2);
-        let new_v = v_p1 * (1. - alpha_v) + v_p2 * alpha_v;
+        let new_v = v_p1 * (1.0 - rel_d) + v_p2 * rel_d;
         Self::new(new_v.dx, new_v.dy, new_v.dz)
     }
 
@@ -55,8 +54,7 @@ impl Point {
 
         for i in 1..num + 1 {
             let alpha = (i as f64) / (num + 1) as f64;
-            let alpha_v = Vector::new(alpha, alpha, alpha);
-            let new_vec = vp1 * (1. - alpha_v) + vp2 * alpha_v;
+            let new_vec = vp1 * (1.0 - alpha) + vp2 * alpha;
             let new_pt = Point::new(new_vec.dx, new_vec.dy, new_vec.dz);
             vecs.push(new_pt);
         }

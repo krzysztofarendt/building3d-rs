@@ -17,8 +17,8 @@ fn main() -> Result<()> {
         ..Default::default()
     };
     let sld1 = Solid::from_floor_plan(fp)?;
-    let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), "box");
-    let building = Building::from_solids("building", vec![sld1.clone(), sld2.clone()]);
+    let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), "box")?;
+    let building = Building::from_solids("building", vec![sld1.clone(), sld2.clone()])?;
 
     // Draw
     let session = start_session()?;

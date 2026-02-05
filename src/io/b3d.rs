@@ -21,8 +21,8 @@ use std::path::Path;
 /// use building3d::io::write_b3d;
 /// use std::path::Path;
 ///
-/// let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box");
-/// let building = Building::from_solids("my_building", vec![solid]);
+/// let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box").unwrap();
+/// let building = Building::from_solids("my_building", vec![solid]).unwrap();
 /// write_b3d(Path::new("model.b3d"), &building).unwrap();
 /// ```
 pub fn write_b3d(path: &Path, building: &Building) -> Result<()> {
@@ -94,9 +94,9 @@ mod tests {
         let path = dir.path().join("test.b3d");
 
         // Create a building
-        let s1 = Solid::from_box(1.0, 2.0, 3.0, None, "box1");
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "box2");
-        let original = Building::from_solids("test_building", vec![s1, s2]);
+        let s1 = Solid::from_box(1.0, 2.0, 3.0, None, "box1")?;
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "box2")?;
+        let original = Building::from_solids("test_building", vec![s1, s2])?;
 
         // Write to file
         write_b3d(&path, &original)?;
@@ -121,13 +121,13 @@ mod tests {
         let path = dir.path().join("zones.b3d");
 
         // Create building with explicit zones
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
 
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2");
-        let z2 = Zone::new("zone2", vec![s2]);
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2")?;
+        let z2 = Zone::new("zone2", vec![s2])?;
 
-        let original = Building::new("building_with_zones", vec![z1, z2]);
+        let original = Building::new("building_with_zones", vec![z1, z2])?;
 
         // Roundtrip
         write_b3d(&path, &original)?;
@@ -143,8 +143,8 @@ mod tests {
 
     #[test]
     fn test_b3d_string_roundtrip() -> Result<()> {
-        let solid = Solid::from_box(1.0, 1.0, 1.0, None, "cube");
-        let original = Building::from_solids("test", vec![solid]);
+        let solid = Solid::from_box(1.0, 1.0, 1.0, None, "cube")?;
+        let original = Building::from_solids("test", vec![solid])?;
 
         // Serialize to string
         let json = to_b3d_string(&original)?;
@@ -167,8 +167,8 @@ mod tests {
         let dir = tempdir()?;
         let path = dir.path().join("uids.b3d");
 
-        let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box");
-        let original = Building::from_solids("test", vec![solid]);
+        let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box")?;
+        let original = Building::from_solids("test", vec![solid])?;
         let original_uid = original.uid.as_str().to_string();
 
         write_b3d(&path, &original)?;
@@ -185,8 +185,8 @@ mod tests {
         let dir = tempdir()?;
         let path = dir.path().join("geom.b3d");
 
-        let solid = Solid::from_box(3.0, 4.0, 5.0, Some((1.0, 2.0, 3.0)), "box");
-        let original = Building::from_solids("test", vec![solid]);
+        let solid = Solid::from_box(3.0, 4.0, 5.0, Some((1.0, 2.0, 3.0)), "box")?;
+        let original = Building::from_solids("test", vec![solid])?;
 
         write_b3d(&path, &original)?;
         let loaded = read_b3d(&path)?;

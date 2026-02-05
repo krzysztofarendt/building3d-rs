@@ -17,9 +17,9 @@ fn main() -> Result<()> {
     };
     let sld1 = Solid::from_floor_plan(fp)?;
 
-    let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), "box");
+    let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), "box")?;
 
-    let bdg = Building::from_solids("building", vec![sld1, sld2]);
+    let bdg = Building::from_solids("building", vec![sld1, sld2])?;
 
     let session = start_session()?;
 

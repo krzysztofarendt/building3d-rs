@@ -61,8 +61,8 @@ impl HasMesh for Solid {
 }
 
 impl Solid {
-    pub fn new(name: &str, mut walls: Vec<Wall>) -> Self {
-        let name = geom::validate_name(name).expect("Invalid solid name");
+    pub fn new(name: &str, mut walls: Vec<Wall>) -> Result<Self> {
+        let name = geom::validate_name(name)?;
         let uid = UID::new();
         for w in walls.iter_mut() {
             w.parent = Some(uid.clone());
@@ -71,16 +71,19 @@ impl Solid {
         let mut map: HashMap<String, Wall> = HashMap::new();
         for wall in walls {
             if map.contains_key(&wall.name) {
-                panic!("Wall is already present in Solid::new(): {}", &wall.name);
+                return Err(anyhow!(
+                    "Wall is already present in Solid::new(): {}",
+                    &wall.name
+                ));
             }
             map.insert(wall.name.clone(), wall);
         }
-        Self {
+        Ok(Self {
             name: name.to_string(),
             uid,
             parent,
             walls: map,
-        }
+        })
     }
 
     pub fn walls(&self) -> Vec<&Wall> {
@@ -220,7 +223,13 @@ impl Solid {
     /// - ceiling/ceiling
     ///
     /// The solid will be named `name` (random if not given).
-    pub fn from_box(x: f64, y: f64, z: f64, origin: Option<(f64, f64, f64)>, name: &str) -> Self {
+    pub fn from_box(
+        x: f64,
+        y: f64,
+        z: f64,
+        origin: Option<(f64, f64, f64)>,
+        name: &str,
+    ) -> Result<Self> {
         let origin_vec = match origin {
             Some((dx, dy, dz)) => Vector::new(dx, dy, dz),
             None => Vector::new(0., 0., 0.),
@@ -235,25 +244,19 @@ impl Solid {
         let p6 = Point::new(x, y, z) + origin_vec;
         let p7 = Point::new(0., y, z) + origin_vec;
 
-        let poly_fl = Polygon::new("floor", vec![p0, p3, p2, p1], None)
-            .expect("Failed to create floor polygon for box solid");
-        let poly_w0 = Polygon::new("poly_0", vec![p0, p1, p5, p4], None)
-            .expect("Failed to create wall polygon for box solid");
-        let poly_w1 = Polygon::new("poly_1", vec![p1, p2, p6, p5], None)
-            .expect("Failed to create wall polygon for box solid");
-        let poly_w2 = Polygon::new("poly_2", vec![p3, p7, p6, p2], None)
-            .expect("Failed to create wall polygon for box solid");
-        let poly_w3 = Polygon::new("poly_3", vec![p0, p4, p7, p3], None)
-            .expect("Failed to create wall polygon for box solid");
-        let poly_rf = Polygon::new("ceiling", vec![p4, p5, p6, p7], None)
-            .expect("Failed to create ceiling polygon for box solid");
+        let poly_fl = Polygon::new("floor", vec![p0, p3, p2, p1], None)?;
+        let poly_w0 = Polygon::new("poly_0", vec![p0, p1, p5, p4], None)?;
+        let poly_w1 = Polygon::new("poly_1", vec![p1, p2, p6, p5], None)?;
+        let poly_w2 = Polygon::new("poly_2", vec![p3, p7, p6, p2], None)?;
+        let poly_w3 = Polygon::new("poly_3", vec![p0, p4, p7, p3], None)?;
+        let poly_rf = Polygon::new("ceiling", vec![p4, p5, p6, p7], None)?;
 
-        let wall_fl = Wall::new("floor", vec![poly_fl]);
-        let wall_0 = Wall::new("wall_0", vec![poly_w0]);
-        let wall_1 = Wall::new("wall_1", vec![poly_w1]);
-        let wall_2 = Wall::new("wall_2", vec![poly_w2]);
-        let wall_3 = Wall::new("wall_3", vec![poly_w3]);
-        let wall_rf = Wall::new("ceiling", vec![poly_rf]);
+        let wall_fl = Wall::new("floor", vec![poly_fl])?;
+        let wall_0 = Wall::new("wall_0", vec![poly_w0])?;
+        let wall_1 = Wall::new("wall_1", vec![poly_w1])?;
+        let wall_2 = Wall::new("wall_2", vec![poly_w2])?;
+        let wall_3 = Wall::new("wall_3", vec![poly_w3])?;
+        let wall_rf = Wall::new("ceiling", vec![poly_rf])?;
 
         Solid::new(name, vec![wall_fl, wall_0, wall_1, wall_2, wall_3, wall_rf])
     }
@@ -328,7 +331,7 @@ impl Solid {
             let poly = Polygon::new(w_name, vec![p0, p1, p2, p3], None).context(format!(
                 "Failed to create Polygon from {p0}, {p1}, {p2}, {p3}"
             ))?;
-            walls.push(Wall::new(w_name, vec![poly]));
+            walls.push(Wall::new(w_name, vec![poly])?);
         }
 
         let mut floor_poly = Polygon::new(&floor_name, floor_pts, None)?;
@@ -343,8 +346,8 @@ impl Solid {
             ceil_poly = ceil_poly.flip(&ceil_poly.name)?;
         }
 
-        let floor = Wall::new(&floor_name, vec![floor_poly.clone()]);
-        let ceil = Wall::new(&ceil_name, vec![ceil_poly]);
+        let floor = Wall::new(&floor_name, vec![floor_poly.clone()])?;
+        let ceil = Wall::new(&ceil_name, vec![ceil_poly])?;
 
         // Make sure all polygon normals point outwards the zone.
         // Compare the order of wall bottom vertices to the order
@@ -409,7 +412,7 @@ impl Solid {
 
         // Make solid
         let solid_name = fp.name;
-        let solid = Solid::new(&solid_name, walls);
+        let solid = Solid::new(&solid_name, walls)?;
 
         Ok(solid)
     }
@@ -456,17 +459,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_box() {
-        let sld = Solid::from_box(1., 2., 3., None, "box");
+    fn test_box() -> Result<()> {
+        let sld = Solid::from_box(1., 2., 3., None, "box")?;
         let expected_vol = 1. * 2. * 3.;
         assert!((sld.volume() - expected_vol).abs() < 1e-4);
+        Ok(())
     }
 
     #[test]
-    fn test_cube_2x2x2() {
-        let sld = Solid::from_box(2., 2., 2., None, "cube");
+    fn test_cube_2x2x2() -> Result<()> {
+        let sld = Solid::from_box(2., 2., 2., None, "cube")?;
         let expected_vol = 8.;
         eprintln!("2x2x2 cube volume: {}", sld.volume());
         assert!((sld.volume() - expected_vol).abs() < 1e-4);
+        Ok(())
     }
 }

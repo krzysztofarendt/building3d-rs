@@ -40,7 +40,7 @@ fn main() -> Result<()> {
         None,
     )?;
 
-    let wall = Wall::new("wall", vec![u_shape, tri, l_shape]);
+    let wall = Wall::new("wall", vec![u_shape, tri, l_shape])?;
     println!("{wall:?}");
 
     let session = start_session()?;

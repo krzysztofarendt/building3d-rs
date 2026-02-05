@@ -182,16 +182,6 @@ impl Sub<Vector> for f64 {
 }
 
 // Implement *
-impl Mul for Vector {
-    type Output = Self;
-    fn mul(self, other: Self) -> Self {
-        Self {
-            dx: self.dx * other.dx,
-            dy: self.dy * other.dy,
-            dz: self.dz * other.dz,
-        }
-    }
-}
 impl Mul<f64> for Vector {
     type Output = Self;
     fn mul(self, other: f64) -> Self {
@@ -214,45 +204,13 @@ impl Mul<Vector> for f64 {
 }
 
 // Implement /
-impl Div for Vector {
-    type Output = Option<Self>;
-    fn div(self, other: Self) -> Option<Self> {
-        if other.dx.abs() < EPS || other.dy.abs() < EPS || other.dz.abs() < EPS {
-            None
-        } else {
-            Some(Self {
-                dx: self.dx / other.dx,
-                dy: self.dy / other.dy,
-                dz: self.dz / other.dz,
-            })
-        }
-    }
-}
 impl Div<f64> for Vector {
-    type Output = Option<Self>;
-    fn div(self, other: f64) -> Option<Self> {
-        if other.abs() < EPS {
-            None
-        } else {
-            Some(Self {
-                dx: self.dx / other,
-                dy: self.dy / other,
-                dz: self.dz / other,
-            })
-        }
-    }
-}
-impl Div<Vector> for f64 {
-    type Output = Option<Vector>;
-    fn div(self, other: Vector) -> Option<Vector> {
-        if other.dx.abs() < EPS || other.dy.abs() < EPS || other.dz.abs() < EPS {
-            None
-        } else {
-            Some(Vector {
-                dx: self / other.dx,
-                dy: self / other.dy,
-                dz: self / other.dz,
-            })
+    type Output = Self;
+    fn div(self, other: f64) -> Self {
+        Self {
+            dx: self.dx / other,
+            dy: self.dy / other,
+            dz: self.dz / other,
         }
     }
 }
@@ -309,14 +267,11 @@ mod tests {
         let v2 = Vector::new(0., 0., 0.);
         let _ = v1 + v2;
         let _ = v1 - v2;
-        let _ = v1 * v2;
-        assert!((v2 / v1).is_some());
-        assert!((v1 / v2).is_none());
         let _ = v1 * 2.;
         let _ = v1 / 2.;
         let _ = 2. * v1;
-        let _ = 2. / v1;
-        assert!((1. / v2).is_none());
+        let result = v1 / 2.;
+        assert!(result.is_close(&Vector::new(0.5, 0.5, 0.5)));
     }
 
     #[test]

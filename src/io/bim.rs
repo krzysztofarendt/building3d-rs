@@ -317,8 +317,8 @@ fn bim_element_to_solid(mesh: &BimMesh, element: &BimElement) -> Result<Solid> {
 pub fn bim_to_building(bim_file: &BimFile, name: &str) -> Result<Building> {
     let solids = bim_to_solids(bim_file)?;
 
-    let zone = Zone::new("imported", solids);
-    let building = Building::new(name, vec![zone]);
+    let zone = Zone::new("imported", solids)?;
+    let building = Building::new(name, vec![zone])?;
 
     Ok(building)
 }
@@ -331,9 +331,9 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_test_building() -> Result<Building> {
-        let solid = Solid::from_box(2.0, 3.0, 4.0, Some((0.0, 0.0, 0.0)), "box");
-        let zone = Zone::new("zone1", vec![solid]);
-        let building = Building::new("test_building", vec![zone]);
+        let solid = Solid::from_box(2.0, 3.0, 4.0, Some((0.0, 0.0, 0.0)), "box")?;
+        let zone = Zone::new("zone1", vec![solid])?;
+        let building = Building::new("test_building", vec![zone])?;
         Ok(building)
     }
 

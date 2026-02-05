@@ -63,8 +63,8 @@ impl HasMesh for Zone {
 
 impl Zone {
     /// Creates a new zone with the given name and solids.
-    pub fn new(name: &str, mut solids: Vec<Solid>) -> Self {
-        let name = geom::validate_name(name).expect("Invalid zone name");
+    pub fn new(name: &str, mut solids: Vec<Solid>) -> Result<Self> {
+        let name = geom::validate_name(name)?;
         let uid = UID::new();
         for s in solids.iter_mut() {
             s.parent = Some(uid.clone());
@@ -73,17 +73,20 @@ impl Zone {
         let mut map: HashMap<String, Solid> = HashMap::new();
         for solid in solids {
             if map.contains_key(&solid.name) {
-                panic!("Solid is already present in Zone::new(): {}", &solid.name);
+                return Err(anyhow!(
+                    "Solid is already present in Zone::new(): {}",
+                    &solid.name
+                ));
             }
             map.insert(solid.name.clone(), solid);
         }
 
-        Self {
+        Ok(Self {
             name: name.to_string(),
             uid,
             parent,
             solids: map,
-        }
+        })
     }
 
     /// Returns solids sorted by name.
@@ -176,43 +179,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_zone_creation() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "box2");
-        let zone = Zone::new("zone1", vec![s1, s2]);
+    fn test_zone_creation() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "box2")?;
+        let zone = Zone::new("zone1", vec![s1, s2])?;
 
         assert_eq!(zone.name, "zone1");
         assert_eq!(zone.solids().len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn test_zone_volume() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(1.0, 2.0, 3.0, None, "box2");
-        let zone = Zone::new("zone1", vec![s1, s2]);
+    fn test_zone_volume() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(1.0, 2.0, 3.0, None, "box2")?;
+        let zone = Zone::new("zone1", vec![s1, s2])?;
 
         let expected = 1.0 + 6.0; // 1x1x1 + 1x2x3
         let actual = zone.volume();
         assert!((actual - expected).abs() < 1e-4);
+        Ok(())
     }
 
     #[test]
-    fn test_cube_volume() {
+    fn test_cube_volume() -> Result<()> {
         // Test that a 2x2x2 cube works
-        let s = Solid::from_box(2.0, 2.0, 2.0, None, "cube");
+        let s = Solid::from_box(2.0, 2.0, 2.0, None, "cube")?;
         let expected = 8.0;
         eprintln!("Cube volume: {}", s.volume());
         assert!((s.volume() - expected).abs() < 1e-4);
+        Ok(())
     }
 
     #[test]
     fn test_zone_add_solid() -> Result<()> {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let mut zone = Zone::new("zone1", vec![s1]);
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let mut zone = Zone::new("zone1", vec![s1])?;
 
         assert_eq!(zone.solids().len(), 1);
 
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2");
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2")?;
         zone.add_solid(s2)?;
 
         assert_eq!(zone.solids().len(), 2);
@@ -220,31 +226,33 @@ mod tests {
     }
 
     #[test]
-    fn test_zone_add_duplicate_solid() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let mut zone = Zone::new("zone1", vec![s1]);
+    fn test_zone_add_duplicate_solid() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let mut zone = Zone::new("zone1", vec![s1])?;
 
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box1"); // Same name
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box1")?; // Same name
         let result = zone.add_solid(s2);
 
         assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    fn test_zone_walls_and_polygons() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let zone = Zone::new("zone1", vec![s1]);
+    fn test_zone_walls_and_polygons() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let zone = Zone::new("zone1", vec![s1])?;
 
         // A box has 6 walls
         assert_eq!(zone.walls().len(), 6);
         // A box has 6 polygons (one per wall)
         assert_eq!(zone.polygons().len(), 6);
+        Ok(())
     }
 
     #[test]
-    fn test_zone_translate() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let mut zone = Zone::new("zone1", vec![s1]);
+    fn test_zone_translate() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let mut zone = Zone::new("zone1", vec![s1])?;
 
         let (min_before, _) = zone.bbox();
         assert!(min_before.is_close(&Point::new(0.0, 0.0, 0.0)));
@@ -253,28 +261,31 @@ mod tests {
 
         let (min_after, _) = zone.bbox();
         assert!(min_after.is_close(&Point::new(5.0, 5.0, 5.0)));
+        Ok(())
     }
 
     #[test]
-    fn test_zone_point_inside() {
-        let s1 = Solid::from_box(2.0, 2.0, 2.0, None, "box1");
-        let zone = Zone::new("zone1", vec![s1]);
+    fn test_zone_point_inside() -> Result<()> {
+        let s1 = Solid::from_box(2.0, 2.0, 2.0, None, "box1")?;
+        let zone = Zone::new("zone1", vec![s1])?;
 
         // Inside the box
         assert!(zone.is_point_inside(Point::new(1.0, 1.0, 1.0)));
 
         // Outside the box
         assert!(!zone.is_point_inside(Point::new(5.0, 5.0, 5.0)));
+        Ok(())
     }
 
     #[test]
-    fn test_zone_bbox() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((2.0, 2.0, 2.0)), "box2");
-        let zone = Zone::new("zone1", vec![s1, s2]);
+    fn test_zone_bbox() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((2.0, 2.0, 2.0)), "box2")?;
+        let zone = Zone::new("zone1", vec![s1, s2])?;
 
         let (min, max) = zone.bbox();
         assert!(min.is_close(&Point::new(0.0, 0.0, 0.0)));
         assert!(max.is_close(&Point::new(3.0, 3.0, 3.0)));
+        Ok(())
     }
 }

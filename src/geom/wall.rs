@@ -54,8 +54,8 @@ impl HasMesh for Wall {
 }
 
 impl Wall {
-    pub fn new(name: &str, mut polygons: Vec<Polygon>) -> Self {
-        let name = geom::validate_name(name).expect("Invalid wall name");
+    pub fn new(name: &str, mut polygons: Vec<Polygon>) -> Result<Self> {
+        let name = geom::validate_name(name)?;
         let uid = UID::new();
         for p in polygons.iter_mut() {
             p.parent = Some(uid.clone());
@@ -64,16 +64,19 @@ impl Wall {
         let mut map: HashMap<String, Polygon> = HashMap::new();
         for poly in polygons {
             if map.contains_key(&poly.name) {
-                panic!("Polygon is already present in Wall::new(): {}", &poly.name);
+                return Err(anyhow!(
+                    "Polygon is already present in Wall::new(): {}",
+                    &poly.name
+                ));
             }
             map.insert(poly.name.clone(), poly);
         }
-        Self {
+        Ok(Self {
             name: name.to_string(),
             uid,
             parent,
             polygons: map,
-        }
+        })
     }
 
     pub fn polygons(&self) -> Vec<&Polygon> {

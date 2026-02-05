@@ -12,7 +12,7 @@ impl From<&str> for UID {
 
 impl From<String> for UID {
     fn from(value: String) -> Self {
-        Self(value.to_string())
+        Self(value)
     }
 }
 

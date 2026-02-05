@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_point_inside_box() {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
 
         // Center point - should be inside
         let center = Point::new(1.0, 1.0, 1.0);
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_point_outside_box() {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
 
         // Outside on each axis
         let outside = Point::new(-1.0, 1.0, 1.0);
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_point_on_face() {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
 
         // Point on face - should be at boundary
         let on_face = Point::new(1.0, 1.0, 0.0); // On floor
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_point_strictly_inside() {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
 
         // Center - strictly inside
         let center = Point::new(1.0, 1.0, 1.0);
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_point_at_corner() {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
 
         // Corner vertex - should be at boundary
         let corner = Point::new(0.0, 0.0, 0.0);
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_point_on_edge() {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
 
         // Point on edge - should be at boundary
         let on_edge = Point::new(1.0, 0.0, 0.0); // Bottom front edge
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_translated_solid() {
-        let mut solid = Solid::from_box(1.0, 1.0, 1.0, None, "box");
+        let mut solid = Solid::from_box(1.0, 1.0, 1.0, None, "box").unwrap();
         solid.translate(&crate::Vector::new(5.0, 5.0, 5.0));
 
         // Original center (0.5, 0.5, 0.5) is now outside

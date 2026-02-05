@@ -65,8 +65,8 @@ impl HasMesh for Building {
 
 impl Building {
     /// Creates a new building with the given name and zones.
-    pub fn new(name: &str, mut zones: Vec<Zone>) -> Self {
-        let name = geom::validate_name(name).expect("Invalid building name");
+    pub fn new(name: &str, mut zones: Vec<Zone>) -> Result<Self> {
+        let name = geom::validate_name(name)?;
         let uid = UID::new();
         for z in zones.iter_mut() {
             z.parent = Some(uid.clone());
@@ -75,30 +75,31 @@ impl Building {
         let mut map: HashMap<String, Zone> = HashMap::new();
         for zone in zones {
             if map.contains_key(&zone.name) {
-                panic!("Zone is already present in Building::new(): {}", &zone.name);
+                return Err(anyhow!(
+                    "Zone is already present in Building::new(): {}",
+                    &zone.name
+                ));
             }
             map.insert(zone.name.clone(), zone);
         }
 
-        Self {
+        Ok(Self {
             name: name.to_string(),
             uid,
             parent,
             zones: map,
-        }
+        })
     }
 
     /// Creates a new building from solids directly (convenience method).
     ///
     /// Each solid is wrapped in its own zone with the same name.
-    pub fn from_solids(name: &str, solids: Vec<Solid>) -> Self {
-        let zones: Vec<Zone> = solids
-            .into_iter()
-            .map(|s| {
-                let zone_name = s.name.clone();
-                Zone::new(&zone_name, vec![s])
-            })
-            .collect();
+    pub fn from_solids(name: &str, solids: Vec<Solid>) -> Result<Self> {
+        let mut zones: Vec<Zone> = Vec::new();
+        for s in solids {
+            let zone_name = s.name.clone();
+            zones.push(Zone::new(&zone_name, vec![s])?);
+        }
         Self::new(name, zones)
     }
 
@@ -259,49 +260,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_building_from_zones() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
+    fn test_building_from_zones() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
 
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2");
-        let z2 = Zone::new("zone2", vec![s2]);
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2")?;
+        let z2 = Zone::new("zone2", vec![s2])?;
 
-        let bdg = Building::new("building", vec![z1, z2]);
-
-        assert_eq!(bdg.zones().len(), 2);
-        assert_eq!(bdg.solids().len(), 2);
-    }
-
-    #[test]
-    fn test_building_from_solids() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2");
-
-        let bdg = Building::from_solids("building", vec![s1, s2]);
+        let bdg = Building::new("building", vec![z1, z2])?;
 
         assert_eq!(bdg.zones().len(), 2);
         assert_eq!(bdg.solids().len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn test_volume() {
-        let s0 = Solid::from_box(1., 1., 1., None, "box_0");
-        let s1 = Solid::from_box(1., 2., 3., None, "box_1");
-        let bdg = Building::from_solids("building", vec![s0, s1]);
+    fn test_building_from_solids() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2")?;
+
+        let bdg = Building::from_solids("building", vec![s1, s2])?;
+
+        assert_eq!(bdg.zones().len(), 2);
+        assert_eq!(bdg.solids().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_volume() -> Result<()> {
+        let s0 = Solid::from_box(1., 1., 1., None, "box_0")?;
+        let s1 = Solid::from_box(1., 2., 3., None, "box_1")?;
+        let bdg = Building::from_solids("building", vec![s0, s1])?;
         let expected_vol = 1. * 2. * 3. + 1.;
         assert!((bdg.volume() - expected_vol).abs() < 1e-4);
+        Ok(())
     }
 
     #[test]
     fn test_building_add_zone() -> Result<()> {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let mut bdg = Building::new("building", vec![z1]);
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let mut bdg = Building::new("building", vec![z1])?;
 
         assert_eq!(bdg.zones().len(), 1);
 
-        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2");
-        let z2 = Zone::new("zone2", vec![s2]);
+        let s2 = Solid::from_box(2.0, 2.0, 2.0, None, "box2")?;
+        let z2 = Zone::new("zone2", vec![s2])?;
         bdg.add_zone(z2)?;
 
         assert_eq!(bdg.zones().len(), 2);
@@ -309,10 +313,10 @@ mod tests {
     }
 
     #[test]
-    fn test_building_translate() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let mut bdg = Building::new("building", vec![z1]);
+    fn test_building_translate() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let mut bdg = Building::new("building", vec![z1])?;
 
         let (min_before, _) = bdg.bbox();
         assert!(min_before.is_close(&Point::new(0.0, 0.0, 0.0)));
@@ -321,26 +325,28 @@ mod tests {
 
         let (min_after, _) = bdg.bbox();
         assert!(min_after.is_close(&Point::new(10.0, 10.0, 10.0)));
+        Ok(())
     }
 
     #[test]
-    fn test_building_point_inside() {
-        let s1 = Solid::from_box(2.0, 2.0, 2.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let bdg = Building::new("building", vec![z1]);
+    fn test_building_point_inside() -> Result<()> {
+        let s1 = Solid::from_box(2.0, 2.0, 2.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let bdg = Building::new("building", vec![z1])?;
 
         // Inside
         assert!(bdg.is_point_inside(Point::new(1.0, 1.0, 1.0)));
 
         // Outside
         assert!(!bdg.is_point_inside(Point::new(5.0, 5.0, 5.0)));
+        Ok(())
     }
 
     #[test]
-    fn test_path_access_zone() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let bdg = Building::new("building", vec![z1]);
+    fn test_path_access_zone() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let bdg = Building::new("building", vec![z1])?;
 
         // Valid path
         let zone = bdg.get_zone("zone1");
@@ -349,13 +355,14 @@ mod tests {
 
         // Invalid path
         assert!(bdg.get_zone("nonexistent").is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_path_access_solid() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let bdg = Building::new("building", vec![z1]);
+    fn test_path_access_solid() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let bdg = Building::new("building", vec![z1])?;
 
         // Valid path
         let solid = bdg.get_solid("zone1/box1");
@@ -366,13 +373,14 @@ mod tests {
         assert!(bdg.get_solid("zone1").is_none()); // Wrong format
         assert!(bdg.get_solid("zone1/nonexistent").is_none());
         assert!(bdg.get_solid("nonexistent/box1").is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_path_access_wall() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let bdg = Building::new("building", vec![z1]);
+    fn test_path_access_wall() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let bdg = Building::new("building", vec![z1])?;
 
         // Valid path - box has wall_0, wall_1, wall_2, wall_3, floor, ceiling
         let wall = bdg.get_wall("zone1/box1/wall_0");
@@ -382,13 +390,14 @@ mod tests {
         // Invalid paths
         assert!(bdg.get_wall("zone1/box1").is_none()); // Wrong format
         assert!(bdg.get_wall("zone1/box1/nonexistent").is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_path_access_polygon() {
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z1 = Zone::new("zone1", vec![s1]);
-        let bdg = Building::new("building", vec![z1]);
+    fn test_path_access_polygon() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let bdg = Building::new("building", vec![z1])?;
 
         // Valid path - floor wall has floor polygon
         let poly = bdg.get_polygon("zone1/box1/floor/floor");
@@ -398,5 +407,6 @@ mod tests {
         // Invalid paths
         assert!(bdg.get_polygon("zone1/box1/floor").is_none()); // Wrong format
         assert!(bdg.get_polygon("zone1/box1/floor/nonexistent").is_none());
+        Ok(())
     }
 }

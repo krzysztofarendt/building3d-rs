@@ -272,7 +272,7 @@ mod tests {
     use crate::geom::mesh::HasMesh;
 
     fn make_box_mesh() -> Mesh {
-        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box");
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
         solid.copy_mesh()
     }
 

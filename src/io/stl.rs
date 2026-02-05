@@ -34,7 +34,7 @@ pub enum StlFormat {
 /// use building3d::io::stl::{write_stl, StlFormat};
 /// use std::path::Path;
 ///
-/// let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box");
+/// let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box").unwrap();
 /// let mesh = solid.copy_mesh();
 /// write_stl(Path::new("model.stl"), &mesh, "box", StlFormat::Binary).unwrap();
 /// ```
@@ -361,8 +361,8 @@ pub fn stl_to_solid(mesh: &Mesh, name: &str) -> Result<Solid> {
     }
 
     // Group all polygons into a single wall
-    let wall = Wall::new("mesh", polygons);
-    let solid = Solid::new(name, vec![wall]);
+    let wall = Wall::new("mesh", polygons)?;
+    let solid = Solid::new(name, vec![wall])?;
 
     Ok(solid)
 }
@@ -480,7 +480,7 @@ mod tests {
         let path = dir.path().join("box.stl");
 
         // Create a box solid
-        let solid = Solid::from_box(2.0, 3.0, 4.0, None, "box");
+        let solid = Solid::from_box(2.0, 3.0, 4.0, None, "box")?;
         let original_mesh = solid.copy_mesh();
 
         // Write to STL
@@ -501,7 +501,7 @@ mod tests {
         let dir = tempdir()?;
         let path = dir.path().join("solid.stl");
 
-        let solid = Solid::from_box(1.0, 1.0, 1.0, None, "cube");
+        let solid = Solid::from_box(1.0, 1.0, 1.0, None, "cube")?;
         write_stl_from_mesh(&path, &solid, "cube", StlFormat::Ascii)?;
 
         let content = std::fs::read_to_string(&path)?;

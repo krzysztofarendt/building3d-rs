@@ -141,8 +141,8 @@ mod tests {
     #[test]
     fn test_adjacent_solids() {
         // Two boxes sharing a face at x=1
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
 
         assert!(is_solid_adjacent_to(&solid1, &solid2));
     }
@@ -150,8 +150,8 @@ mod tests {
     #[test]
     fn test_non_adjacent_solids() {
         // Two boxes with a gap between them
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((2.0, 0.0, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((2.0, 0.0, 0.0)), "box2").unwrap();
 
         assert!(!is_solid_adjacent_to(&solid1, &solid2));
     }
@@ -159,8 +159,8 @@ mod tests {
     #[test]
     fn test_shared_polygons() {
         // Two boxes sharing a face
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
 
         let shared = get_shared_polygons(&solid1, &solid2);
 
@@ -172,8 +172,8 @@ mod tests {
     #[test]
     fn test_no_shared_polygons() {
         // Two boxes with no shared faces
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((5.0, 5.0, 5.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((5.0, 5.0, 5.0)), "box2").unwrap();
 
         let shared = get_shared_polygons(&solid1, &solid2);
         assert!(shared.is_empty());
@@ -182,8 +182,8 @@ mod tests {
     #[test]
     fn test_correct_interface() {
         // Two boxes with matching faces
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
 
         assert!(has_correct_interface(&solid1, &solid2));
     }
@@ -191,8 +191,8 @@ mod tests {
     #[test]
     fn test_incorrect_interface_size_mismatch() {
         // Two boxes with different face sizes at the interface
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 2.0, 2.0, Some((1.0, 0.0, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 2.0, 2.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
 
         // They are adjacent but interface is not correct (different sizes)
         assert!(is_solid_adjacent_to(&solid1, &solid2));
@@ -202,8 +202,8 @@ mod tests {
     #[test]
     fn test_adjacent_but_partial_overlap() {
         // Two boxes where one is shifted, creating partial overlap
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.5, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.5, 0.0)), "box2").unwrap();
 
         // They are adjacent (have facing polygons that overlap)
         assert!(is_solid_adjacent_to(&solid1, &solid2));
@@ -214,8 +214,8 @@ mod tests {
     #[test]
     fn test_vertical_adjacency() {
         // Two boxes stacked vertically
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((0.0, 0.0, 1.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((0.0, 0.0, 1.0)), "box2").unwrap();
 
         assert!(is_solid_adjacent_to(&solid1, &solid2));
         assert!(has_correct_interface(&solid1, &solid2));
@@ -226,8 +226,8 @@ mod tests {
         // This test verifies that when solids share multiple faces,
         // all are detected. Here we use an L-shaped arrangement would
         // need custom solids, so we'll just check the simple case.
-        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2");
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2").unwrap();
 
         let shared = get_shared_polygons(&solid1, &solid2);
         // Simple boxes share exactly one face
