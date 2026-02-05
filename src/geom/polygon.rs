@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow};
 use std::fmt;
 
 pub mod containment;
+pub mod relations;
 
 #[derive(Debug, Clone)]
 pub struct Polygon {
