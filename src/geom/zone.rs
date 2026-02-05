@@ -155,7 +155,6 @@ impl Zone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::IsClose;
 
     #[test]
     fn test_zone_creation() {

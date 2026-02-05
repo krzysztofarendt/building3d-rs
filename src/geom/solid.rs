@@ -12,6 +12,7 @@ use crate::{HasName, SortByName};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
+pub mod adjacency;
 pub mod containment;
 
 #[derive(Debug, Clone)]
@@ -158,6 +159,30 @@ impl Solid {
     /// Checks if a point lies strictly inside the solid (not on boundary).
     pub fn is_point_strictly_inside(&self, ptest: Point) -> bool {
         containment::is_point_strictly_inside(self, ptest)
+    }
+
+    /// Checks if this solid is adjacent to another solid.
+    ///
+    /// Two solids are adjacent if any of their polygons face each other
+    /// (are coplanar with opposite normals and have overlapping area).
+    pub fn is_adjacent_to(&self, other: &Solid) -> bool {
+        adjacency::is_solid_adjacent_to(self, other)
+    }
+
+    /// Returns all polygon pairs that form shared interfaces with another solid.
+    ///
+    /// Each `SharedPolygon` contains the names of the facing polygon pair
+    /// and their overlap area.
+    pub fn get_shared_polygons(&self, other: &Solid) -> Vec<adjacency::SharedPolygon> {
+        adjacency::get_shared_polygons(self, other)
+    }
+
+    /// Checks if the interface between this solid and another is correct.
+    ///
+    /// A correct interface means the facing polygons have matching areas
+    /// and exactly matching vertices (accounting for the flip).
+    pub fn has_correct_interface(&self, other: &Solid) -> bool {
+        adjacency::has_correct_interface(self, other)
     }
 
     /// Return a solid with given dimensions and location.
