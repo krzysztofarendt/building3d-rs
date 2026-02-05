@@ -5,12 +5,14 @@ pub mod building;
 pub mod mesh;
 pub mod point;
 pub mod polygon;
+pub mod ray;
 pub mod rotation;
 pub mod segment;
 pub mod solid;
 pub mod tetrahedron;
 pub mod triangles;
 pub mod vector;
+pub mod visibility;
 pub mod wall;
 pub mod zone;
 
