@@ -18,7 +18,7 @@ use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Building {
@@ -229,7 +229,10 @@ impl Building {
         if parts.len() != 3 {
             return None;
         }
-        self.zones.get(parts[0])?.get_solid(parts[1])?.get_wall(parts[2])
+        self.zones
+            .get(parts[0])?
+            .get_solid(parts[1])?
+            .get_wall(parts[2])
     }
 
     /// Gets a polygon by path (zone_name/solid_name/wall_name/polygon_name).
@@ -238,10 +241,77 @@ impl Building {
         if parts.len() != 4 {
             return None;
         }
-        self.zones.get(parts[0])?
+        self.zones
+            .get(parts[0])?
             .get_solid(parts[1])?
             .get_wall(parts[2])?
             .get_polygon(parts[3])
+    }
+
+    /// Validates the structural integrity of the building.
+    ///
+    /// Checks for:
+    /// - Duplicate UIDs across all entities
+    /// - Empty containers (zones with no solids, solids with no walls, walls with no polygons)
+    /// - Mesh face indices that are out of bounds
+    pub fn validate(&self) -> Result<()> {
+        let mut uids: HashSet<&str> = HashSet::new();
+
+        // Check building UID
+        if !uids.insert(self.uid.as_str()) {
+            return Err(anyhow!("Duplicate UID: {}", self.uid.as_str()));
+        }
+
+        for zone in self.zones.values() {
+            if !uids.insert(zone.uid.as_str()) {
+                return Err(anyhow!("Duplicate UID: {}", zone.uid.as_str()));
+            }
+            if zone.solids().is_empty() {
+                return Err(anyhow!("Zone '{}' has no solids", zone.name));
+            }
+
+            for solid in zone.solids() {
+                if !uids.insert(solid.uid.as_str()) {
+                    return Err(anyhow!("Duplicate UID: {}", solid.uid.as_str()));
+                }
+                if solid.walls().is_empty() {
+                    return Err(anyhow!("Solid '{}' has no walls", solid.name));
+                }
+
+                for wall in solid.walls() {
+                    if !uids.insert(wall.uid.as_str()) {
+                        return Err(anyhow!("Duplicate UID: {}", wall.uid.as_str()));
+                    }
+                    if wall.polygons().is_empty() {
+                        return Err(anyhow!("Wall '{}' has no polygons", wall.name));
+                    }
+
+                    for poly in wall.polygons() {
+                        if !uids.insert(poly.uid.as_str()) {
+                            return Err(anyhow!("Duplicate UID: {}", poly.uid.as_str()));
+                        }
+                        let mesh = poly.mesh_ref();
+                        let vc = mesh.vertex_count();
+                        if let Some(faces) = &mesh.faces {
+                            for tri in faces {
+                                if tri.0 >= vc || tri.1 >= vc || tri.2 >= vc {
+                                    return Err(anyhow!(
+                                        "Face index out of bounds in polygon '{}': ({}, {}, {}) >= {}",
+                                        poly.name,
+                                        tri.0,
+                                        tri.1,
+                                        tri.2,
+                                        vc
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn repair_parents(&mut self) {
@@ -387,6 +457,14 @@ mod tests {
         // Invalid paths
         assert!(bdg.get_wall("zone1/box1").is_none()); // Wrong format
         assert!(bdg.get_wall("zone1/box1/nonexistent").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_ok() -> Result<()> {
+        let s = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let bdg = Building::from_solids("building", vec![s])?;
+        bdg.validate()?;
         Ok(())
     }
 

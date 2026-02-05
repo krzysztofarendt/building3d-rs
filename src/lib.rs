@@ -1,3 +1,24 @@
+//! # building3d
+//!
+//! A 3D building modeling library with a strict hierarchical composition model:
+//!
+//! **Building → Zone → Solid → Wall → Polygon → Mesh**
+//!
+//! Each entity carries a name, a unique identifier ([`UID`]), and an optional
+//! parent reference. Geometry is built bottom-up from [`Point`]s and
+//! [`Polygon`]s, while containers ([`Wall`], [`Solid`], [`Zone`], [`Building`])
+//! aggregate children via `HashMap<String, Child>` for O(1) access by name.
+//!
+//! ## Quick start
+//!
+//! ```
+//! use building3d::{Building, Solid};
+//!
+//! let s = Solid::from_box(3.0, 4.0, 5.0, None, "room").unwrap();
+//! let b = Building::from_solids("house", vec![s]).unwrap();
+//! assert!((b.volume() - 60.0).abs() < 1e-10);
+//! ```
+
 pub mod draw;
 pub mod geom;
 pub mod io;

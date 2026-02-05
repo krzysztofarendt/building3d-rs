@@ -61,6 +61,7 @@ pub fn read_b3d(path: &Path) -> Result<Building> {
         .with_context(|| format!("Failed to deserialize building from: {}", path.display()))?;
 
     building.repair_parents();
+    building.validate()?;
 
     Ok(building)
 }
@@ -79,6 +80,7 @@ pub fn from_b3d_string(json: &str) -> Result<Building> {
     let mut building: Building =
         serde_json::from_str(json).context("Failed to deserialize building from string")?;
     building.repair_parents();
+    building.validate()?;
     Ok(building)
 }
 
