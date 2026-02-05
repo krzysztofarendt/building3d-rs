@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub mod bboxes;
 pub mod building;
@@ -6,6 +6,7 @@ pub mod mesh;
 pub mod point;
 pub mod polygon;
 pub mod rotation;
+pub mod segment;
 pub mod solid;
 pub mod tetrahedron;
 pub mod triangles;
