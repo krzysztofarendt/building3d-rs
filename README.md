@@ -1,6 +1,6 @@
 # building3d-rs
 
-3D building modeling library in Rust.
+3D building modeling library in Rust. A rewrite of [building3d](https://github.com/krzysztofarendt/building3d) (Python).
 
 This crate provides a strict hierarchical composition model and a set of geometry algorithms for building-like solids.
 
