@@ -9,12 +9,13 @@ use crate::geom::rotation::rotate_points_around_vector;
 use crate::geom::triangles::triangulate;
 use crate::{HasMesh, Mesh};
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub mod containment;
 pub mod relations;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Polygon {
     /// Polygon name
     pub name: String,

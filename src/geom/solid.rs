@@ -10,12 +10,13 @@ use crate::geom::tetrahedron::tetrahedron_volume;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
 use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 pub mod adjacency;
 pub mod containment;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Solid {
     pub name: String,
     pub uid: UID,

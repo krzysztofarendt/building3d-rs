@@ -16,9 +16,10 @@ use crate::geom::zone::Zone;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Building {
     pub name: String,
     pub uid: UID,

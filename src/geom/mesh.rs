@@ -1,7 +1,8 @@
 use crate::Point;
 use crate::TriangleIndex;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mesh {
     pub vertices: Vec<Point>,
     pub faces: Option<Vec<TriangleIndex>>,

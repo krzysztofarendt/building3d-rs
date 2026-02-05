@@ -1,5 +1,6 @@
 pub mod draw;
 pub mod geom;
+pub mod io;
 mod name;
 mod uid;
 pub mod vecutils;

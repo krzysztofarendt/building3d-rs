@@ -7,9 +7,10 @@ use crate::geom::point::check::is_point_on_same_side;
 use crate::geom::vector::Vector;
 use crate::vecutils::{max, min};
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 
 /// Type for holding vertex indices for a triangle.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriangleIndex(pub usize, pub usize, pub usize);
 
 /// Triangulates the polygon defined by points `pts` and normal `vn`.

@@ -6,9 +6,10 @@ use crate::geom::polygon::Polygon;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Wall {
     pub name: String,
     pub uid: UID,

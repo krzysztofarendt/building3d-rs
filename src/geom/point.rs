@@ -1,5 +1,6 @@
 use crate::Vector;
 use crate::geom::{EPS, IsClose};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::Add;
 use std::ops::AddAssign;
@@ -8,7 +9,7 @@ use std::ops::Sub;
 pub mod check;
 pub mod convert;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f64,
     pub y: f64,

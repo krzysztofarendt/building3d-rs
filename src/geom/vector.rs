@@ -2,13 +2,14 @@ use crate::Point;
 use crate::geom::EPS;
 use crate::geom::IsClose;
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::fmt;
 use std::ops::{Add, Div, Mul, Sub};
 
 pub mod check;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Vector {
     pub dx: f64,
     pub dy: f64,

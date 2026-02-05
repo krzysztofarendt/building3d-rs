@@ -1112,6 +1112,9 @@ dependencies = [
  "anyhow",
  "ndarray",
  "rerun",
+ "serde",
+ "serde_json",
+ "tempfile",
  "three-d",
  "uuid",
 ]
