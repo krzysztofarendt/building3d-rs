@@ -2,6 +2,8 @@
 //!
 //! Hierarchy: Building → Zone → Solid → Wall → Polygon
 
+pub mod graph;
+
 use crate::Point;
 use crate::Polygon;
 use crate::Solid;
@@ -170,6 +172,66 @@ impl Building {
         }
         false
     }
+
+    /// Builds an adjacency graph for the building.
+    ///
+    /// Returns a HashMap mapping entity paths to lists of adjacent entity paths.
+    /// Use GraphParams to control the level (polygon/wall/solid/zone) and
+    /// relationship types (facing/touching).
+    pub fn get_graph(&self, params: graph::GraphParams) -> HashMap<String, Vec<String>> {
+        graph::get_graph(self, params)
+    }
+
+    /// Returns all edges in the building graph as a flat list.
+    pub fn get_graph_edges(&self, params: graph::GraphParams) -> Vec<graph::GraphEdge> {
+        graph::get_graph_edges(self, params)
+    }
+
+    /// Finds all interfaces between adjacent solids.
+    ///
+    /// Returns detailed information about each interface, including whether
+    /// the interface is correct (faces match exactly).
+    pub fn stitch_solids(&self) -> Vec<graph::StitchInfo> {
+        graph::stitch_solids(self)
+    }
+
+    /// Gets a zone by path (zone_name).
+    pub fn get_zone(&self, path: &str) -> Option<&Zone> {
+        self.zones.get(path)
+    }
+
+    /// Gets a solid by path (zone_name/solid_name).
+    pub fn get_solid(&self, path: &str) -> Option<&Solid> {
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let zone = self.zones.get(parts[0])?;
+        zone.solids().into_iter().find(|s| s.name == parts[1])
+    }
+
+    /// Gets a wall by path (zone_name/solid_name/wall_name).
+    pub fn get_wall(&self, path: &str) -> Option<&Wall> {
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let zone = self.zones.get(parts[0])?;
+        let solid = zone.solids().into_iter().find(|s| s.name == parts[1])?;
+        solid.walls().into_iter().find(|w| w.name == parts[2])
+    }
+
+    /// Gets a polygon by path (zone_name/solid_name/wall_name/polygon_name).
+    pub fn get_polygon(&self, path: &str) -> Option<&Polygon> {
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() != 4 {
+            return None;
+        }
+        let zone = self.zones.get(parts[0])?;
+        let solid = zone.solids().into_iter().find(|s| s.name == parts[1])?;
+        let wall = solid.walls().into_iter().find(|w| w.name == parts[2])?;
+        wall.polygons().into_iter().find(|p| p.name == parts[3])
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +314,69 @@ mod tests {
 
         // Outside
         assert!(!bdg.is_point_inside(Point::new(5.0, 5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_path_access_zone() {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
+        let z1 = Zone::new("zone1", vec![s1]);
+        let bdg = Building::new("building", vec![z1]);
+
+        // Valid path
+        let zone = bdg.get_zone("zone1");
+        assert!(zone.is_some());
+        assert_eq!(zone.unwrap().name, "zone1");
+
+        // Invalid path
+        assert!(bdg.get_zone("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_path_access_solid() {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
+        let z1 = Zone::new("zone1", vec![s1]);
+        let bdg = Building::new("building", vec![z1]);
+
+        // Valid path
+        let solid = bdg.get_solid("zone1/box1");
+        assert!(solid.is_some());
+        assert_eq!(solid.unwrap().name, "box1");
+
+        // Invalid paths
+        assert!(bdg.get_solid("zone1").is_none()); // Wrong format
+        assert!(bdg.get_solid("zone1/nonexistent").is_none());
+        assert!(bdg.get_solid("nonexistent/box1").is_none());
+    }
+
+    #[test]
+    fn test_path_access_wall() {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
+        let z1 = Zone::new("zone1", vec![s1]);
+        let bdg = Building::new("building", vec![z1]);
+
+        // Valid path - box has wall_0, wall_1, wall_2, wall_3, floor, ceiling
+        let wall = bdg.get_wall("zone1/box1/wall_0");
+        assert!(wall.is_some());
+        assert_eq!(wall.unwrap().name, "wall_0");
+
+        // Invalid paths
+        assert!(bdg.get_wall("zone1/box1").is_none()); // Wrong format
+        assert!(bdg.get_wall("zone1/box1/nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_path_access_polygon() {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
+        let z1 = Zone::new("zone1", vec![s1]);
+        let bdg = Building::new("building", vec![z1]);
+
+        // Valid path - floor wall has floor polygon
+        let poly = bdg.get_polygon("zone1/box1/floor/floor");
+        assert!(poly.is_some());
+        assert_eq!(poly.unwrap().name, "floor");
+
+        // Invalid paths
+        assert!(bdg.get_polygon("zone1/box1/floor").is_none()); // Wrong format
+        assert!(bdg.get_polygon("zone1/box1/floor/nonexistent").is_none());
     }
 }
