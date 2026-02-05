@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod boolean;
 pub mod containment;
 pub mod relations;
 pub mod slice;
