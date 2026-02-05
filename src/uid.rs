@@ -16,6 +16,12 @@ impl From<String> for UID {
     }
 }
 
+impl Default for UID {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UID {
     pub fn new() -> Self {
         Self(Self::random())

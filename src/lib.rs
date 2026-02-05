@@ -19,4 +19,3 @@ pub use geom::wall::Wall;
 pub use geom::zone::Zone;
 pub use name::{HasName, SortByName};
 pub use uid::UID;
-// pub use world::World; // TODO

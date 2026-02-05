@@ -46,8 +46,8 @@ pub fn write_stl(path: &Path, mesh: &Mesh, name: &str, format: StlFormat) -> Res
 
 /// Writes a mesh to an ASCII STL file.
 fn write_stl_ascii(path: &Path, mesh: &Mesh, name: &str) -> Result<()> {
-    let file = File::create(path)
-        .with_context(|| format!("Failed to create file: {}", path.display()))?;
+    let file =
+        File::create(path).with_context(|| format!("Failed to create file: {}", path.display()))?;
     let mut writer = BufWriter::new(file);
 
     let faces = mesh
@@ -88,8 +88,8 @@ fn write_stl_ascii(path: &Path, mesh: &Mesh, name: &str) -> Result<()> {
 
 /// Writes a mesh to a binary STL file.
 fn write_stl_binary(path: &Path, mesh: &Mesh, name: &str) -> Result<()> {
-    let file = File::create(path)
-        .with_context(|| format!("Failed to create file: {}", path.display()))?;
+    let file =
+        File::create(path).with_context(|| format!("Failed to create file: {}", path.display()))?;
     let mut writer = BufWriter::new(file);
 
     let faces = mesh

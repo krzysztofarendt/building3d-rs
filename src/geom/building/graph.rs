@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
-use crate::geom::polygon::relations::{are_polygons_facing, are_polygons_touching};
 use crate::Building;
 use crate::Polygon;
 use crate::Solid;
 use crate::Wall;
+use crate::geom::polygon::relations::{are_polygons_facing, are_polygons_touching};
 
 /// Represents the level of granularity for graph construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,14 +166,8 @@ fn build_polygon_graph(
             }
 
             if connected {
-                graph
-                    .entry(path1.clone())
-                    .or_default()
-                    .push(path2.clone());
-                graph
-                    .entry(path2.clone())
-                    .or_default()
-                    .push(path1.clone());
+                graph.entry(path1.clone()).or_default().push(path2.clone());
+                graph.entry(path2.clone()).or_default().push(path1.clone());
             }
         }
     }
@@ -204,14 +198,8 @@ fn build_wall_graph(
             }
 
             if connected {
-                graph
-                    .entry(path1.clone())
-                    .or_default()
-                    .push(path2.clone());
-                graph
-                    .entry(path2.clone())
-                    .or_default()
-                    .push(path1.clone());
+                graph.entry(path1.clone()).or_default().push(path2.clone());
+                graph.entry(path2.clone()).or_default().push(path1.clone());
             }
         }
     }
@@ -241,14 +229,8 @@ fn build_solid_graph(
             }
 
             if connected {
-                graph
-                    .entry(path1.clone())
-                    .or_default()
-                    .push(path2.clone());
-                graph
-                    .entry(path2.clone())
-                    .or_default()
-                    .push(path1.clone());
+                graph.entry(path1.clone()).or_default().push(path2.clone());
+                graph.entry(path2.clone()).or_default().push(path1.clone());
             }
         }
     }

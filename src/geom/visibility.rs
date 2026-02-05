@@ -238,8 +238,8 @@ mod tests {
         let from = Point::new(0.0, 0.0, 0.0);
         let targets = vec![
             Point::new(0.0, 0.0, 10.0), // Blocked
-            Point::new(5.0, 5.0, 5.0),   // Visible (around blocker)
-            Point::new(0.0, 0.0, 3.0),   // Visible (before blocker)
+            Point::new(5.0, 5.0, 5.0),  // Visible (around blocker)
+            Point::new(0.0, 0.0, 3.0),  // Visible (before blocker)
         ];
         let blocker = make_blocker_at_z(5.0)?;
         let blockers: Vec<&Polygon> = vec![&blocker];
@@ -248,8 +248,8 @@ mod tests {
 
         // Targets 1 and 2 should be visible
         assert!(!visible.contains(&0)); // Blocked
-        assert!(visible.contains(&1));  // Around blocker
-        assert!(visible.contains(&2));  // Before blocker
+        assert!(visible.contains(&1)); // Around blocker
+        assert!(visible.contains(&2)); // Before blocker
 
         Ok(())
     }
@@ -259,8 +259,8 @@ mod tests {
         let from = Point::new(0.0, 0.0, 0.0);
         let targets = vec![
             Point::new(0.0, 0.0, 10.0), // Blocked
-            Point::new(5.0, 5.0, 5.0),   // Visible
-            Point::new(0.0, 0.0, 3.0),   // Visible
+            Point::new(5.0, 5.0, 5.0),  // Visible
+            Point::new(0.0, 0.0, 3.0),  // Visible
         ];
         let blocker = make_blocker_at_z(5.0)?;
         let blockers: Vec<&Polygon> = vec![&blocker];

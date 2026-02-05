@@ -26,8 +26,8 @@ use std::path::Path;
 /// write_b3d(Path::new("model.b3d"), &building).unwrap();
 /// ```
 pub fn write_b3d(path: &Path, building: &Building) -> Result<()> {
-    let file = File::create(path)
-        .with_context(|| format!("Failed to create file: {}", path.display()))?;
+    let file =
+        File::create(path).with_context(|| format!("Failed to create file: {}", path.display()))?;
     let writer = BufWriter::new(file);
 
     serde_json::to_writer_pretty(writer, building)
@@ -53,8 +53,8 @@ pub fn write_b3d(path: &Path, building: &Building) -> Result<()> {
 /// println!("Loaded building: {}", building.name);
 /// ```
 pub fn read_b3d(path: &Path) -> Result<Building> {
-    let file = File::open(path)
-        .with_context(|| format!("Failed to open file: {}", path.display()))?;
+    let file =
+        File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
     let reader = BufReader::new(file);
 
     let building: Building = serde_json::from_reader(reader)

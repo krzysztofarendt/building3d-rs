@@ -62,8 +62,7 @@ impl Ray {
         // Ray: P = origin + t * direction
         // Substitute: a*(ox + t*dx) + b*(oy + t*dy) + c*(oz + t*dz) + d = 0
         // Solve for t: t = -(a*ox + b*oy + c*oz + d) / (a*dx + b*dy + c*dz)
-        let origin_dot =
-            a * self.origin.x + b * self.origin.y + c * self.origin.z + d;
+        let origin_dot = a * self.origin.x + b * self.origin.y + c * self.origin.z + d;
         let t = -origin_dot / denom;
 
         // Only consider intersections in front of ray (t > 0)
@@ -122,35 +121,23 @@ mod tests {
 
     #[test]
     fn test_ray_creation() {
-        let ray = Ray::new(
-            Point::new(0.0, 0.0, 0.0),
-            Vector::new(1.0, 0.0, 0.0),
-        );
+        let ray = Ray::new(Point::new(0.0, 0.0, 0.0), Vector::new(1.0, 0.0, 0.0));
         assert!(ray.is_some());
 
         // Zero direction should fail
-        let ray = Ray::new(
-            Point::new(0.0, 0.0, 0.0),
-            Vector::new(0.0, 0.0, 0.0),
-        );
+        let ray = Ray::new(Point::new(0.0, 0.0, 0.0), Vector::new(0.0, 0.0, 0.0));
         assert!(ray.is_none());
     }
 
     #[test]
     fn test_ray_from_points() {
-        let ray = Ray::from_points(
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(1.0, 1.0, 1.0),
-        );
+        let ray = Ray::from_points(Point::new(0.0, 0.0, 0.0), Point::new(1.0, 1.0, 1.0));
         assert!(ray.is_some());
     }
 
     #[test]
     fn test_ray_point_at() {
-        let ray = Ray::new(
-            Point::new(0.0, 0.0, 0.0),
-            Vector::new(1.0, 0.0, 0.0),
-        ).unwrap();
+        let ray = Ray::new(Point::new(0.0, 0.0, 0.0), Vector::new(1.0, 0.0, 0.0)).unwrap();
 
         let p = ray.point_at(5.0);
         assert!(p.is_close(&Point::new(5.0, 0.0, 0.0)));
@@ -161,10 +148,7 @@ mod tests {
         let polygon = make_xy_square()?;
 
         // Ray pointing at polygon from below
-        let ray = Ray::new(
-            Point::new(1.0, 1.0, -5.0),
-            Vector::new(0.0, 0.0, 1.0),
-        ).unwrap();
+        let ray = Ray::new(Point::new(1.0, 1.0, -5.0), Vector::new(0.0, 0.0, 1.0)).unwrap();
 
         let result = ray.intersect_polygon(&polygon);
         assert!(result.is_some());
@@ -181,10 +165,7 @@ mod tests {
         let polygon = make_xy_square()?;
 
         // Ray pointing away from polygon
-        let ray = Ray::new(
-            Point::new(1.0, 1.0, -5.0),
-            Vector::new(0.0, 0.0, -1.0),
-        ).unwrap();
+        let ray = Ray::new(Point::new(1.0, 1.0, -5.0), Vector::new(0.0, 0.0, -1.0)).unwrap();
 
         let result = ray.intersect_polygon(&polygon);
         assert!(result.is_none());
@@ -197,10 +178,7 @@ mod tests {
         let polygon = make_xy_square()?;
 
         // Ray parallel to polygon plane
-        let ray = Ray::new(
-            Point::new(1.0, 1.0, 1.0),
-            Vector::new(1.0, 0.0, 0.0),
-        ).unwrap();
+        let ray = Ray::new(Point::new(1.0, 1.0, 1.0), Vector::new(1.0, 0.0, 0.0)).unwrap();
 
         let result = ray.intersect_polygon(&polygon);
         assert!(result.is_none());
@@ -213,10 +191,7 @@ mod tests {
         let polygon = make_xy_square()?;
 
         // Ray hits plane but outside polygon
-        let ray = Ray::new(
-            Point::new(10.0, 10.0, -5.0),
-            Vector::new(0.0, 0.0, 1.0),
-        ).unwrap();
+        let ray = Ray::new(Point::new(10.0, 10.0, -5.0), Vector::new(0.0, 0.0, 1.0)).unwrap();
 
         let result = ray.intersect_polygon(&polygon);
         assert!(result.is_none());
@@ -246,10 +221,7 @@ mod tests {
         let polygons: Vec<&Polygon> = vec![&poly1, &poly2];
 
         // Ray from below, should hit poly1 first
-        let ray = Ray::new(
-            Point::new(1.0, 1.0, -2.0),
-            Vector::new(0.0, 0.0, 1.0),
-        ).unwrap();
+        let ray = Ray::new(Point::new(1.0, 1.0, -2.0), Vector::new(0.0, 0.0, 1.0)).unwrap();
 
         let result = ray.intersect_polygons(&polygons);
         assert!(result.is_some());

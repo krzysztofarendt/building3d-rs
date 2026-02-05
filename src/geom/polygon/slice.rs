@@ -3,7 +3,7 @@
 //! This module provides functions for cutting polygons along a line,
 //! producing two new polygons.
 
-use crate::geom::segment::{segment_intersection, SegmentIntersection};
+use crate::geom::segment::{SegmentIntersection, segment_intersection};
 use crate::{Point, Polygon};
 use anyhow::{Result, anyhow};
 
@@ -48,7 +48,11 @@ pub struct SliceResult {
 /// let result = slice_polygon(&poly, Point::new(-1.0, 1.0, 0.0), Point::new(3.0, 1.0, 0.0)).unwrap();
 /// // result.poly1 and result.poly2 are the two halves
 /// ```
-pub fn slice_polygon(polygon: &Polygon, slice_start: Point, slice_end: Point) -> Result<SliceResult> {
+pub fn slice_polygon(
+    polygon: &Polygon,
+    slice_start: Point,
+    slice_end: Point,
+) -> Result<SliceResult> {
     let vertices = polygon.vertices();
     let n = vertices.len();
 
@@ -69,7 +73,9 @@ pub fn slice_polygon(polygon: &Polygon, slice_start: Point, slice_end: Point) ->
                 // (segment_intersection checks if it's on the infinite line)
                 if is_point_on_segment(pt, p1, p2) {
                     // Avoid duplicate intersections at vertices
-                    let is_duplicate = intersections.iter().any(|(_, existing)| existing.is_close(&pt));
+                    let is_duplicate = intersections
+                        .iter()
+                        .any(|(_, existing)| existing.is_close(&pt));
                     if !is_duplicate {
                         intersections.push((i, pt));
                     }
@@ -77,8 +83,12 @@ pub fn slice_polygon(polygon: &Polygon, slice_start: Point, slice_end: Point) ->
             }
             SegmentIntersection::Collinear(start, end) => {
                 // Edge is collinear with slice line - use endpoints
-                let is_dup1 = intersections.iter().any(|(_, existing)| existing.is_close(&start));
-                let is_dup2 = intersections.iter().any(|(_, existing)| existing.is_close(&end));
+                let is_dup1 = intersections
+                    .iter()
+                    .any(|(_, existing)| existing.is_close(&start));
+                let is_dup2 = intersections
+                    .iter()
+                    .any(|(_, existing)| existing.is_close(&end));
                 if !is_dup1 {
                     intersections.push((i, start));
                 }
