@@ -3,24 +3,8 @@
 Prioritized improvements and next steps for building3d-rs.
 
 All critical bugs (issues #1-#5) and most high-severity issues (#6-#11, #19)
-from ISSUES_CLAUDE.md have been fixed. The items below are what remains.
-
-## High Priority
-
-### 1. Add CI/CD
-
-No `.github/workflows/` exists. A basic pipeline running `cargo test`, `cargo clippy`, and `cargo fmt --check` on PRs would catch regressions early.
-
-### 2. Audit/remove unused dependency
-
-`three-d = "0.18"` appears in `Cargo.toml` but doesn't seem to be used in the code. Unused deps increase compile time significantly.
-
-### 3. Path-based access is O(n) with allocations
-
-`Building::get_solid/get_wall/get_polygon` call `.solids()` / `.walls()` which
-allocate and sort a `Vec`, then do linear search. Adding direct `HashMap` getters
-(`Zone::get_solid(&str)`, `Solid::get_wall(&str)`, `Wall::get_polygon(&str)`)
-would make path access O(1) with no allocation.
+from ISSUES_CLAUDE.md have been fixed. High-priority items (CI, unused deps,
+O(1) path access) are also done. The items below are what remains.
 
 ## Medium Priority
 
@@ -74,13 +58,13 @@ a single zone named `"imported"`. Zone structure is lost on round-trip.
 
 ## Summary
 
-| Priority | Area | Effort |
+| Priority | Area | Status |
 |----------|------|--------|
-| High | Add CI pipeline | Small |
-| High | Remove unused `three-d` dep | Trivial |
-| High | O(1) path-based access | Small |
-| Medium | Vertex deduplication | Medium |
-| Medium | STL topology reconstruction | Large |
-| Medium | Documentation pass | Medium |
-| Medium | B3D validation | Small |
-| Low | World module, benchmarks, more examples | Ongoing |
+| ~~High~~ | ~~Add CI pipeline~~ | Done |
+| ~~High~~ | ~~Remove unused `three-d` dep~~ | Done |
+| ~~High~~ | ~~O(1) path-based access~~ | Done |
+| Medium | Vertex deduplication | Open |
+| Medium | STL topology reconstruction | Open |
+| Medium | Documentation pass | Open |
+| Medium | B3D validation | Open |
+| Low | World module, benchmarks, more examples | Open |

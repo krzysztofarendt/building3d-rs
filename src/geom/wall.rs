@@ -86,6 +86,11 @@ impl Wall {
         polygons
     }
 
+    /// Gets a polygon by name via direct HashMap lookup (O(1)).
+    pub fn get_polygon(&self, name: &str) -> Option<&Polygon> {
+        self.polygons.get(name)
+    }
+
     pub fn rotate(&mut self, angle: f64, rot_vec: &Vector) {
         let mut polygons: Vec<&mut Polygon> = self.polygons.values_mut().collect();
         for poly in polygons.iter_mut() {

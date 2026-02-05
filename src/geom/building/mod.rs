@@ -220,8 +220,7 @@ impl Building {
         if parts.len() != 2 {
             return None;
         }
-        let zone = self.zones.get(parts[0])?;
-        zone.solids().into_iter().find(|s| s.name == parts[1])
+        self.zones.get(parts[0])?.get_solid(parts[1])
     }
 
     /// Gets a wall by path (zone_name/solid_name/wall_name).
@@ -230,9 +229,7 @@ impl Building {
         if parts.len() != 3 {
             return None;
         }
-        let zone = self.zones.get(parts[0])?;
-        let solid = zone.solids().into_iter().find(|s| s.name == parts[1])?;
-        solid.walls().into_iter().find(|w| w.name == parts[2])
+        self.zones.get(parts[0])?.get_solid(parts[1])?.get_wall(parts[2])
     }
 
     /// Gets a polygon by path (zone_name/solid_name/wall_name/polygon_name).
@@ -241,10 +238,10 @@ impl Building {
         if parts.len() != 4 {
             return None;
         }
-        let zone = self.zones.get(parts[0])?;
-        let solid = zone.solids().into_iter().find(|s| s.name == parts[1])?;
-        let wall = solid.walls().into_iter().find(|w| w.name == parts[2])?;
-        wall.polygons().into_iter().find(|p| p.name == parts[3])
+        self.zones.get(parts[0])?
+            .get_solid(parts[1])?
+            .get_wall(parts[2])?
+            .get_polygon(parts[3])
     }
 
     pub fn repair_parents(&mut self) {

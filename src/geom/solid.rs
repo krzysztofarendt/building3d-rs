@@ -93,6 +93,11 @@ impl Solid {
         walls
     }
 
+    /// Gets a wall by name via direct HashMap lookup (O(1)).
+    pub fn get_wall(&self, name: &str) -> Option<&Wall> {
+        self.walls.get(name)
+    }
+
     pub fn polygons(&self) -> Vec<&Polygon> {
         let walls = self.walls();
         let polygons: Vec<&Polygon> = walls.iter().flat_map(|w| w.polygons()).collect();

@@ -96,6 +96,11 @@ impl Zone {
         solids
     }
 
+    /// Gets a solid by name via direct HashMap lookup (O(1)).
+    pub fn get_solid(&self, name: &str) -> Option<&Solid> {
+        self.solids.get(name)
+    }
+
     /// Returns walls from all solids, sorted by name.
     pub fn walls(&self) -> Vec<&Wall> {
         let solids = self.solids();
