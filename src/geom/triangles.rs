@@ -1,6 +1,5 @@
 use crate::Point;
 use crate::geom::EPS;
-use crate::geom::IsClose;
 use crate::geom::bboxes::is_point_inside_bbox;
 use crate::geom::point::check::are_points_collinear;
 use crate::geom::point::check::is_point_on_same_side;
@@ -22,9 +21,9 @@ pub fn triangulate(
     if num_try >= 2 {
         return Err(anyhow!("Ear-clipping algorithm failed."));
     }
-    if vn.length().is_close(0.) {
-        return Err(anyhow!("Normal vector cannot have zero length"));
-    }
+    let vn = vn
+        .normalize()
+        .map_err(|_| anyhow!("Normal vector cannot have zero length"))?;
 
     let mut vertices: Vec<(usize, &Point)> = Vec::new();
     for (i, p) in pts.iter().enumerate() {
@@ -38,7 +37,7 @@ pub fn triangulate(
         if num_fail > pts.len() {
             // Try with flipped points
             pts = pts.iter().rev().cloned().collect();
-            return triangulate(pts, vn, num_try + 1); // TODO: shouldn't num_try be resetted here?
+            return triangulate(pts, vn, num_try + 1);
         }
 
         // If last vertex, start from the beginning
@@ -103,7 +102,10 @@ pub fn triangulate(
 /// # Panics
 /// It panics if the length of the normal vector vn is not 1.
 pub fn is_corner_convex(p1: &Point, p2: &Point, p3: &Point, vn: &Vector) -> bool {
-    assert!((vn.length() - 1.0).abs() < EPS);
+    let vn = match vn.normalize() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
 
     let v1: Vector = *p2 - *p1;
     let v2: Vector = *p3 - *p2;
@@ -114,7 +116,7 @@ pub fn is_corner_convex(p1: &Point, p2: &Point, p3: &Point, vn: &Vector) -> bool
     let v1v2_n = v1v2_n.unwrap();
 
     // If v1v2_n is equal to the vn, the corner must be convex
-    v1v2_n.is_close(vn)
+    v1v2_n.is_close(&vn)
 }
 
 /// Tests if point `ptest` is inside the triangle `(p1, p2, p3)`.

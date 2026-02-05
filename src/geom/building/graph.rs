@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(graph.len(), 2);
 
         // Each solid should be connected to the other
-        for (_path, neighbors) in &graph {
+        for neighbors in graph.values() {
             assert_eq!(neighbors.len(), 1);
         }
     }

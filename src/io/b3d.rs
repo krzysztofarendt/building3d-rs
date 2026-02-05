@@ -57,8 +57,10 @@ pub fn read_b3d(path: &Path) -> Result<Building> {
         File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
     let reader = BufReader::new(file);
 
-    let building: Building = serde_json::from_reader(reader)
+    let mut building: Building = serde_json::from_reader(reader)
         .with_context(|| format!("Failed to deserialize building from: {}", path.display()))?;
+
+    building.repair_parents();
 
     Ok(building)
 }
@@ -74,7 +76,10 @@ pub fn to_b3d_string(building: &Building) -> Result<String> {
 ///
 /// Useful for in-memory operations or network transfer.
 pub fn from_b3d_string(json: &str) -> Result<Building> {
-    serde_json::from_str(json).context("Failed to deserialize building from string")
+    let mut building: Building =
+        serde_json::from_str(json).context("Failed to deserialize building from string")?;
+    building.repair_parents();
+    Ok(building)
 }
 
 #[cfg(test)]

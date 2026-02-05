@@ -74,6 +74,9 @@ pub fn is_point_on_same_side(p1: Point, p2: Point, ptest: Point, pref: Point) ->
 
 /// Checks if all points are (almost) equal
 pub fn are_points_close(pts: &[Point]) -> bool {
+    if pts.is_empty() {
+        return true;
+    }
     let mut all_close = true;
     let p0 = pts[0];
     for p in pts.iter().skip(1) {

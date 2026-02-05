@@ -221,9 +221,9 @@ impl Div for Vector {
             None
         } else {
             Some(Self {
-                dx: self.dx * other.dx,
-                dy: self.dy * other.dy,
-                dz: self.dz * other.dz,
+                dx: self.dx / other.dx,
+                dy: self.dy / other.dy,
+                dz: self.dz / other.dz,
             })
         }
     }
@@ -231,7 +231,7 @@ impl Div for Vector {
 impl Div<f64> for Vector {
     type Output = Option<Self>;
     fn div(self, other: f64) -> Option<Self> {
-        if other < EPS {
+        if other.abs() < EPS {
             None
         } else {
             Some(Self {

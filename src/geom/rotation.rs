@@ -36,9 +36,10 @@ use ndarray as nd;
 /// https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
 /// https://math.stackexchange.com/questions/142821/matrix-for-rotation-around-a-vector
 pub fn rotation_matrix(u: &Vector, phi: f64) -> nd::Array2<f64> {
-    if !u.length().is_close(1.) {
-        panic!("rotation_matrix() requires u to be a unit vector");
-    }
+    let u = match u.normalize() {
+        Ok(v) => v,
+        Err(_) => return nd::Array::eye(3),
+    };
 
     let w: nd::Array2<f64> = nd::arr2(&[[0., -u.dz, u.dy], [u.dz, 0., -u.dx], [-u.dy, u.dx, 0.]]);
 
@@ -67,7 +68,11 @@ pub fn rotate_points_around_vector(pts: &[Point], u: &Vector, phi: f64) -> Vec<P
         // No need to rotate
         return pts.to_vec();
     }
-    let rot = rotation_matrix(u, phi);
+    let u = match u.normalize() {
+        Ok(v) => v,
+        Err(_) => return pts.to_vec(),
+    };
+    let rot = rotation_matrix(&u, phi);
 
     rotate_points(pts, &rot.t())
 }

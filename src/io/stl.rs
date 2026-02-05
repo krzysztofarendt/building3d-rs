@@ -6,6 +6,7 @@
 
 use crate::{HasMesh, Mesh, Point, Solid, Vector};
 use anyhow::{Context, Result, anyhow};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -212,6 +213,7 @@ fn read_stl_ascii(path: &Path) -> Result<Mesh> {
 
     let mut vertices: Vec<Point> = Vec::new();
     let mut faces: Vec<crate::TriangleIndex> = Vec::new();
+    let mut vertex_map: HashMap<(i64, i64, i64), usize> = HashMap::new();
 
     let mut current_vertices: Vec<Point> = Vec::new();
 
@@ -229,9 +231,10 @@ fn read_stl_ascii(path: &Path) -> Result<Mesh> {
             }
         } else if trimmed.starts_with("endloop") {
             if current_vertices.len() == 3 {
-                let base_idx = vertices.len();
-                vertices.append(&mut current_vertices);
-                faces.push(crate::TriangleIndex(base_idx, base_idx + 1, base_idx + 2));
+                let i0 = add_dedup_vertex(&mut vertex_map, &mut vertices, current_vertices[0]);
+                let i1 = add_dedup_vertex(&mut vertex_map, &mut vertices, current_vertices[1]);
+                let i2 = add_dedup_vertex(&mut vertex_map, &mut vertices, current_vertices[2]);
+                faces.push(crate::TriangleIndex(i0, i1, i2));
             }
             current_vertices.clear();
         }
@@ -260,14 +263,16 @@ fn read_stl_binary(path: &Path, _file_size: u64) -> Result<Mesh> {
 
     let mut vertices: Vec<Point> = Vec::with_capacity(num_triangles * 3);
     let mut faces: Vec<crate::TriangleIndex> = Vec::with_capacity(num_triangles);
+    let mut vertex_map: HashMap<(i64, i64, i64), usize> = HashMap::new();
 
-    for i in 0..num_triangles {
+    for _ in 0..num_triangles {
         // Skip normal (3 x f32 = 12 bytes)
         let mut normal_bytes = [0u8; 12];
         std::io::Read::read_exact(&mut reader, &mut normal_bytes)?;
 
         // Read 3 vertices
-        for _ in 0..3 {
+        let mut tri_idx: [usize; 3] = [0; 3];
+        for slot in tri_idx.iter_mut() {
             let mut v_bytes = [0u8; 12];
             std::io::Read::read_exact(&mut reader, &mut v_bytes)?;
 
@@ -275,21 +280,45 @@ fn read_stl_binary(path: &Path, _file_size: u64) -> Result<Mesh> {
             let y = f32::from_le_bytes([v_bytes[4], v_bytes[5], v_bytes[6], v_bytes[7]]) as f64;
             let z = f32::from_le_bytes([v_bytes[8], v_bytes[9], v_bytes[10], v_bytes[11]]) as f64;
 
-            vertices.push(Point::new(x, y, z));
+            *slot = add_dedup_vertex(&mut vertex_map, &mut vertices, Point::new(x, y, z));
         }
 
         // Skip attribute byte count (2 bytes)
         let mut attr_bytes = [0u8; 2];
         std::io::Read::read_exact(&mut reader, &mut attr_bytes)?;
 
-        let base_idx = i * 3;
-        faces.push(crate::TriangleIndex(base_idx, base_idx + 1, base_idx + 2));
+        faces.push(crate::TriangleIndex(tri_idx[0], tri_idx[1], tri_idx[2]));
     }
 
     Ok(Mesh {
         vertices,
         faces: Some(faces),
     })
+}
+
+const STL_DEDUP_SCALE: f64 = 1e9;
+
+fn stl_vertex_key(p: Point) -> (i64, i64, i64) {
+    (
+        (p.x * STL_DEDUP_SCALE).round() as i64,
+        (p.y * STL_DEDUP_SCALE).round() as i64,
+        (p.z * STL_DEDUP_SCALE).round() as i64,
+    )
+}
+
+fn add_dedup_vertex(
+    map: &mut HashMap<(i64, i64, i64), usize>,
+    vertices: &mut Vec<Point>,
+    p: Point,
+) -> usize {
+    let key = stl_vertex_key(p);
+    if let Some(&idx) = map.get(&key) {
+        return idx;
+    }
+    let idx = vertices.len();
+    vertices.push(p);
+    map.insert(key, idx);
+    idx
 }
 
 /// Convenience function to write any HasMesh object to STL.
@@ -415,8 +444,8 @@ mod tests {
             original.faces.as_ref().unwrap().len()
         );
 
-        // Each triangle has 3 vertices (not deduplicated)
-        assert_eq!(loaded.vertices.len(), 4 * 3);
+        // Vertices are deduplicated
+        assert_eq!(loaded.vertices.len(), original.vertices.len());
 
         Ok(())
     }
@@ -438,6 +467,9 @@ mod tests {
             loaded.faces.as_ref().unwrap().len(),
             original.faces.as_ref().unwrap().len()
         );
+
+        // Vertices are deduplicated
+        assert_eq!(loaded.vertices.len(), original.vertices.len());
 
         Ok(())
     }

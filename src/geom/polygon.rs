@@ -60,9 +60,10 @@ impl Polygon {
         // then calculate it from the points of the first corner: last, 0, 1.
         // If the calculated normal is None, the corner points are collinear so go panic.
         // The first corner must be convex.
-        // TODO: Validate the normal vector if it is provided (check if it's orthogonal).
         let vn = match normal {
-            Some(v) => v,
+            Some(v) => v
+                .normalize()
+                .map_err(|_| anyhow!("Normal vector invalid."))?,
             None => {
                 let last = pts.len() - 1;
                 match Vector::normal(pts[last], pts[0], pts[1]) {

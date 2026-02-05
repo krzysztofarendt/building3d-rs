@@ -10,6 +10,7 @@ use crate::TriangleIndex;
 use crate::UID;
 use crate::Vector;
 use crate::Wall;
+use crate::geom;
 use crate::geom::bboxes::bounding_box;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
@@ -41,12 +42,15 @@ impl HasMesh for Zone {
         for &poly in polygons.iter() {
             let mesh = poly.copy_mesh();
             vertices.extend(mesh.vertices);
-            let mut tri: Vec<TriangleIndex> = mesh.faces.unwrap();
-            tri = tri
-                .into_iter()
-                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
-                .collect();
-            triangles.extend(tri.into_iter());
+            if let Some(faces) = mesh.faces {
+                let tri = faces
+                    .into_iter()
+                    .map(|t| {
+                        TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices)
+                    })
+                    .collect::<Vec<_>>();
+                triangles.extend(tri);
+            }
             num_vertices += poly.mesh_ref().vertices.len();
         }
 
@@ -60,19 +64,25 @@ impl HasMesh for Zone {
 impl Zone {
     /// Creates a new zone with the given name and solids.
     pub fn new(name: &str, mut solids: Vec<Solid>) -> Self {
+        let name = geom::validate_name(name).expect("Invalid zone name");
         let uid = UID::new();
         for s in solids.iter_mut() {
             s.parent = Some(uid.clone());
         }
         let parent = None;
-        let solids: HashMap<String, Solid> =
-            solids.into_iter().map(|x| (x.name.clone(), x)).collect();
+        let mut map: HashMap<String, Solid> = HashMap::new();
+        for solid in solids {
+            if map.contains_key(&solid.name) {
+                panic!("Solid is already present in Zone::new(): {}", &solid.name);
+            }
+            map.insert(solid.name.clone(), solid);
+        }
 
         Self {
             name: name.to_string(),
             uid,
             parent,
-            solids,
+            solids: map,
         }
     }
 
@@ -99,6 +109,7 @@ impl Zone {
 
     /// Adds a solid to the zone.
     pub fn add_solid(&mut self, mut solid: Solid) -> Result<()> {
+        solid.name = geom::validate_name(&solid.name)?;
         if self.solids.contains_key(&solid.name) {
             return Err(anyhow!("Solid is already present: {}", &solid.name));
         }
@@ -150,6 +161,13 @@ impl Zone {
             }
         }
         false
+    }
+
+    pub(crate) fn repair_parents(&mut self) {
+        for solid in self.solids.values_mut() {
+            solid.parent = Some(self.uid.clone());
+            solid.repair_parents();
+        }
     }
 }
 

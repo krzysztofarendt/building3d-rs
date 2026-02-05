@@ -4,6 +4,7 @@ use crate::TriangleIndex;
 use crate::UID;
 use crate::Vector;
 use crate::Wall;
+use crate::geom;
 use crate::geom::IsClose;
 use crate::geom::point::check::is_point_in_sequence;
 use crate::geom::tetrahedron::tetrahedron_volume;
@@ -40,12 +41,15 @@ impl HasMesh for Solid {
         for &poly in polygons.iter() {
             let mesh = poly.copy_mesh();
             vertices.extend(mesh.vertices);
-            let mut tri: Vec<TriangleIndex> = poly.copy_mesh().faces.unwrap();
-            tri = tri
-                .into_iter()
-                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
-                .collect();
-            triangles.extend(tri.into_iter());
+            if let Some(faces) = mesh.faces {
+                let tri = faces
+                    .into_iter()
+                    .map(|t| {
+                        TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices)
+                    })
+                    .collect::<Vec<_>>();
+                triangles.extend(tri);
+            }
             num_vertices += poly.mesh_ref().vertices.len();
         }
 
@@ -58,17 +62,24 @@ impl HasMesh for Solid {
 
 impl Solid {
     pub fn new(name: &str, mut walls: Vec<Wall>) -> Self {
+        let name = geom::validate_name(name).expect("Invalid solid name");
         let uid = UID::new();
         for w in walls.iter_mut() {
             w.parent = Some(uid.clone());
         }
         let parent = None;
-        let walls: HashMap<String, Wall> = walls.into_iter().map(|x| (x.name.clone(), x)).collect();
+        let mut map: HashMap<String, Wall> = HashMap::new();
+        for wall in walls {
+            if map.contains_key(&wall.name) {
+                panic!("Wall is already present in Solid::new(): {}", &wall.name);
+            }
+            map.insert(wall.name.clone(), wall);
+        }
         Self {
             name: name.to_string(),
             uid,
             parent,
-            walls,
+            walls: map,
         }
     }
 
@@ -88,6 +99,7 @@ impl Solid {
     }
 
     pub fn add_wall(&mut self, mut wall: Wall) -> Result<()> {
+        wall.name = geom::validate_name(&wall.name)?;
         if self.walls.contains_key(&wall.name) {
             return Err(anyhow!("Wall is already present: {}", &wall.name));
         }
@@ -121,7 +133,10 @@ impl Solid {
         let polygons = self.polygons();
         let p0 = Point::new(0., 0., 0.);
         for poly in polygons.iter() {
-            for tri in poly.mesh_ref().faces.as_ref().unwrap().iter() {
+            let Some(faces) = poly.mesh_ref().faces.as_ref() else {
+                continue;
+            };
+            for tri in faces.iter() {
                 let p1 = poly.mesh_ref().vertices[tri.0];
                 let p2 = poly.mesh_ref().vertices[tri.1];
                 let p3 = poly.mesh_ref().vertices[tri.2];
@@ -139,7 +154,7 @@ impl Solid {
                 total_volume += sign * v;
             }
         }
-        total_volume
+        total_volume.abs()
     }
 
     /// Checks if a point lies inside the solid.
@@ -220,12 +235,18 @@ impl Solid {
         let p6 = Point::new(x, y, z) + origin_vec;
         let p7 = Point::new(0., y, z) + origin_vec;
 
-        let poly_fl = Polygon::new("floor", vec![p0, p3, p2, p1], None).unwrap();
-        let poly_w0 = Polygon::new("poly_0", vec![p0, p1, p5, p4], None).unwrap();
-        let poly_w1 = Polygon::new("poly_1", vec![p1, p2, p6, p5], None).unwrap();
-        let poly_w2 = Polygon::new("poly_2", vec![p3, p7, p6, p2], None).unwrap();
-        let poly_w3 = Polygon::new("poly_3", vec![p0, p4, p7, p3], None).unwrap();
-        let poly_rf = Polygon::new("ceiling", vec![p4, p5, p6, p7], None).unwrap();
+        let poly_fl = Polygon::new("floor", vec![p0, p3, p2, p1], None)
+            .expect("Failed to create floor polygon for box solid");
+        let poly_w0 = Polygon::new("poly_0", vec![p0, p1, p5, p4], None)
+            .expect("Failed to create wall polygon for box solid");
+        let poly_w1 = Polygon::new("poly_1", vec![p1, p2, p6, p5], None)
+            .expect("Failed to create wall polygon for box solid");
+        let poly_w2 = Polygon::new("poly_2", vec![p3, p7, p6, p2], None)
+            .expect("Failed to create wall polygon for box solid");
+        let poly_w3 = Polygon::new("poly_3", vec![p0, p4, p7, p3], None)
+            .expect("Failed to create wall polygon for box solid");
+        let poly_rf = Polygon::new("ceiling", vec![p4, p5, p6, p7], None)
+            .expect("Failed to create ceiling polygon for box solid");
 
         let wall_fl = Wall::new("floor", vec![poly_fl]);
         let wall_0 = Wall::new("wall_0", vec![poly_w0]);
@@ -234,31 +255,29 @@ impl Solid {
         let wall_3 = Wall::new("wall_3", vec![poly_w3]);
         let wall_rf = Wall::new("ceiling", vec![poly_rf]);
 
-        let mut walls: HashMap<String, Wall> = HashMap::new();
-        for w in [wall_fl, wall_0, wall_1, wall_2, wall_3, wall_rf] {
-            walls.insert(w.name.clone(), w);
-        }
-
-        let name: String = name.to_string();
-        let uid = UID::new();
-        let parent = None;
-
-        Self {
-            name,
-            uid,
-            parent,
-            walls,
-        }
+        Solid::new(name, vec![wall_fl, wall_0, wall_1, wall_2, wall_3, wall_rf])
     }
 
     pub fn from_floor_plan(fp: FloorPlan) -> Result<Self> {
         // Sanity checks
         if fp.wall_names.is_some() {
-            let num_unique_names = fp.wall_names.iter().collect::<HashSet<_>>().len();
+            let num_unique_names = fp.wall_names.iter().flatten().collect::<HashSet<_>>().len();
             let num_names = fp.wall_names.as_ref().unwrap().len();
             let num_points = fp.plan.len();
-            assert_eq!(num_points, num_names);
-            assert_eq!(num_names, num_unique_names);
+            if num_points != num_names {
+                return Err(anyhow!(
+                    "FloorPlan wall_names length ({}) must match plan length ({})",
+                    num_names,
+                    num_points
+                ));
+            }
+            if num_names != num_unique_names {
+                return Err(anyhow!(
+                    "FloorPlan wall_names must be unique (got {}, unique {})",
+                    num_names,
+                    num_unique_names
+                ));
+            }
         }
 
         // Prepare wall names
@@ -393,6 +412,13 @@ impl Solid {
         let solid = Solid::new(&solid_name, walls);
 
         Ok(solid)
+    }
+
+    pub(crate) fn repair_parents(&mut self) {
+        for wall in self.walls.values_mut() {
+            wall.parent = Some(self.uid.clone());
+            wall.repair_parents();
+        }
     }
 }
 

@@ -2,6 +2,9 @@ use super::*;
 
 /// Checks if all vectors are (almost) equal
 pub fn are_vectors_close(vectors: &[Vector]) -> bool {
+    if vectors.is_empty() {
+        return true;
+    }
     let mut all_close = true;
     let v0 = vectors[0];
     for v in vectors.iter().skip(1) {

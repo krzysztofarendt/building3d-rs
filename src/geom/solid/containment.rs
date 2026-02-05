@@ -52,7 +52,7 @@ pub fn is_point_inside_solid(solid: &Solid, ptest: Point) -> bool {
     let mut outside_count = 0;
 
     for (dx, dy, dz) in directions {
-        let result = cast_ray(solid, ptest, dx, dy, dz, &bbox_max);
+        let result = cast_ray(solid, ptest, dx, dy, dz, &bbox_min, &bbox_max);
         if result {
             inside_count += 1;
         } else {
@@ -65,19 +65,29 @@ pub fn is_point_inside_solid(solid: &Solid, ptest: Point) -> bool {
 }
 
 /// Casts a ray from the test point and counts polygon crossings.
-fn cast_ray(solid: &Solid, ptest: Point, dx: f64, dy: f64, dz: f64, bbox_max: &Point) -> bool {
+fn cast_ray(
+    solid: &Solid,
+    ptest: Point,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    bbox_min: &Point,
+    bbox_max: &Point,
+) -> bool {
     // Normalize direction
     let len = (dx * dx + dy * dy + dz * dz).sqrt();
     let dx = dx / len;
     let dy = dy / len;
     let dz = dz / len;
 
-    // Calculate ray endpoint far enough to exit the solid
-    let diagonal = ((bbox_max.x - ptest.x).powi(2)
-        + (bbox_max.y - ptest.y).powi(2)
-        + (bbox_max.z - ptest.z).powi(2))
+    // Calculate ray endpoint far enough to exit the solid.
+    // Use the full bbox diagonal length so this remains valid even if `ptest`
+    // is near one corner and the ray points toward the opposite corner.
+    let bbox_diag = ((bbox_max.x - bbox_min.x).powi(2)
+        + (bbox_max.y - bbox_min.y).powi(2)
+        + (bbox_max.z - bbox_min.z).powi(2))
     .sqrt();
-    let ray_length = diagonal * 2.0 + 10.0; // Ensure we exit the solid
+    let ray_length = bbox_diag * 2.0 + 10.0;
 
     let ray_end = Point::new(
         ptest.x + dx * ray_length,

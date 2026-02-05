@@ -2,6 +2,7 @@ use crate::Point;
 use crate::TriangleIndex;
 use crate::UID;
 use crate::Vector;
+use crate::geom;
 use crate::geom::polygon::Polygon;
 use crate::{HasMesh, Mesh};
 use crate::{HasName, SortByName};
@@ -33,12 +34,15 @@ impl HasMesh for Wall {
         for &poly in polygons.iter() {
             let mesh = poly.copy_mesh();
             vertices.extend(mesh.vertices);
-            let mut tri: Vec<TriangleIndex> = poly.copy_mesh().faces.unwrap();
-            tri = tri
-                .into_iter()
-                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
-                .collect();
-            triangles.extend(tri.into_iter());
+            if let Some(faces) = mesh.faces {
+                let tri = faces
+                    .into_iter()
+                    .map(|t| {
+                        TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices)
+                    })
+                    .collect::<Vec<_>>();
+                triangles.extend(tri);
+            }
             num_vertices += poly.mesh_ref().vertices.len();
         }
 
@@ -51,18 +55,24 @@ impl HasMesh for Wall {
 
 impl Wall {
     pub fn new(name: &str, mut polygons: Vec<Polygon>) -> Self {
+        let name = geom::validate_name(name).expect("Invalid wall name");
         let uid = UID::new();
         for p in polygons.iter_mut() {
             p.parent = Some(uid.clone());
         }
         let parent = None;
-        let polygons: HashMap<String, Polygon> =
-            polygons.into_iter().map(|x| (x.name.clone(), x)).collect();
+        let mut map: HashMap<String, Polygon> = HashMap::new();
+        for poly in polygons {
+            if map.contains_key(&poly.name) {
+                panic!("Polygon is already present in Wall::new(): {}", &poly.name);
+            }
+            map.insert(poly.name.clone(), poly);
+        }
         Self {
             name: name.to_string(),
             uid,
             parent,
-            polygons,
+            polygons: map,
         }
     }
 
@@ -88,6 +98,7 @@ impl Wall {
     }
 
     pub fn add_polygon(&mut self, mut polygon: Polygon) -> Result<()> {
+        polygon.name = geom::validate_name(&polygon.name)?;
         if self.polygons.contains_key(&polygon.name) {
             return Err(anyhow!("Polygon is already present: {}", &polygon.name));
         }
@@ -111,5 +122,11 @@ impl Wall {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn repair_parents(&mut self) {
+        for poly in self.polygons.values_mut() {
+            poly.parent = Some(self.uid.clone());
+        }
     }
 }

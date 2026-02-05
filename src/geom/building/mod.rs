@@ -11,6 +11,7 @@ use crate::TriangleIndex;
 use crate::UID;
 use crate::Vector;
 use crate::Wall;
+use crate::geom;
 use crate::geom::bboxes::bounding_box;
 use crate::geom::zone::Zone;
 use crate::{HasMesh, Mesh};
@@ -43,12 +44,15 @@ impl HasMesh for Building {
         for &poly in polygons.iter() {
             let mesh = poly.copy_mesh();
             vertices.extend(mesh.vertices);
-            let mut tri: Vec<TriangleIndex> = mesh.faces.unwrap();
-            tri = tri
-                .into_iter()
-                .map(|t| TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices))
-                .collect();
-            triangles.extend(tri.into_iter());
+            if let Some(faces) = mesh.faces {
+                let tri = faces
+                    .into_iter()
+                    .map(|t| {
+                        TriangleIndex(t.0 + num_vertices, t.1 + num_vertices, t.2 + num_vertices)
+                    })
+                    .collect::<Vec<_>>();
+                triangles.extend(tri);
+            }
             num_vertices += poly.mesh_ref().vertices.len();
         }
 
@@ -62,18 +66,25 @@ impl HasMesh for Building {
 impl Building {
     /// Creates a new building with the given name and zones.
     pub fn new(name: &str, mut zones: Vec<Zone>) -> Self {
+        let name = geom::validate_name(name).expect("Invalid building name");
         let uid = UID::new();
         for z in zones.iter_mut() {
             z.parent = Some(uid.clone());
         }
         let parent = None;
-        let zones: HashMap<String, Zone> = zones.into_iter().map(|x| (x.name.clone(), x)).collect();
+        let mut map: HashMap<String, Zone> = HashMap::new();
+        for zone in zones {
+            if map.contains_key(&zone.name) {
+                panic!("Zone is already present in Building::new(): {}", &zone.name);
+            }
+            map.insert(zone.name.clone(), zone);
+        }
 
         Self {
             name: name.to_string(),
             uid,
             parent,
-            zones,
+            zones: map,
         }
     }
 
@@ -121,6 +132,7 @@ impl Building {
 
     /// Adds a zone to the building.
     pub fn add_zone(&mut self, mut zone: Zone) -> Result<()> {
+        zone.name = geom::validate_name(&zone.name)?;
         if self.zones.contains_key(&zone.name) {
             return Err(anyhow!("Zone is already present: {}", &zone.name));
         }
@@ -232,6 +244,13 @@ impl Building {
         let solid = zone.solids().into_iter().find(|s| s.name == parts[1])?;
         let wall = solid.walls().into_iter().find(|w| w.name == parts[2])?;
         wall.polygons().into_iter().find(|p| p.name == parts[3])
+    }
+
+    pub fn repair_parents(&mut self) {
+        for zone in self.zones.values_mut() {
+            zone.parent = Some(self.uid.clone());
+            zone.repair_parents();
+        }
     }
 }
 

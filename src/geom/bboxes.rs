@@ -3,16 +3,17 @@ use crate::geom::point::Point;
 
 /// Checks whether a point is inside the bounding box holding all points `pts`.
 pub fn is_point_inside_bbox(ptest: Point, pts: &[Point]) -> bool {
-    let (pmin, pmax) = bounding_box(pts);
-    if (ptest.x < pmin.x && ptest.y < pmin.y && ptest.z < pmin.z)
-        || (ptest.x > pmax.x && ptest.y > pmax.y && ptest.z > pmax.z)
-    {
-        // Point outside bbox
-        false
-    } else {
-        // Point inside bbox
-        true
+    if pts.is_empty() {
+        return false;
     }
+    let (pmin, pmax) = bounding_box(pts);
+    // A point is outside if ANY coordinate is out of range.
+    !(ptest.x < pmin.x
+        || ptest.x > pmax.x
+        || ptest.y < pmin.y
+        || ptest.y > pmax.y
+        || ptest.z < pmin.z
+        || ptest.z > pmax.z)
 }
 
 /// Checks whether a point is strictly inside a bounding box (not on boundary).
@@ -44,18 +45,38 @@ pub fn are_bboxes_overlapping(min1: Point, max1: Point, min2: Point, max2: Point
 }
 
 pub fn bounding_box(pts: &[Point]) -> (Point, Point) {
-    let x: Vec<f64> = pts.iter().map(|v| v.x).collect();
-    let y: Vec<f64> = pts.iter().map(|v| v.y).collect();
-    let z: Vec<f64> = pts.iter().map(|v| v.z).collect();
-    let xmin = *x.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let xmax = *x.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let ymin = *y.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let ymax = *y.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let zmin = *z.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let zmax = *z.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    if pts.is_empty() {
+        let zero = Point::new(0.0, 0.0, 0.0);
+        return (zero, zero);
+    }
 
-    let pmin = Point::new(xmin, ymin, zmin);
-    let pmax = Point::new(xmax, ymax, zmax);
+    let mut xmin = pts[0].x;
+    let mut xmax = pts[0].x;
+    let mut ymin = pts[0].y;
+    let mut ymax = pts[0].y;
+    let mut zmin = pts[0].z;
+    let mut zmax = pts[0].z;
 
-    (pmin, pmax)
+    for p in pts.iter().skip(1) {
+        if xmin.is_nan() || p.x < xmin {
+            xmin = p.x;
+        }
+        if xmax.is_nan() || p.x > xmax {
+            xmax = p.x;
+        }
+        if ymin.is_nan() || p.y < ymin {
+            ymin = p.y;
+        }
+        if ymax.is_nan() || p.y > ymax {
+            ymax = p.y;
+        }
+        if zmin.is_nan() || p.z < zmin {
+            zmin = p.z;
+        }
+        if zmax.is_nan() || p.z > zmax {
+            zmax = p.z;
+        }
+    }
+
+    (Point::new(xmin, ymin, zmin), Point::new(xmax, ymax, zmax))
 }

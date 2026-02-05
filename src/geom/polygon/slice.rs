@@ -3,6 +3,7 @@
 //! This module provides functions for cutting polygons along a line,
 //! producing two new polygons.
 
+use crate::geom::EPS;
 use crate::geom::segment::{SegmentIntersection, segment_intersection};
 use crate::{Point, Polygon};
 use anyhow::{Result, anyhow};
@@ -60,6 +61,12 @@ pub fn slice_polygon(
         return Err(anyhow!("Polygon must have at least 3 vertices"));
     }
 
+    let slice_dir = slice_end - slice_start;
+    let slice_dir_len_sq = slice_dir.dot(&slice_dir);
+    if slice_dir_len_sq < EPS * EPS {
+        return Err(anyhow!("Slice line must have non-zero length"));
+    }
+
     // Find intersection points of the slice line with polygon edges
     let mut intersections: Vec<(usize, Point)> = Vec::new();
 
@@ -98,6 +105,36 @@ pub fn slice_polygon(
             }
             _ => {}
         }
+    }
+
+    // Collinear edges can yield more than 2 intersection points. Reduce to the
+    // two extreme points along the slice direction.
+    if intersections.len() > 2 {
+        let mut min: Option<(usize, Point, f64)> = None;
+        let mut max: Option<(usize, Point, f64)> = None;
+
+        for (idx, pt) in intersections.iter().copied() {
+            let t = (pt - slice_start).dot(&slice_dir) / slice_dir_len_sq;
+            match min {
+                None => min = Some((idx, pt, t)),
+                Some((_, _, tmin)) if t < tmin => min = Some((idx, pt, t)),
+                _ => {}
+            }
+            match max {
+                None => max = Some((idx, pt, t)),
+                Some((_, _, tmax)) if t > tmax => max = Some((idx, pt, t)),
+                _ => {}
+            }
+        }
+
+        let (idx1, pt1, _) = min.ok_or_else(|| anyhow!("No slice intersections found"))?;
+        let (idx2, pt2, _) = max.ok_or_else(|| anyhow!("No slice intersections found"))?;
+        if pt1.is_close(&pt2) {
+            return Err(anyhow!(
+                "Slice line must intersect polygon at two distinct points"
+            ));
+        }
+        intersections = vec![(idx1, pt1), (idx2, pt2)];
     }
 
     // We need exactly 2 intersection points to create a valid slice

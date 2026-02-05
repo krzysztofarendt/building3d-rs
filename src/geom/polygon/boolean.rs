@@ -8,7 +8,7 @@
 //! - Merging adjacent polygons (union)
 //! - Finding overlap areas (intersection)
 
-use crate::{Point, Polygon};
+use crate::{Point, Polygon, Vector};
 use anyhow::{Result, anyhow};
 
 /// Result of a boolean operation that may produce multiple polygons.
@@ -145,50 +145,13 @@ fn sutherland_hodgman(subject: &[Point], clip_poly: &[Point]) -> Vec<Point> {
         return vec![];
     }
 
-    // Calculate normal from clip polygon for projection
-    let v1 = clip_poly[1] - clip_poly[0];
-    let v2 = clip_poly[2] - clip_poly[0];
-    let normal = v1.cross(&v2);
-
-    if normal.length() < 1e-10 {
+    let Some(basis) = PlaneBasis::from_polygon(clip_poly) else {
         return vec![];
-    }
-
-    // Determine projection plane based on dominant normal component
-    let abs_x = normal.dx.abs();
-    let abs_y = normal.dy.abs();
-    let abs_z = normal.dz.abs();
-
-    // Project to 2D based on which axis is dominant in the normal
-    let (project_to_2d, unproject_to_3d): (
-        Box<dyn Fn(&Point) -> (f64, f64)>,
-        Box<dyn Fn(f64, f64, f64) -> Point>,
-    ) = if abs_z >= abs_x && abs_z >= abs_y {
-        // Project to XY plane (drop z)
-        let z_val = subject[0].z;
-        (
-            Box::new(|p: &Point| (p.x, p.y)),
-            Box::new(move |x, y, _| Point::new(x, y, z_val)),
-        )
-    } else if abs_y >= abs_x {
-        // Project to XZ plane (drop y)
-        let y_val = subject[0].y;
-        (
-            Box::new(|p: &Point| (p.x, p.z)),
-            Box::new(move |x, z, _| Point::new(x, y_val, z)),
-        )
-    } else {
-        // Project to YZ plane (drop x)
-        let x_val = subject[0].x;
-        (
-            Box::new(|p: &Point| (p.y, p.z)),
-            Box::new(move |y, z, _| Point::new(x_val, y, z)),
-        )
     };
 
     // Project to 2D
-    let subject_2d: Vec<(f64, f64)> = subject.iter().map(&project_to_2d).collect();
-    let clip_2d: Vec<(f64, f64)> = clip_poly.iter().map(project_to_2d).collect();
+    let subject_2d: Vec<(f64, f64)> = subject.iter().map(|p| basis.project(*p)).collect();
+    let clip_2d: Vec<(f64, f64)> = clip_poly.iter().map(|p| basis.project(*p)).collect();
 
     // Run 2D Sutherland-Hodgman
     let result_2d = sutherland_hodgman_2d(&subject_2d, &clip_2d);
@@ -200,8 +163,53 @@ fn sutherland_hodgman(subject: &[Point], clip_poly: &[Point]) -> Vec<Point> {
     // Project back to 3D
     result_2d
         .iter()
-        .map(|&(u, v)| unproject_to_3d(u, v, 0.0))
+        .map(|&(u, v)| basis.unproject(u, v))
         .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlaneBasis {
+    origin: Point,
+    u: Vector,
+    v: Vector,
+}
+
+impl PlaneBasis {
+    fn from_polygon(poly: &[Point]) -> Option<Self> {
+        if poly.len() < 3 {
+            return None;
+        }
+
+        let v1 = poly[1] - poly[0];
+        let v2 = poly[2] - poly[0];
+        let n = v1.cross(&v2).normalize().ok()?;
+
+        // Choose a helper axis not parallel to the normal.
+        let helper = if n.dz.abs() < 0.9 {
+            Vector::new(0.0, 0.0, 1.0)
+        } else {
+            Vector::new(0.0, 1.0, 0.0)
+        };
+
+        // Build an orthonormal basis {u, v} in the polygon plane.
+        let u = helper.cross(&n).normalize().ok()?;
+        let v = n.cross(&u).normalize().ok()?;
+
+        Some(Self {
+            origin: poly[0],
+            u,
+            v,
+        })
+    }
+
+    fn project(&self, p: Point) -> (f64, f64) {
+        let r = p - self.origin;
+        (r.dot(&self.u), r.dot(&self.v))
+    }
+
+    fn unproject(&self, x: f64, y: f64) -> Point {
+        self.origin + self.u * x + self.v * y
+    }
 }
 
 /// 2D Sutherland-Hodgman polygon clipping algorithm.
@@ -230,16 +238,16 @@ fn sutherland_hodgman_2d(subject: &[(f64, f64)], clip_poly: &[(f64, f64)]) -> Ve
                 if !prev_inside
                     && let Some(intersection) =
                         line_intersection_2d(previous, current, edge_start, edge_end)
-                    {
-                        output.push(intersection);
-                    }
+                {
+                    output.push(intersection);
+                }
                 output.push(current);
             } else if prev_inside
                 && let Some(intersection) =
                     line_intersection_2d(previous, current, edge_start, edge_end)
-                {
-                    output.push(intersection);
-                }
+            {
+                output.push(intersection);
+            }
         }
     }
 
@@ -354,9 +362,7 @@ fn create_polygon_with_hole(outer: &Polygon, hole: &Polygon) -> Result<Polygon> 
     let mut new_verts = Vec::with_capacity(outer_verts.len() + hole_verts.len() + 2);
 
     // Add outer vertices up to and including closest point
-    for i in 0..=closest_idx {
-        new_verts.push(outer_verts[i]);
-    }
+    new_verts.extend(outer_verts.iter().take(closest_idx + 1).copied());
 
     // Add hole vertices in reverse order (to maintain winding)
     for v in hole_verts.iter().rev() {
@@ -365,9 +371,7 @@ fn create_polygon_with_hole(outer: &Polygon, hole: &Polygon) -> Result<Polygon> 
 
     // Bridge back (duplicate of last hole vertex to first, already done by reverse)
     // Add remaining outer vertices
-    for i in (closest_idx + 1)..outer_verts.len() {
-        new_verts.push(outer_verts[i]);
-    }
+    new_verts.extend(outer_verts.iter().skip(closest_idx + 1).copied());
 
     Polygon::new(
         &format!("{}_with_hole", outer.name),
