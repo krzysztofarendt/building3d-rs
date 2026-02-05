@@ -14,6 +14,7 @@ use std::fmt;
 
 pub mod containment;
 pub mod relations;
+pub mod slice;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Polygon {
