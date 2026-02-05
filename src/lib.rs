@@ -1,7 +1,7 @@
 pub mod draw;
 pub mod geom;
-mod uid;
 mod name;
+mod uid;
 pub mod vecutils;
 pub mod world;
 
@@ -15,6 +15,7 @@ pub use geom::solid::Solid;
 pub use geom::triangles::TriangleIndex;
 pub use geom::vector::Vector;
 pub use geom::wall::Wall;
-pub use uid::UID;
+pub use geom::zone::Zone;
 pub use name::{HasName, SortByName};
+pub use uid::UID;
 // pub use world::World; // TODO

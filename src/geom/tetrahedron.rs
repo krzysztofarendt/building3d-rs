@@ -1,5 +1,4 @@
 use crate::Point;
-use crate::geom::EPS;
 
 /// Calculates volume using the Cayley-Menger formula.
 pub fn tetrahedron_volume(pt0: Point, pt1: Point, pt2: Point, pt3: Point) -> f64 {
@@ -28,7 +27,9 @@ pub fn tetrahedron_volume(pt0: Point, pt1: Point, pt2: Point, pt3: Point) -> f64
 
     let nominator = 4. * a2 * b2 * c2 - a2 * x2 - b2 * y2 - c2 * z2 + x * y * z;
 
-    (nominator + EPS).sqrt() / 12.
+    // Use max(0.0) to handle negative values from floating-point errors
+    // for degenerate tetrahedrons (e.g., all 4 points coplanar)
+    nominator.max(0.0).sqrt() / 12.
 }
 
 /// Returns tetrahedron centroid (i.e. average of each vertices)

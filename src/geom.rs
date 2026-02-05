@@ -12,6 +12,7 @@ pub mod tetrahedron;
 pub mod triangles;
 pub mod vector;
 pub mod wall;
+pub mod zone;
 
 /// Path separator (building/zone/solid/wall/polygon)
 const SEP: char = '/';

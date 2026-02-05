@@ -94,6 +94,5 @@ mod tests {
         assert!(rotated_points[0].is_close(&Point::new(0.0, 0.0, 1.0)));
         assert!(rotated_points[1].is_close(&Point::new(0.0, 1.0, 0.0)));
         assert!(rotated_points[2].is_close(&Point::new(0.0, 0.0, 0.0)));
-
     }
 }

@@ -5,16 +5,24 @@ pub trait HasName {
 
 // Delegate HasName to references (and smart pointers if useful)
 impl<T: HasName + ?Sized> HasName for &T {
-    fn get_name(&self) -> &str { (*self).get_name() }
+    fn get_name(&self) -> &str {
+        (*self).get_name()
+    }
 }
 impl<T: HasName + ?Sized> HasName for Box<T> {
-    fn get_name(&self) -> &str { (**self).get_name() }
+    fn get_name(&self) -> &str {
+        (**self).get_name()
+    }
 }
 impl<T: HasName + ?Sized> HasName for std::rc::Rc<T> {
-    fn get_name(&self) -> &str { (**self).get_name() }
+    fn get_name(&self) -> &str {
+        (**self).get_name()
+    }
 }
 impl<T: HasName + ?Sized> HasName for std::sync::Arc<T> {
-    fn get_name(&self) -> &str { (**self).get_name() }
+    fn get_name(&self) -> &str {
+        (**self).get_name()
+    }
 }
 
 /// Sorting helpers for slices of `T: HasName`.

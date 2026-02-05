@@ -115,9 +115,10 @@ pub fn draw_points<T: HasMesh + HasName>(
     let name = format!("{}/{}", SESSION_NAME, model.get_name());
     session.log_static(
         name,
-        &rr::Points3D::new(vertices).with_radii(radii).with_colors(colors),
+        &rr::Points3D::new(vertices)
+            .with_radii(radii)
+            .with_colors(colors),
     )?;
 
     Ok(())
 }
-

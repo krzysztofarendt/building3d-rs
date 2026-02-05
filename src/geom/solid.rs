@@ -409,4 +409,12 @@ mod tests {
         let expected_vol = 1. * 2. * 3.;
         assert!((sld.volume() - expected_vol).abs() < 1e-4);
     }
+
+    #[test]
+    fn test_cube_2x2x2() {
+        let sld = Solid::from_box(2., 2., 2., None, "cube");
+        let expected_vol = 8.;
+        eprintln!("2x2x2 cube volume: {}", sld.volume());
+        assert!((sld.volume() - expected_vol).abs() < 1e-4);
+    }
 }

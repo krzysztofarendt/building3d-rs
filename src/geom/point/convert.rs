@@ -25,7 +25,6 @@ pub fn array_to_points(arr: nd::Array2<f64>) -> Vec<Point> {
     pts
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

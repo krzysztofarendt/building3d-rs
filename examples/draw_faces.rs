@@ -19,7 +19,7 @@ fn main() -> Result<()> {
 
     let sld2 = Solid::from_box(5., 5., height, Some((-5., 0., 0.)), "box");
 
-    let bdg = Building::new("building", vec![sld1, sld2]);
+    let bdg = Building::from_solids("building", vec![sld1, sld2]);
 
     let session = start_session()?;
 
