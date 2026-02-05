@@ -1,7 +1,8 @@
 use crate::HasName;
 use crate::Point;
 use crate::geom::triangles::TriangleIndex;
-use crate::{HasMesh, Mesh};
+use crate::sim::rays::SimulationResult;
+use crate::{Building, HasMesh, Mesh};
 use anyhow::Result;
 use rerun as rr;
 
@@ -119,6 +120,75 @@ pub fn draw_points<T: HasMesh + HasName>(
             .with_radii(radii)
             .with_colors(colors),
     )?;
+
+    Ok(())
+}
+
+/// Draws a ray tracing simulation result with animated ray positions.
+///
+/// The building mesh is drawn as semi-transparent static geometry.
+/// Ray positions are logged per time step using Rerun's timeline for animation.
+/// Ray color intensity reflects remaining energy.
+pub fn draw_simulation(
+    session: &rr::RecordingStream,
+    result: &SimulationResult,
+    building: &Building,
+) -> Result<()> {
+    // Draw building mesh (semi-transparent)
+    draw_faces(session, building, (0.8, 0.8, 0.8, 0.15))?;
+
+    // Draw absorbers as static red spheres
+    for (i, absorber) in result.config.absorbers.iter().enumerate() {
+        let name = format!("{}/absorbers/{}", SESSION_NAME, i);
+        session.log_static(
+            name,
+            &rr::Points3D::new([*absorber])
+                .with_radii([result.config.absorber_radius as f32])
+                .with_colors([color((1.0, 0.0, 0.0, 0.5))]),
+        )?;
+    }
+
+    // Draw source as a static green sphere
+    session.log_static(
+        format!("{}/source", SESSION_NAME),
+        &rr::Points3D::new([result.config.source])
+            .with_radii([0.02f32])
+            .with_colors([color((0.0, 1.0, 0.0, 1.0))]),
+    )?;
+
+    // Animate ray positions over time steps
+    for (step, (positions, energies)) in result
+        .positions
+        .iter()
+        .zip(result.energies.iter())
+        .enumerate()
+    {
+        session.set_time_sequence("step", step as i64);
+
+        // Collect alive rays (energy > 0)
+        let mut pts: Vec<Point> = Vec::new();
+        let mut colors_vec: Vec<rr::Color> = Vec::new();
+        let mut radii_vec: Vec<f32> = Vec::new();
+
+        for (pos, &energy) in positions.iter().zip(energies.iter()) {
+            if energy > 1e-10 {
+                pts.push(*pos);
+                // Color from yellow (high energy) to blue (low energy)
+                let e = energy.clamp(0.0, 1.0) as f32;
+                colors_vec.push(color((e, e * 0.8, 1.0 - e, 0.8)));
+                radii_vec.push(0.008);
+            }
+        }
+
+        if !pts.is_empty() {
+            session.log(
+                format!("{}/rays", SESSION_NAME),
+                &rr::Points3D::new(pts)
+                    .with_radii(radii_vec)
+                    .with_colors(colors_vec),
+            )?;
+        }
+    }
 
     Ok(())
 }

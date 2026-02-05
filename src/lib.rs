@@ -2,6 +2,7 @@ pub mod draw;
 pub mod geom;
 pub mod io;
 mod name;
+pub mod sim;
 mod uid;
 pub mod vecutils;
 pub mod world;
