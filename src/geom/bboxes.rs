@@ -1,3 +1,4 @@
+use crate::geom::EPS;
 use crate::geom::point::Point;
 
 /// Checks whether a point is inside the bounding box holding all points `pts`.
@@ -12,6 +13,34 @@ pub fn is_point_inside_bbox(ptest: Point, pts: &[Point]) -> bool {
         // Point inside bbox
         true
     }
+}
+
+/// Checks whether a point is strictly inside a bounding box (not on boundary).
+pub fn is_point_strictly_inside_bbox(ptest: Point, pmin: Point, pmax: Point) -> bool {
+    ptest.x > pmin.x + EPS
+        && ptest.x < pmax.x - EPS
+        && ptest.y > pmin.y + EPS
+        && ptest.y < pmax.y - EPS
+        && ptest.z > pmin.z + EPS
+        && ptest.z < pmax.z - EPS
+}
+
+/// Checks whether two bounding boxes overlap.
+///
+/// Takes min and max corners of each bbox.
+/// Returns true if boxes overlap (including touching).
+pub fn are_bboxes_overlapping(min1: Point, max1: Point, min2: Point, max2: Point) -> bool {
+    // Boxes don't overlap if separated along any axis
+    if max1.x < min2.x - EPS || min1.x > max2.x + EPS {
+        return false;
+    }
+    if max1.y < min2.y - EPS || min1.y > max2.y + EPS {
+        return false;
+    }
+    if max1.z < min2.z - EPS || min1.z > max2.z + EPS {
+        return false;
+    }
+    true
 }
 
 pub fn bounding_box(pts: &[Point]) -> (Point, Point) {

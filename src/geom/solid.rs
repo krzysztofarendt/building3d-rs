@@ -12,6 +12,8 @@ use crate::{HasName, SortByName};
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
+pub mod containment;
+
 #[derive(Debug, Clone)]
 pub struct Solid {
     pub name: String,
@@ -138,6 +140,26 @@ impl Solid {
         total_volume
     }
 
+    /// Checks if a point lies inside the solid.
+    ///
+    /// Uses the ray casting algorithm: cast a ray from the point and count
+    /// surface crossings. An odd count means the point is inside.
+    pub fn is_point_inside(&self, ptest: Point) -> bool {
+        containment::is_point_inside_solid(self, ptest)
+    }
+
+    /// Checks if a point lies on the boundary (surface) of the solid.
+    ///
+    /// A point is on the boundary if it lies on any of the solid's polygon surfaces.
+    pub fn is_point_at_boundary(&self, ptest: Point) -> bool {
+        containment::is_point_at_boundary(self, ptest)
+    }
+
+    /// Checks if a point lies strictly inside the solid (not on boundary).
+    pub fn is_point_strictly_inside(&self, ptest: Point) -> bool {
+        containment::is_point_strictly_inside(self, ptest)
+    }
+
     /// Return a solid with given dimensions and location.
     ///
     /// `x` is the dimension along the X axis.
@@ -157,13 +179,7 @@ impl Solid {
     /// - ceiling/ceiling
     ///
     /// The solid will be named `name` (random if not given).
-    pub fn from_box(
-        x: f64,
-        y: f64,
-        z: f64,
-        origin: Option<(f64, f64, f64)>,
-        name: &str,
-    ) -> Self {
+    pub fn from_box(x: f64, y: f64, z: f64, origin: Option<(f64, f64, f64)>, name: &str) -> Self {
         let origin_vec = match origin {
             Some((dx, dy, dz)) => Vector::new(dx, dy, dz),
             None => Vector::new(0., 0., 0.),
