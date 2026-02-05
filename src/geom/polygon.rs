@@ -11,6 +11,8 @@ use crate::{HasMesh, Mesh};
 use anyhow::{Result, anyhow};
 use std::fmt;
 
+pub mod containment;
+
 #[derive(Debug, Clone)]
 pub struct Polygon {
     /// Polygon name
@@ -107,6 +109,170 @@ impl Polygon {
             *pt += vec;
         }
     }
+
+    /// Returns the vertices of the polygon.
+    pub fn vertices(&self) -> &[Point] {
+        &self.mesh.vertices
+    }
+
+    /// Returns the triangulation of the polygon.
+    pub fn triangles(&self) -> Option<&Vec<crate::TriangleIndex>> {
+        self.mesh.faces.as_ref()
+    }
+
+    /// Returns the edges of the polygon as pairs of consecutive vertices.
+    ///
+    /// The edges form a closed loop, so the last edge connects the last vertex
+    /// back to the first vertex.
+    pub fn edges(&self) -> Vec<(Point, Point)> {
+        let pts = &self.mesh.vertices;
+        let n = pts.len();
+        if n < 2 {
+            return vec![];
+        }
+
+        let mut edges = Vec::with_capacity(n);
+        for i in 0..n {
+            edges.push((pts[i], pts[(i + 1) % n]));
+        }
+        edges
+    }
+
+    /// Calculates the area of the polygon.
+    ///
+    /// Uses the cross product method: sum of cross products of consecutive edges,
+    /// dotted with the normal vector, divided by 2.
+    pub fn area(&self) -> f64 {
+        let pts = &self.mesh.vertices;
+        let n = pts.len();
+        if n < 3 {
+            return 0.0;
+        }
+
+        // Use the "shoelace" formula generalized to 3D
+        // Area = 0.5 * |sum of cross products of edges from centroid|
+        // Simplified: sum cross products of consecutive vertex vectors from origin
+        let mut cross_sum = Vector::new(0.0, 0.0, 0.0);
+
+        for i in 0..n {
+            let v1 = Vector::from_a_point(pts[i]);
+            let v2 = Vector::from_a_point(pts[(i + 1) % n]);
+            cross_sum = cross_sum + v1.cross(&v2);
+        }
+
+        // The magnitude of the sum divided by 2, projected onto normal
+        0.5 * cross_sum.dot(&self.vn).abs()
+    }
+
+    /// Calculates the centroid of the polygon.
+    ///
+    /// For triangulated polygons, this is the weighted average of triangle centroids,
+    /// where each triangle's weight is its area.
+    pub fn centroid(&self) -> Point {
+        let pts = &self.mesh.vertices;
+        let tri = match &self.mesh.faces {
+            Some(faces) => faces,
+            None => {
+                // Fallback: average of vertices if no triangulation
+                if pts.is_empty() {
+                    return Point::new(0.0, 0.0, 0.0);
+                }
+                let sum_x: f64 = pts.iter().map(|p| p.x).sum();
+                let sum_y: f64 = pts.iter().map(|p| p.y).sum();
+                let sum_z: f64 = pts.iter().map(|p| p.z).sum();
+                let n = pts.len() as f64;
+                return Point::new(sum_x / n, sum_y / n, sum_z / n);
+            }
+        };
+
+        if tri.is_empty() {
+            // No triangles - return average of vertices
+            if pts.is_empty() {
+                return Point::new(0.0, 0.0, 0.0);
+            }
+            let sum_x: f64 = pts.iter().map(|p| p.x).sum();
+            let sum_y: f64 = pts.iter().map(|p| p.y).sum();
+            let sum_z: f64 = pts.iter().map(|p| p.z).sum();
+            let n = pts.len() as f64;
+            return Point::new(sum_x / n, sum_y / n, sum_z / n);
+        }
+
+        // Weighted average of triangle centroids
+        let mut total_area = 0.0;
+        let mut weighted_x = 0.0;
+        let mut weighted_y = 0.0;
+        let mut weighted_z = 0.0;
+
+        for t in tri {
+            let p0 = pts[t.0];
+            let p1 = pts[t.1];
+            let p2 = pts[t.2];
+
+            // Triangle centroid
+            let cx = (p0.x + p1.x + p2.x) / 3.0;
+            let cy = (p0.y + p1.y + p2.y) / 3.0;
+            let cz = (p0.z + p1.z + p2.z) / 3.0;
+
+            // Triangle area (half the magnitude of cross product)
+            let v1 = p1 - p0;
+            let v2 = p2 - p0;
+            let area = 0.5 * v1.cross(&v2).length();
+
+            total_area += area;
+            weighted_x += cx * area;
+            weighted_y += cy * area;
+            weighted_z += cz * area;
+        }
+
+        if total_area < 1e-15 {
+            // Degenerate polygon - return average of vertices
+            let sum_x: f64 = pts.iter().map(|p| p.x).sum();
+            let sum_y: f64 = pts.iter().map(|p| p.y).sum();
+            let sum_z: f64 = pts.iter().map(|p| p.z).sum();
+            let n = pts.len() as f64;
+            return Point::new(sum_x / n, sum_y / n, sum_z / n);
+        }
+
+        Point::new(
+            weighted_x / total_area,
+            weighted_y / total_area,
+            weighted_z / total_area,
+        )
+    }
+
+    /// Returns the plane coefficients (a, b, c, d) for the plane equation ax + by + cz + d = 0.
+    ///
+    /// The coefficients (a, b, c) are the components of the normal vector.
+    /// The coefficient d is computed from any point on the plane.
+    pub fn plane_coefficients(&self) -> (f64, f64, f64, f64) {
+        let a = self.vn.dx;
+        let b = self.vn.dy;
+        let c = self.vn.dz;
+
+        // d = -(ax + by + cz) for any point on the plane
+        let p0 = if !self.mesh.vertices.is_empty() {
+            self.mesh.vertices[0]
+        } else {
+            Point::new(0.0, 0.0, 0.0)
+        };
+
+        let d = -(a * p0.x + b * p0.y + c * p0.z);
+
+        (a, b, c, d)
+    }
+
+    /// Checks if a point lies inside the polygon.
+    ///
+    /// If `boundary_in` is true, points on the boundary (edges or vertices) are considered inside.
+    /// The point must lie on the polygon's plane to be considered inside.
+    pub fn is_point_inside(&self, ptest: Point, boundary_in: bool) -> bool {
+        let tri = match &self.mesh.faces {
+            Some(faces) => faces,
+            None => return false,
+        };
+
+        containment::is_point_inside_polygon(ptest, &self.mesh.vertices, tri, &self.vn, boundary_in)
+    }
 }
 
 impl PartialEq for Polygon {
@@ -134,6 +300,7 @@ impl fmt::Display for Polygon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::IsClose;
 
     #[test]
     fn test_eq() -> Result<()> {
@@ -157,6 +324,197 @@ mod tests {
         let poly_c = Polygon::new("c", pts_c, None)?;
         assert!(poly_a == poly_b);
         assert!(poly_a != poly_c);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_area_unit_square() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+            Point::new(0., 1., 0.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+        let area = poly.area();
+        assert!(area.is_close(1.0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_area_rectangle() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(2., 0., 0.),
+            Point::new(2., 3., 0.),
+            Point::new(0., 3., 0.),
+        ];
+        let poly = Polygon::new("rect", pts, None)?;
+        let area = poly.area();
+        assert!(area.is_close(6.0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_area_triangle() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(2., 0., 0.),
+            Point::new(1., 2., 0.),
+        ];
+        let poly = Polygon::new("tri", pts, None)?;
+        let area = poly.area();
+        // Area = 0.5 * base * height = 0.5 * 2 * 2 = 2.0
+        assert!(area.is_close(2.0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_centroid_square() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(2., 0., 0.),
+            Point::new(2., 2., 0.),
+            Point::new(0., 2., 0.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+        let centroid = poly.centroid();
+        assert!(centroid.is_close(&Point::new(1.0, 1.0, 0.0)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_centroid_triangle() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(3., 0., 0.),
+            Point::new(0., 3., 0.),
+        ];
+        let poly = Polygon::new("tri", pts, None)?;
+        let centroid = poly.centroid();
+        // Centroid of triangle is at (sum_x/3, sum_y/3, sum_z/3)
+        assert!(centroid.is_close(&Point::new(1.0, 1.0, 0.0)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_edges() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+        ];
+        let poly = Polygon::new("tri", pts, None)?;
+        let edges = poly.edges();
+
+        assert_eq!(edges.len(), 3);
+
+        // First edge: (0,0,0) -> (1,0,0)
+        assert!(edges[0].0.is_close(&Point::new(0., 0., 0.)));
+        assert!(edges[0].1.is_close(&Point::new(1., 0., 0.)));
+
+        // Second edge: (1,0,0) -> (1,1,0)
+        assert!(edges[1].0.is_close(&Point::new(1., 0., 0.)));
+        assert!(edges[1].1.is_close(&Point::new(1., 1., 0.)));
+
+        // Third edge (closing): (1,1,0) -> (0,0,0)
+        assert!(edges[2].0.is_close(&Point::new(1., 1., 0.)));
+        assert!(edges[2].1.is_close(&Point::new(0., 0., 0.)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_plane_coefficients() -> Result<()> {
+        // Polygon in XY plane (z = 0)
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+            Point::new(0., 1., 0.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+        let (a, b, c, d) = poly.plane_coefficients();
+
+        // Normal should be (0, 0, 1), so a=0, b=0, c=1
+        // d should be 0 since plane passes through origin
+        assert!(a.is_close(0.0));
+        assert!(b.is_close(0.0));
+        assert!(c.is_close(1.0));
+        assert!(d.is_close(0.0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_plane_coefficients_offset() -> Result<()> {
+        // Polygon in XY plane at z = 5
+        let pts = vec![
+            Point::new(0., 0., 5.),
+            Point::new(1., 0., 5.),
+            Point::new(1., 1., 5.),
+            Point::new(0., 1., 5.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+        let (a, b, c, d) = poly.plane_coefficients();
+
+        // Normal should be (0, 0, 1)
+        // Plane equation: 0*x + 0*y + 1*z + d = 0, so z = -d
+        // Since z = 5, d = -5
+        assert!(a.is_close(0.0));
+        assert!(b.is_close(0.0));
+        assert!(c.is_close(1.0));
+        assert!(d.is_close(-5.0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_point_inside_square() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+            Point::new(0., 1., 0.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+
+        // Inside
+        assert!(poly.is_point_inside(Point::new(0.5, 0.5, 0.0), true));
+        assert!(poly.is_point_inside(Point::new(0.5, 0.5, 0.0), false));
+
+        // Outside
+        assert!(!poly.is_point_inside(Point::new(1.5, 0.5, 0.0), true));
+        assert!(!poly.is_point_inside(Point::new(1.5, 0.5, 0.0), false));
+
+        // On boundary (vertex)
+        assert!(poly.is_point_inside(Point::new(0., 0., 0.0), true));
+        assert!(!poly.is_point_inside(Point::new(0., 0., 0.0), false));
+
+        // On boundary (edge)
+        assert!(poly.is_point_inside(Point::new(0.5, 0., 0.0), true));
+        assert!(!poly.is_point_inside(Point::new(0.5, 0., 0.0), false));
+
+        // Above plane
+        assert!(!poly.is_point_inside(Point::new(0.5, 0.5, 1.0), true));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_vertices_and_triangles() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+            Point::new(0., 1., 0.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+
+        assert_eq!(poly.vertices().len(), 4);
+        assert!(poly.triangles().is_some());
+        assert_eq!(poly.triangles().unwrap().len(), 2); // Square = 2 triangles
 
         Ok(())
     }
