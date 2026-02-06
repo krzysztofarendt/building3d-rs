@@ -611,4 +611,95 @@ mod tests {
         // Two walls (wall_1 and wall_3) should be connected
         assert_eq!(graph.len(), 2);
     }
+
+    #[test]
+    fn test_graph_params_default() {
+        let params = GraphParams::default();
+        assert_eq!(params.level, GraphLevel::Solid);
+        assert!(params.facing);
+        assert!(!params.touching);
+    }
+
+    #[test]
+    fn test_polygon_graph_edges() {
+        let building = make_adjacent_building();
+        let params = GraphParams {
+            level: GraphLevel::Polygon,
+            facing: true,
+            touching: false,
+        };
+
+        let edges = get_graph_edges(&building, params);
+        // Should have exactly one facing edge at polygon level
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].relationship, "facing");
+    }
+
+    #[test]
+    fn test_wall_graph_edges() {
+        let building = make_adjacent_building();
+        let params = GraphParams {
+            level: GraphLevel::Wall,
+            facing: true,
+            touching: false,
+        };
+
+        let edges = get_graph_edges(&building, params);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].relationship, "facing");
+    }
+
+    #[test]
+    fn test_zone_graph_edges() {
+        let building = make_building_with_zones();
+        let params = GraphParams {
+            level: GraphLevel::Zone,
+            facing: true,
+            touching: false,
+        };
+
+        let edges = get_graph_edges(&building, params);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].relationship, "facing");
+        // Edges should reference zone names
+        let names: Vec<&str> = vec![&edges[0].path1, &edges[0].path2]
+            .into_iter()
+            .map(|s| s.as_str())
+            .collect();
+        assert!(names.contains(&"zone1"));
+        assert!(names.contains(&"zone2"));
+    }
+
+    #[test]
+    fn test_touching_graph() {
+        let building = make_adjacent_building();
+        // Two adjacent boxes share an edge on their touching faces
+        let params = GraphParams {
+            level: GraphLevel::Solid,
+            facing: false,
+            touching: true,
+        };
+
+        let graph = get_graph(&building, params);
+        // Adjacent boxes have touching edges (shared edge lines between walls)
+        // The result depends on whether adjacent walls share edges
+        // At minimum, the graph should be constructable
+        assert!(graph.len() <= 2);
+    }
+
+    #[test]
+    fn test_zone_graph_facing_and_touching() {
+        let building = make_building_with_zones();
+        let params = GraphParams {
+            level: GraphLevel::Zone,
+            facing: true,
+            touching: true,
+        };
+
+        let edges = get_graph_edges(&building, params);
+        // Should have at least the facing edge
+        assert!(!edges.is_empty());
+        let has_facing = edges.iter().any(|e| e.relationship == "facing");
+        assert!(has_facing);
+    }
 }

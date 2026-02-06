@@ -378,6 +378,44 @@ mod tests {
     }
 
     #[test]
+    fn test_tetrahedralize_with_empty_interior_points() {
+        // When interior_points is empty, falls back to centroid method
+        let mesh = make_box_mesh();
+        let tet_mesh = tetrahedralize_with_points(&mesh, &[]).unwrap();
+        assert_eq!(tet_mesh.tetrahedra_count(), 12);
+    }
+
+    #[test]
+    fn test_tetrahedralize_with_point_empty_mesh() {
+        let mesh = Mesh::new(vec![], None);
+        let result = tetrahedralize_with_point(&mesh, Point::new(0.0, 0.0, 0.0));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_tetrahedralize_with_points_empty_mesh() {
+        let mesh = Mesh::new(vec![], None);
+        let pts = vec![Point::new(0.0, 0.0, 0.0)];
+        let result = tetrahedralize_with_points(&mesh, &pts);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_tetrahedral_mesh_centroid_empty() {
+        let tet_mesh = TetrahedralMesh::new(vec![], vec![]);
+        let c = tet_mesh.centroid();
+        assert!((c.x).abs() < 1e-10);
+        assert!((c.y).abs() < 1e-10);
+        assert!((c.z).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tetrahedral_mesh_volume_empty() {
+        let tet_mesh = TetrahedralMesh::new(vec![], vec![]);
+        assert!((tet_mesh.volume()).abs() < 1e-10);
+    }
+
+    #[test]
     fn test_tetrahedron_index() {
         let idx = TetrahedronIndex(0, 1, 2, 3);
         assert_eq!(idx.0, 0);

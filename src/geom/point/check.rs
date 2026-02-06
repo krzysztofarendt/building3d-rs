@@ -309,4 +309,75 @@ mod tests {
         let result = is_point_on_same_side(p0, p1, ptest, pref);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_is_point_in_sequence_false() {
+        let seq = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(2., 0., 0.),
+        ];
+        let pt = Point::new(5., 5., 5.);
+        assert!(!is_point_in_sequence(&pt, &seq));
+    }
+
+    #[test]
+    fn test_is_point_in_sequence_true() {
+        let seq = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(2., 0., 0.),
+        ];
+        let pt = Point::new(1., 0., 0.);
+        assert!(is_point_in_sequence(&pt, &seq));
+    }
+
+    #[test]
+    fn test_are_point_sequences_close_rot_empty() {
+        let a: Vec<Point> = vec![];
+        let b: Vec<Point> = vec![];
+        assert!(are_point_sequences_close_rot(&a, &b));
+    }
+
+    #[test]
+    fn test_are_point_sequences_close_different_len() {
+        let a = vec![Point::new(0., 0., 0.)];
+        let b = vec![Point::new(0., 0., 0.), Point::new(1., 0., 0.)];
+        assert!(!are_point_sequences_close(&a, &b));
+    }
+
+    #[test]
+    fn test_are_points_close_empty() {
+        assert!(are_points_close(&[]));
+    }
+
+    #[test]
+    fn test_are_points_coplanar_all_collinear() {
+        // All collinear points are also coplanar
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(2., 0., 0.),
+            Point::new(3., 0., 0.),
+        ];
+        assert!(are_points_coplanar(&pts));
+    }
+
+    #[test]
+    fn test_is_point_on_same_side_vref_collinear() {
+        // vref is collinear with p1-p2 line
+        let p0 = Point::new(0., 0., 0.);
+        let p1 = Point::new(1., 0., 0.);
+        let ptest = Point::new(0.5, 1., 0.);
+        let pref = Point::new(0.5, 0., 0.); // On the line p0-p1
+        let result = is_point_on_same_side(p0, p1, ptest, pref);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_are_point_sequences_close_rot_different_len() {
+        let a = vec![Point::new(0., 0., 0.)];
+        let b = vec![Point::new(0., 0., 0.), Point::new(1., 0., 0.)];
+        assert!(!are_point_sequences_close_rot(&a, &b));
+    }
 }

@@ -222,6 +222,14 @@ mod tests {
     }
 
     #[test]
+    fn test_has_correct_interface_non_adjacent() {
+        // Non-adjacent solids: has_correct_interface should return false
+        let solid1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let solid2 = Solid::from_box(1.0, 1.0, 1.0, Some((5.0, 5.0, 5.0)), "box2").unwrap();
+        assert!(!has_correct_interface(&solid1, &solid2));
+    }
+
+    #[test]
     fn test_multiple_shared_faces() {
         // This test verifies that when solids share multiple faces,
         // all are detected. Here we use an L-shaped arrangement would

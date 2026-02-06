@@ -138,3 +138,119 @@ impl Wall {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::IsClose;
+
+    fn make_triangle(name: &str, z: f64) -> Result<Polygon> {
+        Polygon::new(
+            name,
+            vec![
+                Point::new(0., 0., z),
+                Point::new(1., 0., z),
+                Point::new(0.5, 1., z),
+            ],
+            None,
+        )
+    }
+
+    #[test]
+    fn test_add_polygon_happy_path() -> Result<()> {
+        let poly1 = make_triangle("p1", 0.)?;
+        let mut wall = Wall::new("w", vec![poly1])?;
+        assert_eq!(wall.polygons().len(), 1);
+
+        let poly2 = make_triangle("p2", 1.)?;
+        wall.add_polygon(poly2)?;
+        assert_eq!(wall.polygons().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_polygon_duplicate_error() -> Result<()> {
+        let poly = make_triangle("p1", 0.)?;
+        let mut wall = Wall::new("w", vec![poly])?;
+        let dup = make_triangle("p1", 1.)?;
+        assert!(wall.add_polygon(dup).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_replace_polygon_happy_path() -> Result<()> {
+        let poly = make_triangle("p1", 0.)?;
+        let mut wall = Wall::new("w", vec![poly])?;
+
+        let replacement = make_triangle("p1_new", 2.)?;
+        wall.replace_polygon("p1", vec![replacement])?;
+        assert_eq!(wall.polygons().len(), 1);
+        assert!(wall.get_polygon("p1_new").is_some());
+        assert!(wall.get_polygon("p1").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_replace_polygon_missing_error() -> Result<()> {
+        let poly = make_triangle("p1", 0.)?;
+        let mut wall = Wall::new("w", vec![poly])?;
+        let replacement = make_triangle("p2", 1.)?;
+        assert!(wall.replace_polygon("nonexistent", vec![replacement]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_polygon() -> Result<()> {
+        let poly = make_triangle("p1", 0.)?;
+        let wall = Wall::new("w", vec![poly])?;
+        assert!(wall.get_polygon("p1").is_some());
+        assert!(wall.get_polygon("missing").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_duplicate_polygon_error() -> Result<()> {
+        let p1 = make_triangle("dup", 0.)?;
+        let p2 = make_triangle("dup", 1.)?;
+        let result = Wall::new("w", vec![p1, p2]);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_mesh() -> Result<()> {
+        let poly = make_triangle("p1", 0.)?;
+        let wall = Wall::new("w", vec![poly])?;
+        let mesh = wall.copy_mesh();
+        assert_eq!(mesh.vertices.len(), 3);
+        assert!(mesh.faces.is_some());
+        assert_eq!(mesh.faces.as_ref().unwrap().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_rotate_and_translate() -> Result<()> {
+        let poly = Polygon::new(
+            "p1",
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(1., 1., 0.),
+                Point::new(0., 1., 0.),
+            ],
+            None,
+        )?;
+        let mut wall = Wall::new("w", vec![poly])?;
+
+        // Translate
+        wall.translate(&Vector::new(10., 0., 0.));
+        let p = &wall.polygons()[0];
+        assert!(p.vertices()[0].x.is_close(10.));
+
+        // Rotate 90 deg around z axis
+        wall.rotate(std::f64::consts::PI / 2., &Vector::new(0., 0., 1.));
+        // After rotation, points should still form a valid polygon
+        assert_eq!(wall.polygons()[0].vertices().len(), 4);
+        Ok(())
+    }
+}

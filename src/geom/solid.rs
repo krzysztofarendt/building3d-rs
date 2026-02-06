@@ -479,4 +479,231 @@ mod tests {
         assert!((sld.volume() - expected_vol).abs() < 1e-4);
         Ok(())
     }
+
+    #[test]
+    fn test_floor_plan_default() -> Result<()> {
+        let fp = FloorPlan::default();
+        assert_eq!(fp.name, "default_solid");
+        assert_eq!(fp.plan.len(), 4);
+        assert_eq!(fp.height, 2.);
+        assert!(fp.wall_names.is_none());
+        assert!(fp.floor_name.is_none());
+        assert!(fp.ceiling_name.is_none());
+
+        let sld = Solid::from_floor_plan(fp)?;
+        assert_eq!(sld.name, "default_solid");
+        // 1x1 base, height 2 => volume = 2
+        assert!((sld.volume() - 2.0).abs() < 1e-4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_floor_plan_custom_names() -> Result<()> {
+        let fp = FloorPlan {
+            plan: vec![(0., 0.), (2., 0.), (2., 1.), (0., 1.)],
+            height: 3.0,
+            name: "room".to_string(),
+            wall_names: Some(vec![
+                "south".to_string(),
+                "east".to_string(),
+                "north".to_string(),
+                "west".to_string(),
+            ]),
+            floor_name: Some("ground".to_string()),
+            ceiling_name: Some("roof".to_string()),
+        };
+        let sld = Solid::from_floor_plan(fp)?;
+        assert_eq!(sld.name, "room");
+        assert!(sld.get_wall("south").is_some());
+        assert!(sld.get_wall("east").is_some());
+        assert!(sld.get_wall("north").is_some());
+        assert!(sld.get_wall("west").is_some());
+        assert!(sld.get_wall("ground").is_some());
+        assert!(sld.get_wall("roof").is_some());
+        // 2x1 base, height 3 => volume = 6
+        assert!((sld.volume() - 6.0).abs() < 1e-4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_floor_plan_mismatched_wall_names() {
+        let fp = FloorPlan {
+            plan: vec![(0., 0.), (1., 0.), (1., 1.), (0., 1.)],
+            height: 2.0,
+            name: "bad".to_string(),
+            wall_names: Some(vec!["w1".to_string(), "w2".to_string()]), // 2 names for 4 edges
+            floor_name: None,
+            ceiling_name: None,
+        };
+        let result = Solid::from_floor_plan(fp);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_floor_plan_non_unique_wall_names() {
+        let fp = FloorPlan {
+            plan: vec![(0., 0.), (1., 0.), (1., 1.), (0., 1.)],
+            height: 2.0,
+            name: "bad".to_string(),
+            wall_names: Some(vec![
+                "dup".to_string(),
+                "dup".to_string(),
+                "w3".to_string(),
+                "w4".to_string(),
+            ]),
+            floor_name: None,
+            ceiling_name: None,
+        };
+        let result = Solid::from_floor_plan(fp);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_wall_happy_path() -> Result<()> {
+        let mut sld = Solid::from_box(1., 1., 1., None, "box")?;
+        let poly = Polygon::new(
+            "extra_poly",
+            vec![
+                Point::new(0., 0., 2.),
+                Point::new(1., 0., 2.),
+                Point::new(1., 1., 2.),
+            ],
+            None,
+        )?;
+        let wall = Wall::new("extra_wall", vec![poly])?;
+        sld.add_wall(wall)?;
+        assert!(sld.get_wall("extra_wall").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_wall_duplicate_error() -> Result<()> {
+        let mut sld = Solid::from_box(1., 1., 1., None, "box")?;
+        let poly = Polygon::new(
+            "p",
+            vec![
+                Point::new(0., 0., 2.),
+                Point::new(1., 0., 2.),
+                Point::new(1., 1., 2.),
+            ],
+            None,
+        )?;
+        let wall = Wall::new("floor", vec![poly])?; // "floor" already exists
+        assert!(sld.add_wall(wall).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_wall() -> Result<()> {
+        let sld = Solid::from_box(1., 1., 1., None, "box")?;
+        assert!(sld.get_wall("floor").is_some());
+        assert!(sld.get_wall("ceiling").is_some());
+        assert!(sld.get_wall("wall_0").is_some());
+        assert!(sld.get_wall("nonexistent").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_duplicate_wall_error() -> Result<()> {
+        let poly1 = Polygon::new(
+            "p1",
+            vec![
+                Point::new(0., 0., 0.),
+                Point::new(1., 0., 0.),
+                Point::new(1., 1., 0.),
+            ],
+            None,
+        )?;
+        let poly2 = Polygon::new(
+            "p2",
+            vec![
+                Point::new(0., 0., 1.),
+                Point::new(1., 0., 1.),
+                Point::new(1., 1., 1.),
+            ],
+            None,
+        )?;
+        let w1 = Wall::new("same_name", vec![poly1])?;
+        let w2 = Wall::new("same_name", vec![poly2])?;
+        let result = Solid::new("sld", vec![w1, w2]);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_translate() -> Result<()> {
+        let mut sld = Solid::from_box(1., 1., 1., None, "box")?;
+        let vol_before = sld.volume();
+
+        sld.translate(&Vector::new(5., 5., 5.));
+        assert!((sld.volume() - vol_before).abs() < 1e-4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_rotate() -> Result<()> {
+        let mut sld = Solid::from_box(1., 1., 1., None, "box")?;
+        // Just verify rotation doesn't panic and walls still exist
+        sld.rotate(std::f64::consts::PI / 2., &Vector::new(0., 0., 1.));
+        assert_eq!(sld.walls().len(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_mesh() -> Result<()> {
+        let sld = Solid::from_box(1., 1., 1., None, "box")?;
+        let mesh = sld.copy_mesh();
+        // A box has 6 faces, each is a quad (2 triangles) => 6*4=24 vertices, 6*2=12 triangles
+        assert!(!mesh.vertices.is_empty());
+        assert!(mesh.faces.is_some());
+        assert!(!mesh.faces.as_ref().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_point_at_boundary() -> Result<()> {
+        let sld = Solid::from_box(2., 2., 2., None, "box")?;
+        // On face (boundary)
+        assert!(sld.is_point_at_boundary(Point::new(0.0, 1.0, 1.0)));
+        // Inside (not boundary)
+        assert!(!sld.is_point_at_boundary(Point::new(1.0, 1.0, 1.0)));
+        // Outside
+        assert!(!sld.is_point_at_boundary(Point::new(5.0, 5.0, 5.0)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_point_strictly_inside() -> Result<()> {
+        let sld = Solid::from_box(2., 2., 2., None, "box")?;
+        // Strictly inside
+        assert!(sld.is_point_strictly_inside(Point::new(1.0, 1.0, 1.0)));
+        // On boundary (not strictly inside)
+        assert!(!sld.is_point_strictly_inside(Point::new(0.0, 1.0, 1.0)));
+        // Outside
+        assert!(!sld.is_point_strictly_inside(Point::new(5.0, 5.0, 5.0)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_has_name() -> Result<()> {
+        let sld = Solid::from_box(1., 1., 1., None, "mybox")?;
+        assert_eq!(sld.get_name(), "mybox");
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygons() -> Result<()> {
+        let sld = Solid::from_box(1., 1., 1., None, "box")?;
+        // A box has 6 polygons (one per wall)
+        assert_eq!(sld.polygons().len(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn test_from_box_with_origin() -> Result<()> {
+        let sld = Solid::from_box(1., 1., 1., Some((10., 20., 30.)), "box")?;
+        assert!(sld.is_point_inside(Point::new(10.5, 20.5, 30.5)));
+        assert!(!sld.is_point_inside(Point::new(0.5, 0.5, 0.5)));
+        Ok(())
+    }
 }

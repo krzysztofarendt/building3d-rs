@@ -474,4 +474,90 @@ mod tests {
         assert!(area.is_close(0.0));
         Ok(())
     }
+
+    #[test]
+    fn test_are_polygons_equal() -> Result<()> {
+        let poly1 = make_xy_square(0.0, 0.0, 1.0, 0.0, "p1")?;
+        let poly2 = make_xy_square(0.0, 0.0, 1.0, 0.0, "p2")?; // same vertices, different name
+        let poly3 = make_xy_square(1.0, 0.0, 1.0, 0.0, "p3")?; // different position
+
+        assert!(are_polygons_equal(&poly1, &poly2));
+        assert!(!are_polygons_equal(&poly1, &poly3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_overlap_area_non_coplanar() -> Result<()> {
+        let poly1 = make_xy_square(0.0, 0.0, 1.0, 0.0, "p1")?;
+        let poly2 = make_xy_square(0.0, 0.0, 1.0, 5.0, "p2")?; // different z
+
+        let area = polygon_overlap_area(&poly1, &poly2);
+        assert!(area.is_close(0.0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_not_crossing_coplanar() -> Result<()> {
+        // Coplanar polygons can't "cross" in 3D sense
+        let poly1 = make_xy_square(0.0, 0.0, 1.0, 0.0, "p1")?;
+        let poly2 = make_xy_square(0.5, 0.5, 1.0, 0.0, "p2")?;
+        assert!(!are_polygons_crossing(&poly1, &poly2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_not_touching_different_planes() -> Result<()> {
+        // Non-coplanar polygons can't be touching
+        let poly1 = make_xy_square(0.0, 0.0, 1.0, 0.0, "p1")?;
+        let poly2 = make_xy_square(0.0, 0.0, 1.0, 1.0, "p2")?; // Different z
+        assert!(!are_polygons_touching(&poly1, &poly2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_crossing_both_directions() -> Result<()> {
+        // Test crossing where poly2 edge crosses poly1
+        // Vertical square in XZ plane
+        let pts1 = vec![
+            Point::new(0.0, 0.5, 0.0),
+            Point::new(1.0, 0.5, 0.0),
+            Point::new(1.0, 0.5, 1.0),
+            Point::new(0.0, 0.5, 1.0),
+        ];
+        let poly1 = Polygon::new("xz", pts1, None)?;
+
+        // Vertical square in YZ plane that crosses poly1
+        let pts2 = vec![
+            Point::new(0.5, 0.0, 0.0),
+            Point::new(0.5, 1.0, 0.0),
+            Point::new(0.5, 1.0, 1.0),
+            Point::new(0.5, 0.0, 1.0),
+        ];
+        let poly2 = Polygon::new("yz", pts2, None)?;
+
+        assert!(are_polygons_crossing(&poly1, &poly2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_touching_interior_crossing() -> Result<()> {
+        // Two coplanar squares that overlap partially — not touching, their edges cross
+        // Square 1: [0,0] to [2,2], Square 2: [1,1] to [3,3]
+        // Edges cross at interior points
+        let poly1 = make_xy_square(0.0, 0.0, 2.0, 0.0, "p1")?;
+        let poly2 = make_xy_square(1.0, 1.0, 2.0, 0.0, "p2")?;
+        // These overlap and have edge crossings at interior points
+        assert!(!are_polygons_touching(&poly1, &poly2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygon_distance_different_planes() -> Result<()> {
+        let poly1 = make_xy_square(0.0, 0.0, 1.0, 0.0, "p1")?;
+        let poly2 = make_xy_square(0.0, 0.0, 1.0, 3.0, "p2")?;
+
+        let dist = polygon_distance(&poly1, &poly2);
+        assert!(dist.is_close(3.0)); // 3 units apart in z
+        Ok(())
+    }
 }

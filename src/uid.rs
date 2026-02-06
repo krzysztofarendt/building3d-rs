@@ -41,3 +41,43 @@ impl UID {
         Uuid::new_v4().to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_str() {
+        let uid = UID::from("test-uid");
+        assert_eq!(uid.as_str(), "test-uid");
+    }
+
+    #[test]
+    fn test_from_string() {
+        let uid = UID::from(String::from("test-uid-2"));
+        assert_eq!(uid.as_str(), "test-uid-2");
+    }
+
+    #[test]
+    fn test_default() {
+        let uid = UID::default();
+        // Default generates a UUID, should be non-empty
+        assert!(!uid.as_str().is_empty());
+    }
+
+    #[test]
+    fn test_as_str() {
+        let uid = UID::new();
+        let s = uid.as_str();
+        assert!(!s.is_empty());
+        // UUID v4 format: 8-4-4-4-12 hex chars
+        assert_eq!(s.len(), 36);
+    }
+
+    #[test]
+    fn test_uniqueness() {
+        let uid1 = UID::new();
+        let uid2 = UID::new();
+        assert_ne!(uid1, uid2);
+    }
+}

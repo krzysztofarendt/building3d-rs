@@ -341,4 +341,84 @@ mod tests {
         // Should be normalized
         assert!((perp.length() - 1.0).abs() < 1e-10);
     }
+
+    #[test]
+    fn test_rotation_matrix_zero_vector() {
+        // Zero vector should return identity matrix
+        let zero = Vector::new(0.0, 0.0, 0.0);
+        let mat = rotation_matrix(&zero, 1.0);
+        let identity = nd::Array::eye(3);
+        for ((r, c), val) in mat.indexed_iter() {
+            let expected: f64 = identity[[r, c]];
+            assert!(
+                (val - expected).abs() < 1e-10,
+                "Expected identity at ({}, {})",
+                r,
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_perpendicular_y_dominant() {
+        // y-axis dominant vector
+        let v = Vector::new(0.0, 1.0, 0.0);
+        let perp = find_perpendicular_vector(&v);
+        assert!(v.dot(&perp).abs() < 1e-10);
+        assert!((perp.length() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_find_perpendicular_z_dominant() {
+        // z-axis dominant vector
+        let v = Vector::new(0.0, 0.0, 1.0);
+        let perp = find_perpendicular_vector(&v);
+        assert!(v.dot(&perp).abs() < 1e-10);
+        assert!((perp.length() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_rotate_points_zero_angle() {
+        let pts = vec![
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+        ];
+        let u = Vector::new(0.0, 0.0, 1.0);
+        let rotated = rotate_points_around_vector(&pts, &u, 0.0);
+        assert!(rotated[0].is_close(&pts[0]));
+        assert!(rotated[1].is_close(&pts[1]));
+    }
+
+    #[test]
+    fn test_rotate_points_to_plane_invalid_normal() {
+        let pts = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(1.0, 1.0, 0.0),
+        ];
+        let zero_normal = Vector::new(0.0, 0.0, 0.0);
+        let result = rotate_points_to_plane(&pts, &zero_normal);
+        // Should return original points unchanged
+        assert!(result[0].is_close(&pts[0]));
+    }
+
+    #[test]
+    fn test_calculate_plane_normal_collinear() {
+        // All collinear points - no valid plane normal
+        let pts = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+        ];
+        assert!(calculate_plane_normal(&pts).is_none());
+    }
+
+    #[test]
+    fn test_calculate_plane_normal_few_points() {
+        let pts = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+        ];
+        assert!(calculate_plane_normal(&pts).is_none());
+    }
 }

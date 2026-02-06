@@ -484,4 +484,115 @@ mod tests {
         assert!(bdg.get_polygon("zone1/box1/floor/nonexistent").is_none());
         Ok(())
     }
+
+    #[test]
+    fn test_building_duplicate_zone_error() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, None, "box2")?;
+        let z2 = Zone::new("zone1", vec![s2])?; // Same name
+        let result = Building::new("building", vec![z1, z2]);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_add_duplicate_zone_error() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let mut bdg = Building::new("building", vec![z1])?;
+
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, None, "box2")?;
+        let z2 = Zone::new("zone1", vec![s2])?; // Same name
+        assert!(bdg.add_zone(z2).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_rotate() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let mut bdg = Building::new("building", vec![z1])?;
+
+        bdg.rotate(std::f64::consts::PI / 2., &Vector::new(0., 0., 1.));
+        assert_eq!(bdg.zones().len(), 1);
+        assert_eq!(bdg.solids().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_is_point_at_boundary() -> Result<()> {
+        let s1 = Solid::from_box(2.0, 2.0, 2.0, None, "box1")?;
+        let z1 = Zone::new("zone1", vec![s1])?;
+        let bdg = Building::new("building", vec![z1])?;
+
+        // On boundary
+        assert!(bdg.is_point_at_boundary(Point::new(0.0, 1.0, 1.0)));
+        // Outside
+        assert!(!bdg.is_point_at_boundary(Point::new(5.0, 5.0, 5.0)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_get_graph() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2")?;
+        let bdg = Building::from_solids("building", vec![s1, s2])?;
+
+        let params = graph::GraphParams::default();
+        let graph = bdg.get_graph(params);
+        assert_eq!(graph.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_get_graph_edges() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2")?;
+        let bdg = Building::from_solids("building", vec![s1, s2])?;
+
+        let params = graph::GraphParams::default();
+        let edges = bdg.get_graph_edges(params);
+        assert_eq!(edges.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_stitch_solids() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let s2 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "box2")?;
+        let bdg = Building::from_solids("building", vec![s1, s2])?;
+
+        let stitches = bdg.stitch_solids();
+        assert_eq!(stitches.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_walls_and_polygons() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let bdg = Building::from_solids("building", vec![s1])?;
+
+        assert_eq!(bdg.walls().len(), 6);
+        assert_eq!(bdg.polygons().len(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_has_name() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let bdg = Building::from_solids("mybuilding", vec![s1])?;
+        assert_eq!(bdg.get_name(), "mybuilding");
+        Ok(())
+    }
+
+    #[test]
+    fn test_building_repair_parents() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let mut bdg = Building::from_solids("building", vec![s1])?;
+        bdg.repair_parents();
+        // Verify structure is still valid
+        bdg.validate()?;
+        Ok(())
+    }
 }

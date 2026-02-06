@@ -417,6 +417,67 @@ mod tests {
     }
 
     #[test]
+    fn test_analyze_mesh_no_faces() {
+        let mesh = Mesh::new(vec![Point::new(0.0, 0.0, 0.0)], None);
+        let quality = analyze_mesh_default(&mesh);
+        assert_eq!(quality.triangle_count, 0);
+    }
+
+    #[test]
+    fn test_is_mesh_quality_acceptable_no_faces() {
+        let mesh = Mesh::new(vec![], None);
+        assert!(is_mesh_quality_acceptable(&mesh, 2.0, 30.0));
+    }
+
+    #[test]
+    fn test_find_poor_quality_no_faces() {
+        let mesh = Mesh::new(vec![], None);
+        let poor = find_poor_quality_triangles(&mesh, 5.0, 10.0);
+        assert!(poor.is_empty());
+    }
+
+    #[test]
+    fn test_is_mesh_quality_not_acceptable() {
+        // Thin triangle that fails quality check
+        let vertices = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(0.0, 0.01, 0.0),
+        ];
+        let faces = vec![TriangleIndex(0, 1, 2)];
+        let mesh = Mesh::new(vertices, Some(faces));
+        assert!(!is_mesh_quality_acceptable(&mesh, 5.0, 10.0));
+    }
+
+    #[test]
+    fn test_analyze_mesh_with_degenerate() {
+        // Mesh with a degenerate triangle (collinear points)
+        let vertices = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+        ];
+        let faces = vec![TriangleIndex(0, 1, 2)];
+        let mesh = Mesh::new(vertices, Some(faces));
+        let quality = analyze_mesh_default(&mesh);
+        assert_eq!(quality.degenerate_count, 1);
+    }
+
+    #[test]
+    fn test_analyze_mesh_with_poor_quality() {
+        // Mesh with a poor quality (high aspect ratio) triangle
+        let vertices = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(100.0, 0.0, 0.0),
+            Point::new(0.0, 0.01, 0.0),
+        ];
+        let faces = vec![TriangleIndex(0, 1, 2)];
+        let mesh = Mesh::new(vertices, Some(faces));
+        let quality = analyze_mesh(&mesh, 10.0);
+        assert_eq!(quality.poor_quality_count, 1);
+    }
+
+    #[test]
     fn test_degenerate_triangle() {
         // Collinear points (degenerate triangle)
         let p0 = Point::new(0.0, 0.0, 0.0);

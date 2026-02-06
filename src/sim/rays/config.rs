@@ -83,6 +83,12 @@ mod tests {
     }
 
     #[test]
+    fn test_config_default_trait() {
+        let config: SimulationConfig = Default::default();
+        assert_eq!(config.num_steps, 1000);
+    }
+
+    #[test]
     fn test_set_absorption() {
         let s = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
         let z = Zone::new("zone1", vec![s]).unwrap();
