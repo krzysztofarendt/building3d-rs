@@ -173,10 +173,10 @@ pub fn draw_simulation(
         for (pos, &energy) in positions.iter().zip(energies.iter()) {
             if energy > 1e-10 {
                 pts.push(*pos);
-                // Color from yellow (high energy) to blue (low energy)
+                // Color from bright red (high energy) to dark red (low energy)
                 let e = energy.clamp(0.0, 1.0) as f32;
-                colors_vec.push(color((e, e * 0.8, 1.0 - e, 0.8)));
-                radii_vec.push(0.008);
+                colors_vec.push(color((e, 0.0, 0.0, 0.8)));
+                radii_vec.push(0.04);
             }
         }
 
