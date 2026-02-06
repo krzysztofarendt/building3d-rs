@@ -29,6 +29,7 @@ pub mod vecutils;
 pub mod world;
 
 // Prelude
+pub use draw::config::RerunConfig;
 pub use geom::building::Building;
 pub use geom::mesh::{HasMesh, Mesh};
 pub use geom::point::Point;

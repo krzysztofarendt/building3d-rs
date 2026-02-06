@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
+use building3d::RerunConfig;
 use building3d::draw::rerun::{draw_simulation, start_session};
 use building3d::io::stl::{read_stl, stl_to_solid};
 use building3d::sim::rays::{Simulation, SimulationConfig};
@@ -53,8 +54,9 @@ fn main() -> Result<()> {
     }
 
     // Visualize with Rerun
-    let session = start_session()?;
-    draw_simulation(&session, &result, &building)?;
+    let draw_config = RerunConfig::new();
+    let session = start_session(&draw_config)?;
+    draw_simulation(&session, &result, &building, &draw_config)?;
 
     Ok(())
 }

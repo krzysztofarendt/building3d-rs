@@ -1,4 +1,5 @@
 use anyhow::Result;
+use building3d::RerunConfig;
 use building3d::draw::rerun::{draw_edges, draw_faces, start_session};
 use building3d::{Point, Polygon, Wall};
 
@@ -43,13 +44,14 @@ fn main() -> Result<()> {
     let wall = Wall::new("wall", vec![u_shape, tri, l_shape])?;
     println!("{wall:?}");
 
-    let session = start_session()?;
+    let config = RerunConfig::new();
+    let session = start_session(&config)?;
 
     let radius = 0.01;
     let rgba_lines = (1., 0., 0., 0.5);
     let rgba_faces = (1., 1., 1., 0.2);
-    draw_edges(&session, &wall, radius, rgba_lines)?;
-    draw_faces(&session, &wall, rgba_faces)?;
+    draw_edges(&session, &wall, radius, rgba_lines, &config)?;
+    draw_faces(&session, &wall, rgba_faces, &config)?;
 
     Ok(())
 }
