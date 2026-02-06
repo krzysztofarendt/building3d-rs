@@ -1074,6 +1074,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "ndarray",
+ "rand 0.8.5",
  "rerun",
  "serde",
  "serde_json",
