@@ -22,8 +22,8 @@ fn main() -> Result<()> {
     // Build model
     let t_setup = Instant::now();
     let solid = stl_to_solid(&mesh, "teapot")?;
-    let zone = Zone::new("z", vec![solid]);
-    let building = Building::new("b", vec![zone]);
+    let zone = Zone::new("z", vec![solid])?;
+    let building = Building::new("b", vec![zone])?;
 
     // Configure simulation
     let mut config = SimulationConfig::new();

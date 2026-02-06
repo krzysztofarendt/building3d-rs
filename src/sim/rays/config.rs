@@ -84,9 +84,9 @@ mod tests {
 
     #[test]
     fn test_set_absorption() {
-        let s = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z = Zone::new("zone1", vec![s]);
-        let b = Building::new("building", vec![z]);
+        let s = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let z = Zone::new("zone1", vec![s]).unwrap();
+        let b = Building::new("building", vec![z]).unwrap();
 
         let mut config = SimulationConfig::new();
         config.set_absorption("floor", 0.9, &b);

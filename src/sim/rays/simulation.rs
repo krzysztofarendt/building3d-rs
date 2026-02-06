@@ -414,9 +414,9 @@ mod tests {
 
     #[test]
     fn test_simulation_basic() {
-        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0");
-        let zone = Zone::new("z", vec![s0]);
-        let building = Building::new("b", vec![zone]);
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
 
         let mut config = SimulationConfig::new();
         config.num_steps = 10;
@@ -433,9 +433,9 @@ mod tests {
 
     #[test]
     fn test_simulation_with_absorber() {
-        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0");
-        let zone = Zone::new("z", vec![s0]);
-        let building = Building::new("b", vec![zone]);
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
 
         let mut config = SimulationConfig::new();
         config.num_steps = 100;
@@ -455,10 +455,10 @@ mod tests {
     #[test]
     fn test_simulation_transparent() {
         // Two adjacent boxes in the same zone — rays should pass through the shared face
-        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0");
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1");
-        let zone = Zone::new("z", vec![s0, s1]);
-        let building = Building::new("b", vec![zone]);
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+        let zone = Zone::new("z", vec![s0, s1]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
 
         let mut config = SimulationConfig::new();
         config.num_steps = 200;
