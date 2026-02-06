@@ -41,10 +41,10 @@ mod tests {
     #[test]
     fn test_transparent_same_zone() {
         // Two adjacent boxes in the same zone — their shared face should be transparent
-        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0");
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1");
-        let zone = Zone::new("z", vec![s0, s1]);
-        let building = Building::new("b", vec![zone]);
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+        let zone = Zone::new("z", vec![s0, s1]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
 
         let transparent = find_transparent_polygons(&building);
         assert!(
@@ -60,11 +60,11 @@ mod tests {
     #[test]
     fn test_no_transparent_different_zones() {
         // Two adjacent boxes in different zones — no transparent polygons
-        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0");
-        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1");
-        let z0 = Zone::new("z0", vec![s0]);
-        let z1 = Zone::new("z1", vec![s1]);
-        let building = Building::new("b", vec![z0, z1]);
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
 
         let transparent = find_transparent_polygons(&building);
         assert!(

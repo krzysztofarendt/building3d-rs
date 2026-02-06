@@ -1,6 +1,16 @@
 use std::collections::HashMap;
 
+use crate::sim::materials::{AcousticMaterial, MaterialLibrary, NUM_OCTAVE_BANDS};
 use crate::{Building, Point};
+
+/// Acoustic simulation mode.
+#[derive(Debug, Clone)]
+pub enum AcousticMode {
+    /// Scalar absorption: single coefficient per surface.
+    Scalar,
+    /// Frequency-dependent absorption: per-octave-band coefficients.
+    FrequencyDependent,
+}
 
 pub struct SimulationConfig {
     // Engine
@@ -17,9 +27,17 @@ pub struct SimulationConfig {
     pub absorbers: Vec<Point>,
     pub absorber_radius: f64,
 
-    // Surfaces
+    // Surfaces (scalar mode)
     pub default_absorption: f64,
     pub absorption: HashMap<String, f64>,
+
+    // Surfaces (frequency-dependent mode)
+    pub acoustic_mode: AcousticMode,
+    pub material_library: Option<MaterialLibrary>,
+    pub default_acoustic_material: Option<AcousticMaterial>,
+
+    // Air absorption
+    pub enable_air_absorption: bool,
 }
 
 impl SimulationConfig {
@@ -37,6 +55,10 @@ impl SimulationConfig {
             absorber_radius: 0.1,
             default_absorption: 0.2,
             absorption: HashMap::new(),
+            acoustic_mode: AcousticMode::Scalar,
+            material_library: None,
+            default_acoustic_material: None,
+            enable_air_absorption: false,
         }
     }
 
@@ -60,6 +82,52 @@ impl SimulationConfig {
             }
         }
     }
+
+    /// Resolves frequency-dependent absorption coefficients for each polygon path.
+    ///
+    /// Returns a vector of `[f64; NUM_OCTAVE_BANDS]` indexed by polygon order.
+    pub fn resolve_band_absorption(&self, paths: &[String]) -> Vec<[f64; NUM_OCTAVE_BANDS]> {
+        let default = self
+            .default_acoustic_material
+            .as_ref()
+            .map(|m| m.absorption)
+            .unwrap_or([self.default_absorption; NUM_OCTAVE_BANDS]);
+
+        paths
+            .iter()
+            .map(|path| {
+                if let Some(ref lib) = self.material_library
+                    && let Some(mat) = lib.lookup(path)
+                    && let Some(ref acoustic) = mat.acoustic
+                {
+                    return acoustic.absorption;
+                }
+                default
+            })
+            .collect()
+    }
+
+    /// Resolves scattering coefficients for each polygon path.
+    pub fn resolve_scattering(&self, paths: &[String]) -> Vec<[f64; NUM_OCTAVE_BANDS]> {
+        let default = self
+            .default_acoustic_material
+            .as_ref()
+            .map(|m| m.scattering)
+            .unwrap_or([0.0; NUM_OCTAVE_BANDS]);
+
+        paths
+            .iter()
+            .map(|path| {
+                if let Some(ref lib) = self.material_library
+                    && let Some(mat) = lib.lookup(path)
+                    && let Some(ref acoustic) = mat.acoustic
+                {
+                    return acoustic.scattering;
+                }
+                default
+            })
+            .collect()
+    }
 }
 
 impl Default for SimulationConfig {
@@ -71,6 +139,7 @@ impl Default for SimulationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::materials::{AcousticMaterial, Material, MaterialLibrary};
     use crate::{Solid, Zone};
 
     #[test]
@@ -84,9 +153,9 @@ mod tests {
 
     #[test]
     fn test_set_absorption() {
-        let s = Solid::from_box(1.0, 1.0, 1.0, None, "box1");
-        let z = Zone::new("zone1", vec![s]);
-        let b = Building::new("building", vec![z]);
+        let s = Solid::from_box(1.0, 1.0, 1.0, None, "box1").unwrap();
+        let z = Zone::new("zone1", vec![s]).unwrap();
+        let b = Building::new("building", vec![z]).unwrap();
 
         let mut config = SimulationConfig::new();
         config.set_absorption("floor", 0.9, &b);
@@ -97,5 +166,33 @@ mod tests {
             assert!(path.contains("floor"));
             assert!((*val - 0.9).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn test_resolve_band_absorption_with_library() {
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("carpet").with_acoustic(AcousticMaterial::new(
+            "carpet",
+            [0.02, 0.06, 0.14, 0.37, 0.60, 0.65],
+            [0.40, 0.40, 0.40, 0.50, 0.50, 0.50],
+        )));
+        lib.assign("floor", "carpet");
+
+        let mut config = SimulationConfig::new();
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.material_library = Some(lib);
+
+        let paths = vec![
+            "zone/room/floor/floor_0".to_string(),
+            "zone/room/wall/north".to_string(),
+        ];
+        let absorption = config.resolve_band_absorption(&paths);
+
+        // Floor should get carpet absorption
+        assert!((absorption[0][0] - 0.02).abs() < 1e-10);
+        assert!((absorption[0][5] - 0.65).abs() < 1e-10);
+
+        // Wall should get default
+        assert!((absorption[1][0] - 0.2).abs() < 1e-10);
     }
 }

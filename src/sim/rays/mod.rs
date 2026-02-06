@@ -1,8 +1,8 @@
 mod config;
-mod find_transparent;
 mod simulation;
-mod voxel_grid;
 
 pub use config::SimulationConfig;
 pub use simulation::{Simulation, SimulationResult};
-pub use voxel_grid::VoxelGrid;
+
+// Re-export VoxelGrid from engine for backward compatibility
+pub use crate::sim::engine::voxel_grid::VoxelGrid;

@@ -3,7 +3,7 @@
 //! This module provides a Ray struct and ray-geometry intersection tests
 //! for visibility analysis and other ray-based operations.
 
-use crate::{Point, Polygon, Vector};
+use crate::{Point, Polygon, TriangleIndex, Vector};
 
 /// A ray defined by an origin point and a direction vector.
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +82,33 @@ impl Ray {
         }
     }
 
+    /// Moller-Trumbore ray-triangle intersection with barycentric tolerance.
+    ///
+    /// The tolerance parameter allows the barycentric coordinates (u, v) to
+    /// slightly exceed the [0, 1] range, which prevents rays from slipping
+    /// through cracks between adjacent triangles in triangle meshes.
+    ///
+    /// Returns the ray parameter `t` if the ray intersects the triangle, or `None`.
+    pub fn intersect_triangle_tolerant(
+        &self,
+        p0: Point,
+        p1: Point,
+        p2: Point,
+        tolerance: f64,
+    ) -> Option<f64> {
+        moller_trumbore(self.origin, self.direction, p0, p1, p2, tolerance)
+    }
+
+    /// Intersects this ray with a polygon using Moller-Trumbore with barycentric tolerance.
+    ///
+    /// Iterates through all triangles in the polygon's mesh and returns the
+    /// closest intersection distance, or None if no intersection.
+    pub fn intersect_polygon_tolerant(&self, polygon: &Polygon, tolerance: f64) -> Option<f64> {
+        let vertices = polygon.vertices();
+        let triangles = polygon.triangles()?;
+        intersect_triangles_tolerant(self.origin, self.direction, vertices, triangles, tolerance)
+    }
+
     /// Calculates the intersection of this ray with multiple polygons.
     ///
     /// Returns the closest intersection (smallest positive t) if any exists.
@@ -102,6 +129,82 @@ impl Ray {
 
         closest
     }
+}
+
+/// Minimum ray parameter to avoid self-intersection after reflection.
+pub const MIN_T: f64 = 1e-6;
+
+/// Moller-Trumbore ray-triangle intersection with barycentric tolerance.
+///
+/// The tolerance parameter allows the barycentric coordinates (u, v) to
+/// slightly exceed the [0, 1] range, which prevents rays from slipping
+/// through cracks between adjacent triangles in triangle meshes.
+///
+/// This is a free function for use without constructing a `Ray`.
+pub fn moller_trumbore(
+    origin: Point,
+    direction: Vector,
+    p0: Point,
+    p1: Point,
+    p2: Point,
+    tolerance: f64,
+) -> Option<f64> {
+    let edge1 = p1 - p0;
+    let edge2 = p2 - p0;
+    let h = direction.cross(&edge2);
+    let a = edge1.dot(&h);
+
+    if a.abs() < 1e-10 {
+        return None; // Ray parallel to triangle
+    }
+
+    let f = 1.0 / a;
+    let s = origin - p0;
+    let u = f * s.dot(&h);
+
+    if u < -tolerance || u > 1.0 + tolerance {
+        return None;
+    }
+
+    let q = s.cross(&edge1);
+    let v = f * direction.dot(&q);
+
+    if v < -tolerance || u + v > 1.0 + tolerance {
+        return None;
+    }
+
+    let t = f * edge2.dot(&q);
+
+    if t > MIN_T { Some(t) } else { None }
+}
+
+/// Intersects a ray (origin + direction) against a set of triangles with barycentric tolerance.
+///
+/// Returns the closest intersection distance, or None if no intersection.
+pub fn intersect_triangles_tolerant(
+    origin: Point,
+    direction: Vector,
+    vertices: &[Point],
+    triangles: &[TriangleIndex],
+    tolerance: f64,
+) -> Option<f64> {
+    let mut best_t: Option<f64> = None;
+
+    for tri in triangles {
+        let p0 = vertices[tri.0];
+        let p1 = vertices[tri.1];
+        let p2 = vertices[tri.2];
+
+        if let Some(t) = moller_trumbore(origin, direction, p0, p1, p2, tolerance) {
+            match best_t {
+                None => best_t = Some(t),
+                Some(bt) if t < bt => best_t = Some(t),
+                _ => {}
+            }
+        }
+    }
+
+    best_t
 }
 
 #[cfg(test)]
@@ -230,6 +333,58 @@ mod tests {
         assert_eq!(idx, 0); // Should hit poly1 (z=0) first
         assert!((t - 2.0).abs() < 1e-6);
         assert!(point.is_close(&Point::new(1.0, 1.0, 0.0)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_moller_trumbore_hit() {
+        let p0 = Point::new(0.0, 0.0, 0.0);
+        let p1 = Point::new(2.0, 0.0, 0.0);
+        let p2 = Point::new(0.0, 2.0, 0.0);
+        let origin = Point::new(0.5, 0.5, -1.0);
+        let direction = Vector::new(0.0, 0.0, 1.0);
+
+        let t = moller_trumbore(origin, direction, p0, p1, p2, 0.0);
+        assert!(t.is_some());
+        assert!((t.unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_moller_trumbore_miss() {
+        let p0 = Point::new(0.0, 0.0, 0.0);
+        let p1 = Point::new(2.0, 0.0, 0.0);
+        let p2 = Point::new(0.0, 2.0, 0.0);
+        let origin = Point::new(5.0, 5.0, -1.0);
+        let direction = Vector::new(0.0, 0.0, 1.0);
+
+        let t = moller_trumbore(origin, direction, p0, p1, p2, 0.0);
+        assert!(t.is_none());
+    }
+
+    #[test]
+    fn test_moller_trumbore_tolerance() {
+        // Point barely outside triangle — should miss with 0 tolerance, hit with tolerance
+        let p0 = Point::new(0.0, 0.0, 0.0);
+        let p1 = Point::new(1.0, 0.0, 0.0);
+        let p2 = Point::new(0.0, 1.0, 0.0);
+        let origin = Point::new(-0.0005, 0.5, -1.0);
+        let direction = Vector::new(0.0, 0.0, 1.0);
+
+        let t_strict = moller_trumbore(origin, direction, p0, p1, p2, 0.0);
+        let t_tolerant = moller_trumbore(origin, direction, p0, p1, p2, 1e-3);
+        assert!(t_strict.is_none());
+        assert!(t_tolerant.is_some());
+    }
+
+    #[test]
+    fn test_intersect_polygon_tolerant() -> Result<()> {
+        let polygon = make_xy_square()?;
+        let ray = Ray::new(Point::new(1.0, 1.0, -5.0), Vector::new(0.0, 0.0, 1.0)).unwrap();
+
+        let t = ray.intersect_polygon_tolerant(&polygon, 1e-3);
+        assert!(t.is_some());
+        assert!((t.unwrap() - 5.0).abs() < 1e-6);
 
         Ok(())
     }
