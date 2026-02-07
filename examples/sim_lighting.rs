@@ -1,5 +1,5 @@
 use anyhow::Result;
-use building3d::draw::lighting::draw_illuminance_heatmap;
+use building3d::draw::lighting::{draw_illuminance_heatmap, draw_sensor_grid};
 use building3d::draw::rerun::start_session;
 use building3d::sim::lighting::config::LightingConfig;
 use building3d::sim::lighting::simulation::LightingSimulation;
@@ -41,8 +41,10 @@ fn main() -> Result<()> {
     // Configure lighting simulation
     let mut config = LightingConfig::new();
     config.material_library = Some(lib);
-    config.num_rays = 50000;
+    config.num_rays = 500_000;
     config.max_bounces = 5;
+    config.sensor_spacing = Some(0.25);
+    config.sensor_patterns = vec!["floor".to_string(), "wall".to_string()];
 
     // Point light in lower part of the L-shape (ceiling-mounted)
     config
@@ -111,6 +113,19 @@ fn main() -> Result<()> {
     let draw_config = RerunConfig::new();
     let session = start_session(&draw_config)?;
     draw_illuminance_heatmap(&session, &result, &building)?;
+
+    // Draw sensor grids as colored points on surfaces
+    // Use actual sensor max for normalization
+    let sensor_max_lux = result
+        .sensor_grids
+        .iter()
+        .flat_map(|g| g.sensors.iter())
+        .map(|s| (s.illuminance[0] + s.illuminance[1] + s.illuminance[2]) / 3.0)
+        .fold(0.0_f64, f64::max);
+    println!("Sensor max illuminance: {:.1} lux", sensor_max_lux);
+    for grid in &result.sensor_grids {
+        draw_sensor_grid(&session, grid, sensor_max_lux)?;
+    }
 
     println!("Visualization sent to Rerun (localhost:9876)");
 

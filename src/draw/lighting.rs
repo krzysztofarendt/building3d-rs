@@ -90,10 +90,13 @@ pub fn draw_sensor_grid(
     let mut colors = Vec::new();
     let mut radii = Vec::new();
 
+    // Use log scale: map [0, max_lux] → [0, 1] via ln(1+x)/ln(1+max)
+    let log_max = (1.0 + max_lux).ln();
+
     for sensor in &grid.sensors {
         pts.push(sensor.position);
         let lux = (sensor.illuminance[0] + sensor.illuminance[1] + sensor.illuminance[2]) / 3.0;
-        let t = (lux / max_lux).clamp(0.0, 1.0) as f32;
+        let t = ((1.0 + lux).ln() / log_max).clamp(0.0, 1.0) as f32;
         let (r, g, b) = lux_to_color(t);
         colors.push(rr::Color(rr::Rgba32::from_linear_unmultiplied_rgba_f32(
             r, g, b, 1.0,
