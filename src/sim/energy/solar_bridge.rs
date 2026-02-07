@@ -241,7 +241,12 @@ pub fn compute_solar_gains_with_materials(
     );
     if !solar_pos.is_above_horizon() {
         // Sun below horizon: only diffuse contribution
-        return compute_diffuse_only(building, params.diffuse_horizontal_irradiance, config, material_library);
+        return compute_diffuse_only(
+            building,
+            params.diffuse_horizontal_irradiance,
+            config,
+            material_library,
+        );
     }
 
     let sun_dir = solar_pos.to_direction();
@@ -255,7 +260,8 @@ pub fn compute_solar_gains_with_materials(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library) {
+                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
+                    {
                         let normal = polygon.vn;
                         let area = polygon.area();
 
@@ -298,7 +304,8 @@ fn compute_diffuse_only(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library) {
+                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
+                    {
                         let area = polygon.area();
                         let normal = polygon.vn;
                         let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));

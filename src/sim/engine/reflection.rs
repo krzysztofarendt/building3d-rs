@@ -37,7 +37,10 @@ impl ReflectionModel for Diffuse {
         } else {
             Vector::new(0.0, 1.0, 0.0)
         };
-        let tangent = n.cross(&arbitrary).normalize().unwrap_or(Vector::new(1.0, 0.0, 0.0));
+        let tangent = n
+            .cross(&arbitrary)
+            .normalize()
+            .unwrap_or(Vector::new(1.0, 0.0, 0.0));
         let bitangent = n.cross(&tangent);
 
         // Malley's method: sample uniformly on a disk, then project onto hemisphere.
