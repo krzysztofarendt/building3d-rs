@@ -7,7 +7,7 @@ use super::sources::Rgb;
 pub struct Sensor {
     pub position: Point,
     pub normal: Vector,
-    /// Accumulated illuminance [R, G, B] in lux.
+    /// Accumulated irradiance [R, G, B] in W/m^2 per channel.
     pub illuminance: Rgb,
     /// Number of ray hits.
     pub hit_count: usize,
@@ -100,7 +100,7 @@ impl SensorGrid {
         }
     }
 
-    /// Returns the average illuminance across all sensors.
+    /// Returns the average irradiance [W/m^2] across all sensors.
     pub fn average_illuminance(&self) -> Rgb {
         if self.sensors.is_empty() {
             return [0.0; 3];
@@ -117,7 +117,7 @@ impl SensorGrid {
 
     /// Computes the daylight factor for each sensor.
     ///
-    /// Daylight factor = interior illuminance / unobstructed exterior illuminance.
+    /// Daylight factor = interior irradiance / unobstructed exterior irradiance.
     pub fn daylight_factors(&self, exterior_illuminance: f64) -> Vec<f64> {
         if exterior_illuminance <= 0.0 {
             return vec![0.0; self.sensors.len()];

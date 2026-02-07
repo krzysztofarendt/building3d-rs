@@ -18,7 +18,7 @@ pub struct LightingConfig {
     pub voxel_size: f64,
     /// Material library for optical properties.
     pub material_library: Option<MaterialLibrary>,
-    /// Default diffuse reflectance if no material is assigned.
+    /// Default diffuse reflectance (fraction per channel, 0-1) if no material is assigned.
     pub default_reflectance: Rgb,
 }
 

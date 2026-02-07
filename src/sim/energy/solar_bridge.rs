@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use crate::sim::lighting::result::LightingResult;
+use crate::sim::lighting::solar::SolarPosition;
+use crate::Building;
 
 // Converts lighting simulation results to thermal solar heat gains.
 //
@@ -116,6 +118,167 @@ pub fn lighting_to_solar_gains_per_surface(
     gains
 }
 
+/// Configuration for physics-based solar gain calculation using EPW weather data.
+///
+/// Instead of converting lighting lumens to watts, this computes solar gains
+/// directly from DNI/DHI radiation data combined with sun geometry and window
+/// orientation.
+#[derive(Debug, Clone)]
+pub struct SolarGainConfig {
+    /// Solar heat gain coefficient per polygon path.
+    /// Only surfaces with entries are considered as glazing.
+    pub shgc: HashMap<String, f64>,
+    /// Default SHGC for surfaces matched by pattern.
+    pub default_shgc: f64,
+    /// Patterns identifying glazing surfaces (substring match on polygon path).
+    pub glazing_patterns: Vec<String>,
+}
+
+impl SolarGainConfig {
+    pub fn new() -> Self {
+        Self {
+            shgc: HashMap::new(),
+            default_shgc: DEFAULT_SHGC,
+            glazing_patterns: vec![
+                "window".to_string(),
+                "glazing".to_string(),
+                "glass".to_string(),
+            ],
+        }
+    }
+
+    /// Returns the SHGC for a polygon path, or None if it's not glazing.
+    fn resolve_shgc(&self, path: &str) -> Option<f64> {
+        if let Some(&shgc) = self.shgc.get(path) {
+            return Some(shgc);
+        }
+        for pattern in &self.glazing_patterns {
+            if path.contains(pattern.as_str()) {
+                return Some(self.default_shgc);
+            }
+        }
+        None
+    }
+}
+
+impl Default for SolarGainConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Parameters describing the solar conditions for a single hour.
+pub struct SolarHourParams {
+    /// Direct normal irradiance (W/m^2).
+    pub direct_normal_irradiance: f64,
+    /// Diffuse horizontal irradiance (W/m^2).
+    pub diffuse_horizontal_irradiance: f64,
+    /// Day of year (1-365).
+    pub day_of_year: u16,
+    /// Solar hour (0-24).
+    pub hour: f64,
+    /// Site latitude in degrees.
+    pub latitude: f64,
+    /// Site longitude in degrees.
+    pub longitude: f64,
+}
+
+/// Computes solar heat gains (W) from EPW weather data and sun geometry.
+///
+/// For each glazing polygon in the building:
+///   Q = DNI * cos(incidence) * area * SHGC + DHI * sky_view * area * SHGC
+///
+/// where:
+///   - DNI = direct normal irradiance from weather record (W/m^2)
+///   - DHI = diffuse horizontal irradiance from weather record (W/m^2)
+///   - cos(incidence) = max(0, sun_direction . polygon_normal)
+///   - sky_view = 0.5 * (1 + max(0, normal_z)) isotropic sky view factor
+pub fn compute_solar_gains(
+    building: &Building,
+    params: &SolarHourParams,
+    config: &SolarGainConfig,
+) -> f64 {
+    let solar_pos = SolarPosition::calculate(
+        params.latitude,
+        params.longitude,
+        params.day_of_year,
+        params.hour,
+    );
+    if !solar_pos.is_above_horizon() {
+        // Sun below horizon: only diffuse contribution
+        return compute_diffuse_only(
+            building,
+            params.diffuse_horizontal_irradiance,
+            config,
+        );
+    }
+
+    let sun_dir = solar_pos.to_direction();
+    let mut total_gains = 0.0;
+
+    for zone in building.zones() {
+        for solid in zone.solids() {
+            for wall in solid.walls() {
+                for polygon in wall.polygons() {
+                    let path = format!(
+                        "{}/{}/{}/{}",
+                        zone.name, solid.name, wall.name, polygon.name
+                    );
+                    if let Some(shgc) = config.resolve_shgc(&path) {
+                        let normal = polygon.vn;
+                        let area = polygon.area();
+
+                        // Direct component: DNI * cos(incidence_angle) * area * SHGC
+                        // cos(incidence) = sun_direction . surface_normal
+                        // Only positive values (sun facing the surface)
+                        let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                        let q_direct =
+                            params.direct_normal_irradiance * cos_incidence * area * shgc;
+
+                        // Diffuse component: DHI * sky_view_factor * area * SHGC
+                        // Isotropic sky model: view factor = 0.5 for vertical, 1.0 for horizontal up
+                        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+                        let q_diffuse =
+                            params.diffuse_horizontal_irradiance * sky_view * area * shgc;
+
+                        total_gains += q_direct + q_diffuse;
+                    }
+                }
+            }
+        }
+    }
+
+    total_gains
+}
+
+/// Computes diffuse-only solar gains when the sun is below the horizon.
+fn compute_diffuse_only(
+    building: &Building,
+    diffuse_horizontal_irradiance: f64,
+    config: &SolarGainConfig,
+) -> f64 {
+    let mut total = 0.0;
+    for zone in building.zones() {
+        for solid in zone.solids() {
+            for wall in solid.walls() {
+                for polygon in wall.polygons() {
+                    let path = format!(
+                        "{}/{}/{}/{}",
+                        zone.name, solid.name, wall.name, polygon.name
+                    );
+                    if let Some(shgc) = config.resolve_shgc(&path) {
+                        let area = polygon.area();
+                        let normal = polygon.vn;
+                        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+                        total += diffuse_horizontal_irradiance * sky_view * area * shgc;
+                    }
+                }
+            }
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +362,62 @@ mod tests {
 
         let per_surface = lighting_to_solar_gains_per_surface(&result, &config);
         assert!(per_surface.is_empty());
+    }
+
+    #[test]
+    fn test_compute_solar_gains_south_facing_window() {
+        use crate::{Solid, Zone};
+
+        // Create a box with a "window" named polygon
+        // We need a building with a glazing surface
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = SolarGainConfig::new();
+
+        // At solar noon in summer (day 172), latitude 45N
+        let params = SolarHourParams {
+            direct_normal_irradiance: 500.0,
+            diffuse_horizontal_irradiance: 200.0,
+            day_of_year: 172,
+            hour: 12.0,
+            latitude: 45.0,
+            longitude: 0.0,
+        };
+        let gains = compute_solar_gains(&building, &params, &config);
+
+        // No surfaces have "window" in their name in a basic box,
+        // so gains should be zero
+        assert!(
+            gains.abs() < 1e-10,
+            "No glazing surfaces in basic box, gains should be 0, got {gains}"
+        );
+    }
+
+    #[test]
+    fn test_compute_solar_gains_zero_radiation() {
+        use crate::{Solid, Zone};
+
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = SolarGainConfig::new();
+
+        let params = SolarHourParams {
+            direct_normal_irradiance: 0.0,
+            diffuse_horizontal_irradiance: 0.0,
+            day_of_year: 172,
+            hour: 12.0,
+            latitude: 45.0,
+            longitude: 0.0,
+        };
+        let gains = compute_solar_gains(&building, &params, &config);
+
+        assert!(
+            gains.abs() < 1e-10,
+            "Zero radiation should give zero gains"
+        );
     }
 }

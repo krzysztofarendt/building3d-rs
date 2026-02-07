@@ -9,8 +9,8 @@ use super::sources::{LightSource, Rgb};
 /// Performs backward ray tracing from sensor points toward light sources.
 ///
 /// For each sensor, traces rays in the hemisphere above the surface to determine
-/// how much light reaches the sensor point. This is the reciprocal approach to
-/// forward ray tracing.
+/// how much radiant power reaches the sensor point. This is the reciprocal approach
+/// to forward ray tracing.
 pub fn backward_trace_sensors(
     grid: &mut SensorGrid,
     scene: &FlatScene,
@@ -21,7 +21,7 @@ pub fn backward_trace_sensors(
 
     for sensor in &mut grid.sensors {
         let normal = sensor.normal;
-        let mut total_illuminance: Rgb = [0.0; 3];
+        let mut total_irradiance: Rgb = [0.0; 3];
 
         for _ in 0..num_rays {
             // Generate random direction in hemisphere above sensor
@@ -36,19 +36,19 @@ pub fn backward_trace_sensors(
                 // For now, just count unobstructed rays
                 let cos_theta = dir.dot(&normal).abs();
                 for light in lights {
-                    let intensity = light.intensity(dir);
-                    total_illuminance[0] += intensity[0] * cos_theta;
-                    total_illuminance[1] += intensity[1] * cos_theta;
-                    total_illuminance[2] += intensity[2] * cos_theta;
+                    let radiance = light.intensity(dir);
+                    total_irradiance[0] += radiance[0] * cos_theta;
+                    total_irradiance[1] += radiance[1] * cos_theta;
+                    total_irradiance[2] += radiance[2] * cos_theta;
                 }
             }
         }
 
         // Normalize by number of rays and hemisphere solid angle (2*pi)
         let scale = 2.0 * std::f64::consts::PI / num_rays as f64;
-        sensor.illuminance[0] += total_illuminance[0] * scale;
-        sensor.illuminance[1] += total_illuminance[1] * scale;
-        sensor.illuminance[2] += total_illuminance[2] * scale;
+        sensor.illuminance[0] += total_irradiance[0] * scale;
+        sensor.illuminance[1] += total_irradiance[1] * scale;
+        sensor.illuminance[2] += total_irradiance[2] * scale;
         sensor.hit_count += num_rays;
     }
 }

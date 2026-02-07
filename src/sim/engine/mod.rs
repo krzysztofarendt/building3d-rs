@@ -83,18 +83,43 @@ impl FlatScene {
 
     /// Finds the closest non-transparent polygon in the ray's direction.
     ///
+    /// Uses 3D-DDA ray marching through the voxel grid to find candidate
+    /// polygons along the ray path, up to the scene diagonal distance.
+    ///
     /// Returns (polygon_index, distance) or None if no target found.
     pub fn find_target_surface(&self, origin: Point, direction: Vector) -> Option<(usize, f64)> {
         let dir = direction.normalize().ok()?;
-        let nearby = self.voxel_grid.find_nearby(origin);
 
-        if nearby.is_empty() {
+        // Compute max search distance: from origin to the farthest corner of the bbox.
+        // This handles rays starting both inside and far outside the scene.
+        let corners = [
+            self.bbox_min,
+            self.bbox_max,
+            Point::new(self.bbox_min.x, self.bbox_min.y, self.bbox_max.z),
+            Point::new(self.bbox_min.x, self.bbox_max.y, self.bbox_min.z),
+            Point::new(self.bbox_max.x, self.bbox_min.y, self.bbox_min.z),
+            Point::new(self.bbox_min.x, self.bbox_max.y, self.bbox_max.z),
+            Point::new(self.bbox_max.x, self.bbox_min.y, self.bbox_max.z),
+            Point::new(self.bbox_max.x, self.bbox_max.y, self.bbox_min.z),
+        ];
+        let max_dist = corners
+            .iter()
+            .map(|c| {
+                let d = Vector::new(c.x - origin.x, c.y - origin.y, c.z - origin.z);
+                d.length()
+            })
+            .fold(0.0_f64, f64::max)
+            + 1.0; // small margin
+
+        let candidates = self.voxel_grid.find_along_ray(origin, dir, max_dist);
+
+        if candidates.is_empty() {
             return None;
         }
 
         let mut closest: Option<(usize, f64)> = None;
 
-        for &idx in &nearby {
+        for &idx in &candidates {
             if self.transparent.contains(&idx) {
                 continue;
             }
@@ -264,6 +289,33 @@ mod tests {
         let direction = Vector::new(1.0, 0.0, 0.0);
         let result = scene.find_target_surface(origin, direction);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_target_surface_from_outside() {
+        // A ray from far outside should find the box surface
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let scene = FlatScene::new(&building, 0.5, false);
+
+        // Ray from far away aimed at the box
+        let origin = Point::new(1.0, 1.0, 50.0);
+        let direction = Vector::new(0.0, 0.0, -1.0);
+        let result = scene.find_target_surface(origin, direction);
+        assert!(
+            result.is_some(),
+            "Should find box surface from distant origin"
+        );
+
+        if let Some((_, dist)) = result {
+            // Distance from z=50 to z=2 surface should be ~48
+            assert!(
+                (dist - 48.0).abs() < 0.1,
+                "Distance should be ~48, got {dist}"
+            );
+        }
     }
 
     #[test]
