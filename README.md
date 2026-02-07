@@ -23,7 +23,7 @@ Each entity has:
   - **B3D**: native JSON format preserving hierarchy + UIDs (`building3d::io::b3d`)
   - **STL**: triangulated mesh import/export (`building3d::io::stl`) *(hierarchy is not preserved)*
   - **BIM**: dotbim import/export (`building3d::io::bim`) *(hierarchy is not preserved)*
-- Visualization: Rerun-based drawing helpers (`building3d::draw::rerun`)
+- Visualization: Rerun-based drawing helpers (`building3d::draw::rerun`) with customizable `RerunConfig`
 
 ## Quick Start
 
@@ -33,8 +33,8 @@ Add as a dependency (path or git, depending on how you consume it), then:
 use building3d::{Building, Solid};
 
 fn main() -> anyhow::Result<()> {
-    let solid = Solid::from_box(2.0, 3.0, 4.0, None, "box");
-    let building = Building::from_solids("building", vec![solid]);
+    let solid = Solid::from_box(2.0, 3.0, 4.0, None, "box")?;
+    let building = Building::from_solids("building", vec![solid])?;
 
     println!("Volume: {}", building.volume());
     println!("Zones: {}", building.zones().len());
@@ -51,6 +51,8 @@ cargo run --example draw_faces
 cargo run --example draw_many
 cargo run --example draw_shapes
 cargo run --example floor_plan
+cargo run --example ray_2_boxes
+cargo run --example ray_teapot
 ```
 
 ## I/O
@@ -62,8 +64,8 @@ use building3d::{Building, Solid};
 use building3d::io::b3d::{read_b3d, write_b3d};
 use std::path::Path;
 
-let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box");
-let building = Building::from_solids("my_building", vec![solid]);
+let solid = Solid::from_box(1.0, 1.0, 1.0, None, "box")?;
+let building = Building::from_solids("my_building", vec![solid])?;
 write_b3d(Path::new("model.b3d"), &building)?;
 let loaded = read_b3d(Path::new("model.b3d"))?;
 assert!((loaded.volume() - building.volume()).abs() < 1e-10);

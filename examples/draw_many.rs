@@ -1,6 +1,7 @@
 use anyhow::Result;
 use building3d::Building;
 use building3d::FloorPlan;
+use building3d::RerunConfig;
 use building3d::Solid;
 use building3d::draw::rerun::{draw_edges, draw_faces, draw_points, start_session};
 
@@ -21,22 +22,23 @@ fn main() -> Result<()> {
     let building = Building::from_solids("building", vec![sld1.clone(), sld2.clone()])?;
 
     // Draw
-    let session = start_session()?;
+    let config = RerunConfig::new();
+    let session = start_session(&config)?;
 
     let rgba: (f32, f32, f32, f32) = (1., 1., 1., 0.2);
-    draw_faces(&session, &building, rgba)?;
+    draw_faces(&session, &building, rgba, &config)?;
 
     let radius: f32 = 0.01;
     let rgba: (f32, f32, f32, f32) = (0., 0., 1., 0.5);
-    draw_edges(&session, &sld1, radius, rgba)?;
+    draw_edges(&session, &sld1, radius, rgba, &config)?;
 
     let radius: f32 = 0.01;
     let rgba: (f32, f32, f32, f32) = (1., 0., 0., 0.5);
-    draw_edges(&session, &sld2, radius, rgba)?;
+    draw_edges(&session, &sld2, radius, rgba, &config)?;
 
     let radius: f32 = 0.05;
     let rgba: (f32, f32, f32, f32) = (0., 1., 0., 1.);
-    draw_points(&session, &sld1, radius, rgba)?;
+    draw_points(&session, &sld1, radius, rgba, &config)?;
 
     Ok(())
 }

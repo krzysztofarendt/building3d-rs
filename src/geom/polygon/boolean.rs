@@ -8,6 +8,7 @@
 //! - Merging adjacent polygons (union)
 //! - Finding overlap areas (intersection)
 
+use crate::geom::projection::PlaneBasis;
 use crate::{Point, Polygon, Vector};
 use anyhow::{Result, anyhow};
 
@@ -167,51 +168,6 @@ fn sutherland_hodgman(subject: &[Point], clip_poly: &[Point]) -> Vec<Point> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PlaneBasis {
-    origin: Point,
-    u: Vector,
-    v: Vector,
-}
-
-impl PlaneBasis {
-    fn from_polygon(poly: &[Point]) -> Option<Self> {
-        if poly.len() < 3 {
-            return None;
-        }
-
-        let v1 = poly[1] - poly[0];
-        let v2 = poly[2] - poly[0];
-        let n = v1.cross(&v2).normalize().ok()?;
-
-        // Choose a helper axis not parallel to the normal.
-        let helper = if n.dz.abs() < 0.9 {
-            Vector::new(0.0, 0.0, 1.0)
-        } else {
-            Vector::new(0.0, 1.0, 0.0)
-        };
-
-        // Build an orthonormal basis {u, v} in the polygon plane.
-        let u = helper.cross(&n).normalize().ok()?;
-        let v = n.cross(&u).normalize().ok()?;
-
-        Some(Self {
-            origin: poly[0],
-            u,
-            v,
-        })
-    }
-
-    fn project(&self, p: Point) -> (f64, f64) {
-        let r = p - self.origin;
-        (r.dot(&self.u), r.dot(&self.v))
-    }
-
-    fn unproject(&self, x: f64, y: f64) -> Point {
-        self.origin + self.u * x + self.v * y
-    }
-}
-
 /// 2D Sutherland-Hodgman polygon clipping algorithm.
 fn sutherland_hodgman_2d(subject: &[(f64, f64)], clip_poly: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut output = subject.to_vec();
@@ -337,47 +293,46 @@ fn are_polygons_coplanar(poly1: &Polygon, poly2: &Polygon) -> bool {
     dist < 0.01
 }
 
-/// Creates a polygon with a hole by connecting outer boundary to inner hole.
+/// Creates a polygon with a hole by merging the hole into the outer boundary.
 fn create_polygon_with_hole(outer: &Polygon, hole: &Polygon) -> Result<Polygon> {
-    let outer_verts = outer.vertices();
-    let hole_verts = hole.vertices();
+    let outer_verts = outer.vertices().to_vec();
+    let mut hole_verts = hole.vertices().to_vec();
 
     if outer_verts.is_empty() || hole_verts.is_empty() {
         return Err(anyhow!("Cannot create polygon with hole: empty vertices"));
     }
 
-    // Find closest point on outer to first point of hole
-    let hole_start = hole_verts[0];
-    let (closest_idx, _) = outer_verts
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            let da = (**a - hole_start).length();
-            let db = (**b - hole_start).length();
-            da.partial_cmp(&db).unwrap()
-        })
-        .unwrap();
-
-    // Build new polygon: outer[0..closest] + bridge + hole (reversed) + bridge back + outer[closest..]
-    let mut new_verts = Vec::with_capacity(outer_verts.len() + hole_verts.len() + 2);
-
-    // Add outer vertices up to and including closest point
-    new_verts.extend(outer_verts.iter().take(closest_idx + 1).copied());
-
-    // Add hole vertices in reverse order (to maintain winding)
-    for v in hole_verts.iter().rev() {
-        new_verts.push(*v);
+    // `Polygon::with_holes()` requires hole winding opposite to the outer boundary
+    // (CW vs outer CCW w.r.t the polygon normal).
+    let outer_signed = ring_signed_area(&outer_verts, &outer.vn);
+    let hole_signed = ring_signed_area(&hole_verts, &outer.vn);
+    if outer_signed.abs() < crate::geom::EPS || hole_signed.abs() < crate::geom::EPS {
+        return Err(anyhow!("Cannot create polygon with hole: degenerate ring"));
+    }
+    if outer_signed.signum() == hole_signed.signum() {
+        hole_verts.reverse();
     }
 
-    // Bridge back (duplicate of last hole vertex to first, already done by reverse)
-    // Add remaining outer vertices
-    new_verts.extend(outer_verts.iter().skip(closest_idx + 1).copied());
-
-    Polygon::new(
+    Polygon::with_holes(
         &format!("{}_with_hole", outer.name),
-        new_verts,
+        outer_verts,
+        vec![hole_verts],
         Some(outer.vn),
     )
+}
+
+fn ring_signed_area(pts: &[Point], vn: &Vector) -> f64 {
+    let n = pts.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut cross_sum = Vector::new(0.0, 0.0, 0.0);
+    for i in 0..n {
+        let v1 = Vector::from_a_point(pts[i]);
+        let v2 = Vector::from_a_point(pts[(i + 1) % n]);
+        cross_sum = cross_sum + v1.cross(&v2);
+    }
+    0.5 * cross_sum.dot(vn)
 }
 
 /// Computes overlap area between two coplanar polygons.
@@ -474,6 +429,31 @@ mod tests {
             "Should return original area ~4.0, got {}",
             area
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygon_difference_creates_hole_with_correct_winding() -> Result<()> {
+        let poly1 = make_square(4.0, (0.0, 0.0))?;
+        let poly2 = make_square(1.0, (1.0, 1.0))?;
+
+        let result = polygon_difference(&poly1, &poly2)?;
+        assert_eq!(result.len(), 1);
+
+        let p = &result.polygons[0];
+        assert!(p.has_holes());
+        assert_eq!(p.holes().len(), 1);
+        assert!(
+            (p.area() - 15.0).abs() < 0.1,
+            "Area should be ~15.0, got {}",
+            p.area()
+        );
+
+        // Point inside hole should be outside
+        assert!(!p.is_point_inside(Point::new(1.5, 1.5, 0.0), false));
+        // Point in solid part should be inside
+        assert!(p.is_point_inside(Point::new(0.5, 0.5, 0.0), false));
 
         Ok(())
     }

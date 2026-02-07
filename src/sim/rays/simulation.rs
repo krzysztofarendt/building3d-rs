@@ -429,6 +429,7 @@ mod tests {
 
     #[test]
     fn test_simulation_transparent() {
+        // Two adjacent boxes in the same zone — rays should pass through the shared face
         let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
         let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
         let zone = Zone::new("z", vec![s0, s1]).unwrap();

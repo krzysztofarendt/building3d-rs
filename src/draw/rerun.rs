@@ -6,7 +6,7 @@ use crate::{Building, HasMesh, Mesh};
 use anyhow::Result;
 use rerun as rr;
 
-const SESSION_NAME: &str = "Building3d";
+use super::config::{RerunConfig, Rgba};
 
 /// Converts Point to native format of Rerun
 impl From<Point> for rr::Vec3D {
@@ -26,14 +26,25 @@ impl From<TriangleIndex> for rr::TriangleIndices {
     }
 }
 
-fn color(rgba: (f32, f32, f32, f32)) -> rr::Color {
+fn color(rgba: Rgba) -> rr::Color {
     let (r, g, b, a) = rgba;
     rr::Color(rr::Rgba32::from_linear_unmultiplied_rgba_f32(r, g, b, a))
 }
 
-pub fn start_session() -> Result<rr::RecordingStream> {
+/// Linearly interpolate between two RGBA colors.
+fn lerp_color(low: Rgba, high: Rgba, t: f32) -> Rgba {
+    let t = t.clamp(0.0, 1.0);
+    (
+        low.0 + (high.0 - low.0) * t,
+        low.1 + (high.1 - low.1) * t,
+        low.2 + (high.2 - low.2) * t,
+        low.3 + (high.3 - low.3) * t,
+    )
+}
+
+pub fn start_session(config: &RerunConfig) -> Result<rr::RecordingStream> {
     // Connect to the Rerun gRPC server using the default address and port: localhost:9876
-    let session = rr::RecordingStreamBuilder::new("building3d").spawn()?;
+    let session = rr::RecordingStreamBuilder::new(config.session_name.as_str()).spawn()?;
 
     Ok(session)
 }
@@ -41,7 +52,8 @@ pub fn start_session() -> Result<rr::RecordingStream> {
 pub fn draw_faces<T: HasMesh + HasName>(
     session: &rr::RecordingStream,
     model: &T,
-    rgba: (f32, f32, f32, f32),
+    rgba: Rgba,
+    config: &RerunConfig,
 ) -> Result<()> {
     let mesh: Mesh = model.copy_mesh();
     let vertices: Vec<Point> = mesh.vertices;
@@ -49,7 +61,7 @@ pub fn draw_faces<T: HasMesh + HasName>(
 
     let (r, g, b, a) = rgba;
 
-    let name = format!("{}/{}", SESSION_NAME, model.get_name());
+    let name = format!("{}/{}", config.entity_prefix, model.get_name());
     session.log_static(
         name,
         &rr::Mesh3D::new(vertices)
@@ -64,7 +76,8 @@ pub fn draw_edges<T: HasMesh + HasName>(
     session: &rr::RecordingStream,
     model: &T,
     radius: f32,
-    rgba: (f32, f32, f32, f32),
+    rgba: Rgba,
+    config: &RerunConfig,
 ) -> Result<()> {
     let mesh: Mesh = model.copy_mesh();
     let vertices: Vec<Point> = mesh.vertices;
@@ -85,7 +98,7 @@ pub fn draw_edges<T: HasMesh + HasName>(
         colors.push(color(rgba));
     }
 
-    let name = format!("{}/{}", SESSION_NAME, model.get_name());
+    let name = format!("{}/{}", config.entity_prefix, model.get_name());
     session.log_static(
         name,
         &rr::LineStrips3D::new(lines)
@@ -100,7 +113,8 @@ pub fn draw_points<T: HasMesh + HasName>(
     session: &rr::RecordingStream,
     model: &T,
     radius: f32,
-    rgba: (f32, f32, f32, f32),
+    rgba: Rgba,
+    config: &RerunConfig,
 ) -> Result<()> {
     let mesh: Mesh = model.copy_mesh();
     let vertices: Vec<Point> = mesh.vertices;
@@ -113,7 +127,7 @@ pub fn draw_points<T: HasMesh + HasName>(
         colors.push(color(rgba));
     }
 
-    let name = format!("{}/{}", SESSION_NAME, model.get_name());
+    let name = format!("{}/{}", config.entity_prefix, model.get_name());
     session.log_static(
         name,
         &rr::Points3D::new(vertices)
@@ -133,27 +147,28 @@ pub fn draw_simulation(
     session: &rr::RecordingStream,
     result: &SimulationResult,
     building: &Building,
+    config: &RerunConfig,
 ) -> Result<()> {
     // Draw building mesh (semi-transparent)
-    draw_faces(session, building, (0.8, 0.8, 0.8, 0.15))?;
+    draw_faces(session, building, config.sim_building_color, config)?;
 
     // Draw absorbers as static red spheres
     for (i, absorber) in result.config.absorbers.iter().enumerate() {
-        let name = format!("{}/absorbers/{}", SESSION_NAME, i);
+        let name = format!("{}/absorbers/{}", config.entity_prefix, i);
         session.log_static(
             name,
             &rr::Points3D::new([*absorber])
                 .with_radii([result.config.absorber_radius as f32])
-                .with_colors([color((1.0, 0.0, 0.0, 0.5))]),
+                .with_colors([color(config.sim_absorber_color)]),
         )?;
     }
 
     // Draw source as a static green sphere
     session.log_static(
-        format!("{}/source", SESSION_NAME),
+        format!("{}/source", config.entity_prefix),
         &rr::Points3D::new([result.config.source])
-            .with_radii([0.02f32])
-            .with_colors([color((0.0, 1.0, 0.0, 1.0))]),
+            .with_radii([config.sim_source_radius])
+            .with_colors([color(config.sim_source_color)]),
     )?;
 
     // Animate ray positions over time steps
@@ -165,24 +180,24 @@ pub fn draw_simulation(
     {
         session.set_time_sequence("step", step as i64);
 
-        // Collect alive rays (energy > 0)
+        // Collect alive rays (energy > threshold)
         let mut pts: Vec<Point> = Vec::new();
         let mut colors_vec: Vec<rr::Color> = Vec::new();
         let mut radii_vec: Vec<f32> = Vec::new();
 
         for (pos, &energy) in positions.iter().zip(energies.iter()) {
-            if energy > 1e-10 {
+            if energy > config.sim_ray_energy_threshold {
                 pts.push(*pos);
-                // Color from bright red (high energy) to dark red (low energy)
                 let e = energy.clamp(0.0, 1.0) as f32;
-                colors_vec.push(color((e, 0.0, 0.0, 0.8)));
-                radii_vec.push(0.04);
+                let ray_color = lerp_color(config.sim_ray_color_low, config.sim_ray_color_high, e);
+                colors_vec.push(color(ray_color));
+                radii_vec.push(config.sim_ray_radius);
             }
         }
 
         if !pts.is_empty() {
             session.log(
-                format!("{}/rays", SESSION_NAME),
+                format!("{}/rays", config.entity_prefix),
                 &rr::Points3D::new(pts)
                     .with_radii(radii_vec)
                     .with_colors(colors_vec),
@@ -191,4 +206,41 @@ pub fn draw_simulation(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lerp_color_zero() {
+        let low = (0.0, 0.0, 0.0, 0.0);
+        let high = (1.0, 1.0, 1.0, 1.0);
+        let result = lerp_color(low, high, 0.0);
+        assert_eq!(result, (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn test_lerp_color_one() {
+        let low = (0.0, 0.0, 0.0, 0.0);
+        let high = (1.0, 1.0, 1.0, 1.0);
+        let result = lerp_color(low, high, 1.0);
+        assert_eq!(result, (1.0, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn test_lerp_color_mid() {
+        let low = (0.0, 0.0, 0.0, 0.0);
+        let high = (1.0, 1.0, 1.0, 1.0);
+        let result = lerp_color(low, high, 0.5);
+        assert_eq!(result, (0.5, 0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn test_lerp_color_clamps() {
+        let low = (0.0, 0.0, 0.0, 0.0);
+        let high = (1.0, 1.0, 1.0, 1.0);
+        assert_eq!(lerp_color(low, high, -1.0), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(lerp_color(low, high, 2.0), (1.0, 1.0, 1.0, 1.0));
+    }
 }

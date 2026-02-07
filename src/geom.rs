@@ -5,6 +5,7 @@ pub mod building;
 pub mod mesh;
 pub mod point;
 pub mod polygon;
+pub mod projection;
 pub mod ray;
 pub mod rotation;
 pub mod segment;

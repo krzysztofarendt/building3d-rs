@@ -19,6 +19,8 @@ cargo run --example draw_faces
 cargo run --example draw_many
 cargo run --example draw_shapes
 cargo run --example floor_plan
+cargo run --example ray_2_boxes
+cargo run --example ray_teapot
 
 # Check code without building
 cargo check
@@ -67,10 +69,11 @@ Each entity has:
 
 ### Visualization (src/draw/)
 
-Uses Rerun (localhost:9876). Drawing functions accept any `T: HasMesh + HasName`:
+Uses Rerun (localhost:9876). `RerunConfig` controls session name, entity prefix, colors, sizes, and simulation drawing parameters. Drawing functions accept any `T: HasMesh + HasName`:
 - `draw_faces()`: renders triangulated mesh
 - `draw_edges()`: draws triangle edges
 - `draw_points()`: renders vertices
+- `draw_simulation()`: animated ray tracing visualization
 
 ### File I/O (src/io/)
 
@@ -121,6 +124,7 @@ src/
 │   ├── stl.rs          # STL mesh format
 │   └── bim.rs          # dotbim BIM format
 └── draw/
+    ├── config.rs       # RerunConfig struct
     └── rerun.rs        # Rerun visualization
 ```
 

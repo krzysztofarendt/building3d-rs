@@ -1,6 +1,7 @@
 use anyhow::Result;
 use building3d::Building;
 use building3d::FloorPlan;
+use building3d::RerunConfig;
 use building3d::Solid;
 use building3d::draw::rerun::{draw_faces, start_session};
 
@@ -21,10 +22,11 @@ fn main() -> Result<()> {
 
     let bdg = Building::from_solids("building", vec![sld1, sld2])?;
 
-    let session = start_session()?;
+    let config = RerunConfig::new();
+    let session = start_session(&config)?;
 
     let rgba: (f32, f32, f32, f32) = (1., 1., 1., 0.2);
-    draw_faces(&session, &bdg, rgba)?;
+    draw_faces(&session, &bdg, rgba, &config)?;
 
     Ok(())
 }

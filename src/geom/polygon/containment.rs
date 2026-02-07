@@ -7,6 +7,8 @@ use crate::geom::triangles::{TriangleIndex, is_point_inside_triangle};
 ///
 /// The polygon is defined by its vertices `pts`, triangulation `tri`, and normal vector `vn`.
 /// If `boundary_in` is true, points on the boundary (edges or vertices) are considered inside.
+/// `outer_boundary` and `holes` are used for boundary checks instead of `pts` when non-empty,
+/// to avoid treating bridge edges (from hole merging) as real boundaries.
 ///
 /// This function first projects the test point onto the polygon's plane, then checks
 /// if the projection lies within any of the polygon's triangles.
@@ -16,14 +18,30 @@ pub fn is_point_inside_polygon(
     tri: &[TriangleIndex],
     vn: &Vector,
     boundary_in: bool,
+    outer_boundary: &[Point],
+    holes: &[Vec<Point>],
 ) -> bool {
     // First check if the point lies on the polygon's plane
     if !is_point_on_plane(ptest, pts, vn) {
         return false;
     }
 
-    // Check if point is on the boundary (vertices or edges)
-    if is_point_on_boundary(ptest, pts) {
+    // Check boundary against the real boundaries (outer + holes), not the merged mesh
+    let boundary_pts = if !outer_boundary.is_empty() {
+        outer_boundary
+    } else {
+        pts
+    };
+
+    // Check if point is on a hole boundary
+    for hole in holes {
+        if is_point_on_boundary(ptest, hole) {
+            return boundary_in;
+        }
+    }
+
+    // Check if point is on the outer boundary
+    if is_point_on_boundary(ptest, boundary_pts) {
         return boundary_in;
     }
 
@@ -118,73 +136,106 @@ mod tests {
     #[test]
     fn test_point_inside_square() {
         let (pts, tri, vn) = make_square();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Center point - should be inside
         let ptest = Point::new(0.5, 0.5, 0.0);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, false));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, false, &pts, no_holes
+        ));
     }
 
     #[test]
     fn test_point_outside_square() {
         let (pts, tri, vn) = make_square();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Point outside - should be false
         let ptest = Point::new(1.5, 0.5, 0.0);
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, false));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, false, &pts, no_holes
+        ));
 
         // Point above plane - should be false
         let ptest = Point::new(0.5, 0.5, 1.0);
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, false));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, false, &pts, no_holes
+        ));
     }
 
     #[test]
     fn test_point_on_vertex() {
         let (pts, tri, vn) = make_square();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Point at vertex
         let ptest = Point::new(0., 0., 0.);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, false));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, false, &pts, no_holes
+        ));
     }
 
     #[test]
     fn test_point_on_edge() {
         let (pts, tri, vn) = make_square();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Point on edge (midpoint of bottom edge)
         let ptest = Point::new(0.5, 0., 0.);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, false));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, false, &pts, no_holes
+        ));
     }
 
     #[test]
     fn test_point_inside_triangle() {
         let (pts, tri, vn) = make_triangle();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Centroid - should be inside
         let ptest = Point::new(0.5, 0.33, 0.0);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
     }
 
     #[test]
     fn test_point_outside_triangle() {
         let (pts, tri, vn) = make_triangle();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Outside
         let ptest = Point::new(1.0, 1.0, 0.0);
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
     }
 
     #[test]
     fn test_point_not_on_plane() {
         let (pts, tri, vn) = make_square();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Point not on the plane
         let ptest = Point::new(0.5, 0.5, 0.1);
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
     }
 
     #[test]
@@ -200,23 +251,34 @@ mod tests {
         ];
         let vn = Vector::new(0., 0., 1.);
         let (pts, tri) = triangulate(pts, vn, 0).unwrap();
+        let no_holes: &[Vec<Point>] = &[];
 
         // Inside the L
         let ptest = Point::new(0.5, 0.5, 0.0);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
 
         let ptest = Point::new(0.5, 1.5, 0.0);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
 
         let ptest = Point::new(1.5, 1.5, 0.0);
-        assert!(is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
 
         // Outside the L (in the cutout)
         let ptest = Point::new(1.5, 0.5, 0.0);
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
 
         // Outside the L (completely outside)
         let ptest = Point::new(3.0, 1.0, 0.0);
-        assert!(!is_point_inside_polygon(ptest, &pts, &tri, &vn, true));
+        assert!(!is_point_inside_polygon(
+            ptest, &pts, &tri, &vn, true, &pts, no_holes
+        ));
     }
 }

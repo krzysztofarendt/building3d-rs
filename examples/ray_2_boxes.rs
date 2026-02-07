@@ -1,4 +1,5 @@
 use anyhow::Result;
+use building3d::RerunConfig;
 use building3d::draw::rerun::{draw_simulation, start_session};
 use building3d::sim::rays::{Simulation, SimulationConfig};
 use building3d::{Building, Point, Solid, Zone};
@@ -35,8 +36,9 @@ fn main() -> Result<()> {
     }
 
     // Visualize with Rerun
-    let session = start_session()?;
-    draw_simulation(&session, &result, &building)?;
+    let draw_config = RerunConfig::new();
+    let session = start_session(&draw_config)?;
+    draw_simulation(&session, &result, &building, &draw_config)?;
 
     Ok(())
 }
