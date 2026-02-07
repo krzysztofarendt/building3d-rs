@@ -199,4 +199,133 @@ mod tests {
             "All surfaces use default, mean should equal default"
         );
     }
+
+    // ── Physics verification tests ──────────────────────────────────────
+
+    #[test]
+    fn test_doubling_insulation_halves_transmission() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config_a = ThermalConfig::new();
+        config_a.default_u_value = 2.0;
+        let result_a = calculate_heat_balance(&building, &config_a);
+
+        let mut config_b = ThermalConfig::new();
+        config_b.default_u_value = 1.0; // half the U-value
+        let result_b = calculate_heat_balance(&building, &config_b);
+
+        let ratio = result_a.transmission_loss / result_b.transmission_loss;
+        assert!(
+            (ratio - 2.0).abs() < 1e-10,
+            "Halving U-value should halve transmission loss, ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn test_doubling_volume_doubles_infiltration() {
+        // Room A: 5x5x3 = 75 m³
+        let s_a = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let z_a = Zone::new("z", vec![s_a]).unwrap();
+        let b_a = Building::new("b", vec![z_a]).unwrap();
+
+        // Room B: 10x5x3 = 150 m³ (double the volume)
+        let s_b = Solid::from_box(10.0, 5.0, 3.0, None, "room").unwrap();
+        let z_b = Zone::new("z", vec![s_b]).unwrap();
+        let b_b = Building::new("b", vec![z_b]).unwrap();
+
+        let config = ThermalConfig::new();
+        let result_a = calculate_heat_balance(&b_a, &config);
+        let result_b = calculate_heat_balance(&b_b, &config);
+
+        let ratio = result_b.infiltration_loss / result_a.infiltration_loss;
+        assert!(
+            (ratio - 2.0).abs() < 1e-6,
+            "Double volume should double infiltration loss, ratio={ratio}"
+        );
+    }
+
+    #[test]
+    fn test_heating_cooling_symmetry() {
+        // With no gains, heating demand at dT=+20 should equal cooling demand at dT=-20.
+        let s = Solid::from_box(4.0, 4.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config_heat = ThermalConfig::new();
+        config_heat.indoor_temperature = 20.0;
+        config_heat.outdoor_temperature = 0.0; // dT = +20
+        config_heat.internal_gains = 0.0;
+        config_heat.solar_gains = 0.0;
+
+        let mut config_cool = ThermalConfig::new();
+        config_cool.indoor_temperature = 20.0;
+        config_cool.outdoor_temperature = 40.0; // dT = -20
+        config_cool.internal_gains = 0.0;
+        config_cool.solar_gains = 0.0;
+
+        let result_heat = calculate_heat_balance(&building, &config_heat);
+        let result_cool = calculate_heat_balance(&building, &config_cool);
+
+        assert!(
+            (result_heat.heating_demand - result_cool.cooling_demand).abs() < 1e-10,
+            "Symmetric dT should give equal demand: heating={}, cooling={}",
+            result_heat.heating_demand,
+            result_cool.cooling_demand
+        );
+    }
+
+    #[test]
+    fn test_energy_conservation_steady_state() {
+        // In steady-state: Q_heating = Q_transmission + Q_infiltration - Q_gains
+        let s = Solid::from_box(6.0, 4.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = ThermalConfig::new();
+        config.indoor_temperature = 21.0;
+        config.outdoor_temperature = -5.0;
+        config.internal_gains = 500.0;
+        config.solar_gains = 200.0;
+
+        let result = calculate_heat_balance(&building, &config);
+
+        let net_losses = result.transmission_loss + result.infiltration_loss;
+        let net = net_losses - result.total_gains;
+        // net > 0 → heating, net < 0 → cooling
+        assert!(
+            (result.heating_demand - result.cooling_demand - net).abs() < 1e-10,
+            "Energy balance: heating={}, cooling={}, net_losses={}, gains={}",
+            result.heating_demand,
+            result.cooling_demand,
+            net_losses,
+            result.total_gains
+        );
+    }
+
+    #[test]
+    fn test_transmission_proportional_to_dt() {
+        // Transmission loss should be exactly proportional to (T_in - T_out).
+        let s = Solid::from_box(3.0, 3.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config_10 = ThermalConfig::new();
+        config_10.indoor_temperature = 20.0;
+        config_10.outdoor_temperature = 10.0; // dT = 10
+
+        let mut config_30 = ThermalConfig::new();
+        config_30.indoor_temperature = 20.0;
+        config_30.outdoor_temperature = -10.0; // dT = 30
+
+        let r10 = calculate_heat_balance(&building, &config_10);
+        let r30 = calculate_heat_balance(&building, &config_30);
+
+        let ratio = r30.transmission_loss / r10.transmission_loss;
+        assert!(
+            (ratio - 3.0).abs() < 1e-10,
+            "Transmission should scale linearly with dT, ratio={ratio}"
+        );
+    }
 }

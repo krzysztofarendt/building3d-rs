@@ -427,4 +427,110 @@ mod tests {
         model.step(35.0, 500.0, heating - cooling, dt_s);
         assert!((model.zone_temperature - hvac.cooling_setpoint).abs() < 1e-10);
     }
+
+    // ── Physics verification tests ──────────────────────────────────────
+
+    #[test]
+    fn test_1r1c_exponential_decay() {
+        // Analytical solution for 1R1C free-floating (no gains, no HVAC):
+        //   T(t) = T_out + (T_0 - T_out) * exp(-K*t/C)
+        // where K = UA + infiltration_conductance.
+        let t_out = 0.0;
+        let t_0 = 20.0;
+        let ua = 100.0; // W/K
+        let inf = 20.0; // W/K
+        let k = ua + inf; // 120 W/K
+        let c = 500_000.0; // J/K
+        let dt_s = 60.0; // 1-minute steps for accuracy
+
+        let mut model = LumpedThermalModel::new(t_0, ua, inf, c);
+
+        // Simulate 10 hours in 1-minute steps
+        let total_seconds = 10.0 * 3600.0;
+        let steps = (total_seconds / dt_s) as usize;
+        for _ in 0..steps {
+            model.step(t_out, 0.0, 0.0, dt_s);
+        }
+
+        let t_analytical = t_out + (t_0 - t_out) * (-k * total_seconds / c).exp();
+        assert!(
+            (model.zone_temperature - t_analytical).abs() < 0.05,
+            "After 10h: model={:.4}, analytical={:.4}",
+            model.zone_temperature,
+            t_analytical
+        );
+    }
+
+    #[test]
+    fn test_1r1c_steady_state_convergence_with_gains() {
+        // With constant gains Q and no HVAC, the steady-state temperature is:
+        //   T_ss = T_out + Q / K
+        let t_out = 5.0;
+        let q_gains = 600.0; // W
+        let ua = 80.0;
+        let inf = 20.0;
+        let k = ua + inf; // 100 W/K
+        let c = 200_000.0;
+        let dt_s = 3600.0;
+        let t_ss_expected = t_out + q_gains / k; // 5 + 6 = 11°C
+
+        let mut model = LumpedThermalModel::new(t_out, ua, inf, c);
+
+        // Run for 48 hours — should converge well within that
+        for _ in 0..(48 * 3600 / dt_s as usize) {
+            model.step(t_out, q_gains, 0.0, dt_s);
+        }
+
+        assert!(
+            (model.zone_temperature - t_ss_expected).abs() < 0.01,
+            "Should converge to T_ss={:.2}, got {:.4}",
+            t_ss_expected,
+            model.zone_temperature
+        );
+    }
+
+    #[test]
+    fn test_1r1c_free_floating_bounded() {
+        // Without HVAC or gains, temperature must stay between T_0 and T_out
+        // (it decays monotonically toward T_out).
+        let t_out = -5.0;
+        let t_0 = 22.0;
+        let mut model = LumpedThermalModel::new(t_0, 150.0, 30.0, 300_000.0);
+
+        let mut prev = t_0;
+        for _ in 0..200 {
+            let t = model.step(t_out, 0.0, 0.0, 3600.0);
+            assert!(
+                t >= t_out && t <= prev,
+                "Temperature should decay monotonically toward T_out: prev={prev}, t={t}"
+            );
+            prev = t;
+        }
+    }
+
+    #[test]
+    fn test_1r1c_time_constant() {
+        // The time constant tau = C/K. After one tau, the temperature should
+        // drop to ~36.8% of the initial dT (i.e., T ≈ T_out + 0.368*(T_0 - T_out)).
+        let t_out = 0.0;
+        let t_0 = 20.0;
+        let k = 100.0;
+        let c = 360_000.0; // tau = 3600 s = 1 hour
+        let tau = c / k;
+        let dt_s = 10.0; // fine steps
+
+        let mut model = LumpedThermalModel::new(t_0, k, 0.0, c);
+
+        let steps = (tau / dt_s) as usize;
+        for _ in 0..steps {
+            model.step(t_out, 0.0, 0.0, dt_s);
+        }
+
+        let expected = t_out + (t_0 - t_out) * (-1.0_f64).exp(); // ~7.358°C
+        assert!(
+            (model.zone_temperature - expected).abs() < 0.1,
+            "After 1 tau: expected={expected:.3}, got={:.3}",
+            model.zone_temperature
+        );
+    }
 }
