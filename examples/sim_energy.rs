@@ -10,37 +10,23 @@ use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::energy::zone::calculate_heat_balance;
 use building3d::{Building, FloorPlan, RerunConfig, Solid, Zone};
 
-/// Build an L-shaped building with two rooms in one zone.
+/// Build an L-shaped room (single solid) in one zone.
 fn build_l_shaped() -> Result<Building> {
-    let room1 = Solid::from_floor_plan(FloorPlan {
-        plan: vec![(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)],
+    let room = Solid::from_floor_plan(FloorPlan {
+        plan: vec![
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+        ],
         height: 3.0,
-        name: "room1".to_string(),
-        wall_names: Some(vec![
-            "south".to_string(),
-            "east".to_string(),
-            "north".to_string(),
-            "west".to_string(),
-        ]),
-        floor_name: None,
-        ceiling_name: None,
+        name: "room".to_string(),
+        ..Default::default()
     })?;
 
-    let room2 = Solid::from_floor_plan(FloorPlan {
-        plan: vec![(0.0, 4.0), (4.0, 4.0), (4.0, 8.0), (0.0, 8.0)],
-        height: 3.0,
-        name: "room2".to_string(),
-        wall_names: Some(vec![
-            "south".to_string(),
-            "east".to_string(),
-            "north".to_string(),
-            "west".to_string(),
-        ]),
-        floor_name: None,
-        ceiling_name: None,
-    })?;
-
-    let zone = Zone::new("zone", vec![room1, room2])?;
+    let zone = Zone::new("zone", vec![room])?;
     Building::new("L-building", vec![zone])
 }
 
@@ -62,10 +48,11 @@ fn main() -> Result<()> {
     config
         .constructions
         .insert("ceiling".to_string(), insulated_wall());
-    // South wall of room1 gets double glazing (window wall)
+    // L-shape south wall gets double glazing (window wall).
+    // With FloorPlan defaults, the first edge ((0,0)->(6,0)) is `wall-0`.
     config
         .constructions
-        .insert("room1/south".to_string(), double_glazing());
+        .insert("wall-0".to_string(), double_glazing());
 
     println!("U-values:");
     println!(
@@ -97,7 +84,7 @@ fn main() -> Result<()> {
     println!();
 
     // Create internal gains profile for office use
-    // Total floor area: Room1 (6*4=24) + Room2 (4*4=16) = 40 m2
+    // Total floor area: 6*4 + 4*4 = 40 m2
     let floor_area = 40.0;
     let gains = InternalGainsProfile::office(floor_area);
 

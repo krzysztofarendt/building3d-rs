@@ -7,37 +7,23 @@ use building3d::sim::lighting::sources::PointLight;
 use building3d::sim::materials::MaterialLibrary;
 use building3d::{Building, FloorPlan, Point, RerunConfig, Solid, Zone};
 
-/// Build an L-shaped building with two rooms in one zone.
+/// Build an L-shaped room (single solid) in one zone.
 fn build_l_shaped() -> Result<Building> {
-    let room1 = Solid::from_floor_plan(FloorPlan {
-        plan: vec![(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)],
+    let room = Solid::from_floor_plan(FloorPlan {
+        plan: vec![
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+        ],
         height: 3.0,
-        name: "room1".to_string(),
-        wall_names: Some(vec![
-            "south".to_string(),
-            "east".to_string(),
-            "north".to_string(),
-            "west".to_string(),
-        ]),
-        floor_name: None,
-        ceiling_name: None,
+        name: "room".to_string(),
+        ..Default::default()
     })?;
 
-    let room2 = Solid::from_floor_plan(FloorPlan {
-        plan: vec![(0.0, 4.0), (4.0, 4.0), (4.0, 8.0), (0.0, 8.0)],
-        height: 3.0,
-        name: "room2".to_string(),
-        wall_names: Some(vec![
-            "south".to_string(),
-            "east".to_string(),
-            "north".to_string(),
-            "west".to_string(),
-        ]),
-        floor_name: None,
-        ceiling_name: None,
-    })?;
-
-    let zone = Zone::new("zone", vec![room1, room2])?;
+    let zone = Zone::new("zone", vec![room])?;
     Building::new("L-building", vec![zone])
 }
 
@@ -58,11 +44,11 @@ fn main() -> Result<()> {
     config.num_rays = 50000;
     config.max_bounces = 5;
 
-    // Point light in Room 1 (ceiling-mounted)
+    // Point light in lower part of the L-shape (ceiling-mounted)
     config
         .point_lights
         .push(PointLight::white(Point::new(3.0, 2.0, 2.8), 3000.0));
-    // Point light in Room 2 (ceiling-mounted)
+    // Point light in upper part of the L-shape (ceiling-mounted)
     config
         .point_lights
         .push(PointLight::white(Point::new(2.0, 6.0, 2.8), 2000.0));

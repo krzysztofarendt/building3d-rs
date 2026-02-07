@@ -10,49 +10,35 @@ use building3d::sim::materials::{
 use building3d::sim::rays::{AcousticMode, Simulation, SimulationConfig};
 use building3d::{Building, FloorPlan, Point, RerunConfig, Solid, Zone};
 
-/// Build an L-shaped building with two rooms in one zone.
+/// Build an L-shaped room (single solid) in one zone.
 ///
 /// ```text
 ///     (0,8)-----(4,8)
 ///       |         |
-///       |  Room2  |
+///       |         |
 ///       |         |
 ///     (0,4)-----(4,4)-----(6,4)
 ///       |                   |
-///       |      Room1        |
+///       |                   |
 ///       |                   |
 ///     (0,0)---------------(6,0)
 /// ```
 fn build_l_shaped() -> Result<Building> {
-    let room1 = Solid::from_floor_plan(FloorPlan {
-        plan: vec![(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)],
+    let room = Solid::from_floor_plan(FloorPlan {
+        plan: vec![
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+        ],
         height: 3.0,
-        name: "room1".to_string(),
-        wall_names: Some(vec![
-            "south".to_string(),
-            "east".to_string(),
-            "north".to_string(),
-            "west".to_string(),
-        ]),
-        floor_name: None,
-        ceiling_name: None,
+        name: "room".to_string(),
+        ..Default::default()
     })?;
 
-    let room2 = Solid::from_floor_plan(FloorPlan {
-        plan: vec![(0.0, 4.0), (4.0, 4.0), (4.0, 8.0), (0.0, 8.0)],
-        height: 3.0,
-        name: "room2".to_string(),
-        wall_names: Some(vec![
-            "south".to_string(),
-            "east".to_string(),
-            "north".to_string(),
-            "west".to_string(),
-        ]),
-        floor_name: None,
-        ceiling_name: None,
-    })?;
-
-    let zone = Zone::new("zone", vec![room1, room2])?;
+    let zone = Zone::new("zone", vec![room])?;
     Building::new("L-building", vec![zone])
 }
 
@@ -78,13 +64,15 @@ fn main() -> Result<()> {
 
     // Configure acoustic simulation
     let mut config = SimulationConfig::new();
+    // Keep all surfaces; this example uses a single (non-convex) solid with no stitched interfaces.
+    config.search_transparent = false;
     config.acoustic_mode = AcousticMode::FrequencyDependent;
     config.material_library = Some(lib);
     config.enable_air_absorption = true;
 
-    // Source in Room 1 center
+    // Source in lower part of the L-shape
     config.source = Point::new(3.0, 2.0, 1.5);
-    // Absorber (receiver location) in Room 2
+    // Absorber (receiver location) in upper part of the L-shape
     config.absorbers = vec![Point::new(2.0, 6.0, 1.5)];
     config.absorber_radius = 0.5;
 
@@ -196,7 +184,7 @@ fn main() -> Result<()> {
     let session = start_session(&draw_config)?;
     draw_simulation(&session, &result, &building, &draw_config)?;
     draw_receivers(&session, &[receiver])?;
-    draw_impulse_response(&session, &ir, "room2_receiver")?;
+    draw_impulse_response(&session, &ir, "receiver")?;
 
     println!("Visualization sent to Rerun (localhost:9876)");
 
