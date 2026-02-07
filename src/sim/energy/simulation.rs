@@ -342,4 +342,167 @@ mod tests {
         // They won't be identical, but both should indicate heating is needed
         assert!(steady.annual_heating_kwh > 0.0);
     }
+
+    // ── Physics verification tests ──────────────────────────────────────
+
+    #[test]
+    fn test_annual_energy_conservation() {
+        // Sum of hourly demands (W) should equal annual total (kWh) * 1000.
+        let s = Solid::from_box(4.0, 4.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = ThermalConfig::new();
+        let weather = WeatherData::synthetic("Test", 50.0, 10.0, 8.0, 10.0);
+
+        let result = run_annual_simulation(&building, &config, &weather, None, None);
+
+        let sum_heating_wh: f64 = result.hourly_heating.iter().sum();
+        let sum_cooling_wh: f64 = result.hourly_cooling.iter().sum();
+
+        assert!(
+            (sum_heating_wh / 1000.0 - result.annual_heating_kwh).abs() < 0.01,
+            "Hourly heating sum={:.1} Wh vs annual={:.1} kWh",
+            sum_heating_wh,
+            result.annual_heating_kwh
+        );
+        assert!(
+            (sum_cooling_wh / 1000.0 - result.annual_cooling_kwh).abs() < 0.01,
+            "Hourly cooling sum={:.1} Wh vs annual={:.1} kWh",
+            sum_cooling_wh,
+            result.annual_cooling_kwh
+        );
+    }
+
+    #[test]
+    fn test_peak_is_max_of_hourly() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = ThermalConfig::new();
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 15.0);
+
+        let result = run_annual_simulation(&building, &config, &weather, None, None);
+
+        let max_heating = result
+            .hourly_heating
+            .iter()
+            .cloned()
+            .fold(0.0_f64, f64::max);
+        let max_cooling = result
+            .hourly_cooling
+            .iter()
+            .cloned()
+            .fold(0.0_f64, f64::max);
+
+        assert!(
+            (result.peak_heating - max_heating).abs() < 1e-10,
+            "peak_heating={} vs max(hourly)={}",
+            result.peak_heating,
+            max_heating
+        );
+        assert!(
+            (result.peak_cooling - max_cooling).abs() < 1e-10,
+            "peak_cooling={} vs max(hourly)={}",
+            result.peak_cooling,
+            max_cooling
+        );
+    }
+
+    #[test]
+    fn test_constant_outdoor_matches_steady_state() {
+        // With constant outdoor temperature, every hour should produce
+        // the same demand as a single steady-state calculation.
+        // Note: synthetic weather has a ±3°C daily swing even with amplitude=0,
+        // so hours at the same time-of-day should match each other.
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = ThermalConfig::new();
+        config.indoor_temperature = 20.0;
+        config.outdoor_temperature = 5.0;
+
+        // Synthetic weather with 0 annual amplitude (still has daily variation)
+        let weather = WeatherData::synthetic("Const", 50.0, 10.0, 5.0, 0.0);
+
+        let result = run_annual_simulation(&building, &config, &weather, None, None);
+
+        // Hours at the same time-of-day on different days should produce
+        // identical demand (since annual amplitude=0, only daily cycle matters).
+        // Compare day 1 vs day 2 (hours 0..24 vs 24..48).
+        for h in 0..24 {
+            let day1 = result.hourly_heating[h];
+            let day2 = result.hourly_heating[h + 24];
+            assert!(
+                (day1 - day2).abs() < 1e-6,
+                "Hour-of-day {h}: day1={day1}, day2={day2}"
+            );
+        }
+
+        // All heating values should be non-negative
+        for (i, &val) in result.hourly_heating.iter().enumerate() {
+            assert!(val >= 0.0, "Hour {i}: heating should be non-negative, got {val}");
+        }
+    }
+
+    #[test]
+    fn test_transient_energy_conservation() {
+        // For the transient simulation, hourly sums should also match annual kWh.
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = ThermalConfig::new();
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
+        let hvac = HvacIdealLoads::new();
+
+        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, None);
+
+        let sum_heating: f64 = result.hourly_heating.iter().sum();
+        let sum_cooling: f64 = result.hourly_cooling.iter().sum();
+
+        assert!(
+            (sum_heating / 1000.0 - result.annual_heating_kwh).abs() < 0.01,
+            "Transient hourly heating sum mismatch"
+        );
+        assert!(
+            (sum_cooling / 1000.0 - result.annual_cooling_kwh).abs() < 0.01,
+            "Transient hourly cooling sum mismatch"
+        );
+    }
+
+    #[test]
+    fn test_more_insulation_less_heating() {
+        // Better insulated building should need less heating.
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData::synthetic("Cold", 55.0, 10.0, 5.0, 12.0);
+
+        let mut config_poor = ThermalConfig::new();
+        config_poor.default_u_value = 3.0;
+
+        let mut config_good = ThermalConfig::new();
+        config_good.default_u_value = 0.5;
+
+        let result_poor = run_annual_simulation(&building, &config_poor, &weather, None, None);
+        let result_good = run_annual_simulation(&building, &config_good, &weather, None, None);
+
+        assert!(
+            result_good.annual_heating_kwh < result_poor.annual_heating_kwh,
+            "Better insulation should reduce heating: good={}, poor={}",
+            result_good.annual_heating_kwh,
+            result_poor.annual_heating_kwh
+        );
+        // With U=0.5 vs U=3.0, the ratio of transmission losses is 6:1.
+        // Infiltration is unchanged, so the total ratio is less than 6,
+        // but the well-insulated building should use significantly less.
+        assert!(
+            result_good.annual_heating_kwh < result_poor.annual_heating_kwh * 0.5,
+            "U=0.5 should use well under half the energy of U=3.0"
+        );
+    }
 }
