@@ -2,14 +2,19 @@ use crate::sim::materials::NUM_OCTAVE_BANDS;
 
 use super::receiver::Receiver;
 
-/// An impulse response extracted from a receiver's energy-time histogram.
+/// Energy impulse response extracted from a receiver's energy-time histogram.
+///
+/// **Important**: This contains energy values (proportional to pressure^2), not
+/// signed pressure. It is suitable for computing room acoustic metrics (RT60,
+/// C80, D50, etc.) but cannot be used directly for convolution reverb, which
+/// requires a signed pressure impulse response.
 #[derive(Debug, Clone)]
 pub struct ImpulseResponse {
     /// Time resolution in seconds.
     pub time_resolution: f64,
-    /// Energy per time bin per frequency band.
+    /// Energy per time bin per frequency band (proportional to pressure^2).
     pub bands: Vec<[f64; NUM_OCTAVE_BANDS]>,
-    /// Broadband (summed) energy per time bin.
+    /// Broadband (summed) energy per time bin (proportional to pressure^2).
     pub broadband: Vec<f64>,
 }
 
@@ -65,7 +70,7 @@ impl ImpulseResponse {
         self.broadband.iter().sum()
     }
 
-    /// Converts to a pressure-squared time series for a given sample rate.
+    /// Converts to an energy (pressure-squared) time series for a given sample rate.
     ///
     /// Each sample receives the portion of each time bin's energy that overlaps
     /// the sample's time interval. This avoids rounding artifacts (e.g. bins
@@ -117,7 +122,7 @@ impl ImpulseResponse {
         output
     }
 
-    /// Converts a single frequency band to a pressure-squared time series.
+    /// Converts a single frequency band to an energy (pressure-squared) time series.
     ///
     /// Same algorithm as [`to_time_series`](Self::to_time_series) but uses
     /// `self.bands[i][band]` instead of `self.broadband[i]`.

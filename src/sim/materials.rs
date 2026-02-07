@@ -68,6 +68,10 @@ pub struct Material {
     pub acoustic: Option<AcousticMaterial>,
     pub optical: Option<OpticalMaterial>,
     pub thermal: Option<ThermalMaterial>,
+    /// Whether this surface is glazing (for solar gain calculations).
+    /// When true, the material library can identify glazing surfaces without
+    /// relying on fragile name-pattern matching.
+    pub is_glazing: bool,
 }
 
 /// Library of named materials with path-pattern assignment to building surfaces.
@@ -188,6 +192,7 @@ impl Material {
             acoustic: None,
             optical: None,
             thermal: None,
+            is_glazing: false,
         }
     }
 
@@ -203,6 +208,12 @@ impl Material {
 
     pub fn with_thermal(mut self, thermal: ThermalMaterial) -> Self {
         self.thermal = Some(thermal);
+        self
+    }
+
+    /// Marks this material as glazing for solar gain calculations.
+    pub fn with_glazing(mut self) -> Self {
+        self.is_glazing = true;
         self
     }
 }
@@ -279,7 +290,8 @@ impl MaterialLibrary {
                 .with_thermal(ThermalMaterial::from_layers(
                     "glass",
                     vec![Layer::new("glass_6mm", 0.006, 1.05, 2500.0, 840.0)],
-                )),
+                ))
+                .with_glazing(),
         );
 
         // Gypsum board
@@ -452,6 +464,10 @@ mod tests {
         assert!(concrete.acoustic.is_some());
         assert!(concrete.optical.is_some());
         assert!(concrete.thermal.is_some());
+        assert!(!concrete.is_glazing);
+
+        let glass = lib.get("glass").unwrap();
+        assert!(glass.is_glazing, "Glass preset should be marked as glazing");
     }
 
     #[test]

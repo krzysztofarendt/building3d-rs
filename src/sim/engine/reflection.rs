@@ -16,7 +16,7 @@ impl ReflectionModel for Specular {
     }
 }
 
-/// Lambertian diffuse reflection (random hemisphere direction).
+/// Lambertian diffuse reflection (cosine-weighted hemisphere sampling via Malley's method).
 pub struct Diffuse;
 
 impl ReflectionModel for Diffuse {
@@ -30,23 +30,29 @@ impl ReflectionModel for Diffuse {
             normal
         };
 
+        // Build orthonormal basis (tangent, bitangent) around the hemisphere normal.
+        let n = hemisphere_normal;
+        let arbitrary = if n.dx.abs() < 0.9 {
+            Vector::new(1.0, 0.0, 0.0)
+        } else {
+            Vector::new(0.0, 1.0, 0.0)
+        };
+        let tangent = n.cross(&arbitrary).normalize().unwrap_or(Vector::new(1.0, 0.0, 0.0));
+        let bitangent = n.cross(&tangent);
+
+        // Malley's method: sample uniformly on a disk, then project onto hemisphere.
+        // This produces a cosine-weighted distribution (pdf = cos(theta) / pi).
         let mut rng = rand::thread_rng();
-        loop {
-            let x: f64 = rng.gen_range(-1.0..1.0);
-            let y: f64 = rng.gen_range(-1.0..1.0);
-            let z: f64 = rng.gen_range(-1.0..1.0);
-            let len2 = x * x + y * y + z * z;
-            if len2 > 1e-6 && len2 <= 1.0 {
-                let len = len2.sqrt();
-                let v = Vector::new(x / len, y / len, z / len);
-                // Ensure the reflected direction is in the chosen hemisphere.
-                return if v.dot(&hemisphere_normal) >= 0.0 {
-                    v
-                } else {
-                    v * -1.0
-                };
-            }
-        }
+        let u1: f64 = rng.r#gen();
+        let u2: f64 = rng.r#gen();
+        let r = u1.sqrt();
+        let phi = 2.0 * std::f64::consts::PI * u2;
+        let x = r * phi.cos();
+        let y = r * phi.sin();
+        let z = (1.0 - u1).sqrt(); // = sqrt(1 - r^2)
+
+        // Transform from local to world coordinates.
+        tangent * x + bitangent * y + n * z
     }
 }
 
@@ -116,6 +122,27 @@ mod tests {
                 "Diffuse reflection should be in the same hemisphere as normal"
             );
         }
+    }
+
+    #[test]
+    fn test_diffuse_cosine_weighted_distribution() {
+        // Verify that Malley's method produces cosine-weighted samples:
+        // mean(cos(theta)) should be 2/3 for cosine-weighted hemisphere sampling.
+        let diffuse = Diffuse;
+        let normal = Vector::new(0.0, 0.0, 1.0);
+        let incident = Vector::new(0.0, 0.0, -1.0);
+        let n = 10000;
+        let mut cos_sum = 0.0;
+        for _ in 0..n {
+            let reflected = diffuse.reflect(incident, normal);
+            cos_sum += reflected.dot(&normal);
+        }
+        let mean_cos = cos_sum / n as f64;
+        // For cosine-weighted: E[cos(theta)] = 2/3
+        assert!(
+            (mean_cos - 2.0 / 3.0).abs() < 0.05,
+            "Mean cos(theta) should be ~0.667 for cosine-weighted sampling, got {mean_cos}"
+        );
     }
 
     #[test]
