@@ -4,9 +4,9 @@ use super::sources::Rgb;
 
 /// Result of a lighting simulation.
 pub struct LightingResult {
-    /// Illuminance per polygon path (average lux on the surface).
+    /// Irradiance per polygon path [W/m^2] (average per channel on the surface).
     pub illuminance: HashMap<String, Rgb>,
-    /// Total luminous flux hitting each polygon.
+    /// Total incident radiant power [W] hitting each polygon (per channel).
     pub incident_flux: HashMap<String, Rgb>,
     /// Number of ray hits per polygon.
     pub hit_count: HashMap<String, usize>,
@@ -34,7 +34,7 @@ impl LightingResult {
         *self.hit_count.entry(path.to_string()).or_insert(0) += 1;
     }
 
-    /// Computes illuminance from accumulated flux and polygon areas.
+    /// Computes irradiance from accumulated flux and polygon areas.
     pub fn compute_illuminance(&mut self, areas: &HashMap<String, f64>) {
         for (path, flux) in &self.incident_flux {
             if let Some(&area) = areas.get(path).filter(|&&a| a > 0.0) {
@@ -46,7 +46,7 @@ impl LightingResult {
         }
     }
 
-    /// Returns the average illuminance across all surfaces.
+    /// Returns the average irradiance [W/m^2] across all surfaces.
     pub fn average_illuminance(&self) -> Rgb {
         if self.illuminance.is_empty() {
             return [0.0; 3];

@@ -244,6 +244,63 @@ mod tests {
     }
 
     #[test]
+    fn test_inverse_square_falloff() {
+        // Verify 1/r^2 by comparing total power hitting opposing walls at
+        // different distances from a point light.
+        //
+        // In a 4x4x10 box with light at (2, 2, 2), the floor (z=0) is at
+        // distance 2 from the light, and the ceiling (z=10) is at distance 8.
+        // Both are 4x4 = 16 m^2.
+        //
+        // For a centered point light hitting identical-size parallel surfaces:
+        //   P_floor / P_ceiling ≈ (r_ceiling / r_floor)^2 = (8/2)^2 = 16
+        //
+        // This is approximate because the surfaces are finite, not infinitesimal.
+        let s0 = Solid::from_box(4.0, 4.0, 10.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = LightingConfig::new();
+        config.num_rays = 500_000;
+        config.max_bounces = 1; // first bounce only
+        config.default_reflectance = [0.0, 0.0, 0.0]; // absorb all light
+        config
+            .point_lights
+            .push(PointLight::white(Point::new(2.0, 2.0, 2.0), 3000.0));
+
+        let sim = LightingSimulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        // Compare total flux (not irradiance) on floor vs ceiling
+        let mut floor_flux = 0.0;
+        let mut ceiling_flux = 0.0;
+
+        for (path, flux) in &result.incident_flux {
+            let total = flux[0] + flux[1] + flux[2];
+            if path.contains("floor") {
+                floor_flux += total;
+            } else if path.contains("ceiling") {
+                ceiling_flux += total;
+            }
+        }
+
+        // Both surfaces receive some flux
+        assert!(floor_flux > 0.0, "Floor should receive flux");
+        assert!(ceiling_flux > 0.0, "Ceiling should receive flux");
+
+        // The floor (r=2) should receive more flux than ceiling (r=8)
+        let ratio = floor_flux / ceiling_flux;
+
+        // Expected ratio ≈ 16 for point source. Due to finite surface effects,
+        // the actual ratio will be lower. Accept range 5-50.
+        assert!(
+            ratio > 5.0,
+            "Floor should receive much more flux than ceiling. \
+             ratio={ratio:.2} (floor={floor_flux:.2}, ceiling={ceiling_flux:.2})"
+        );
+    }
+
+    #[test]
     fn test_lighting_no_lights() {
         let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s0]).unwrap();

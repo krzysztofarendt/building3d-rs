@@ -3,6 +3,7 @@ use crate::Building;
 use super::config::ThermalConfig;
 use super::hvac::{HvacIdealLoads, LumpedThermalModel};
 use super::schedule::InternalGainsProfile;
+use super::solar_bridge::{compute_solar_gains, SolarGainConfig, SolarHourParams};
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance;
 
@@ -27,20 +28,29 @@ pub struct AnnualResult {
     pub monthly_cooling_kwh: [f64; 12],
 }
 
+/// Computes day of year from month and day.
+fn day_of_year(month: u8, day: u8) -> u16 {
+    const DAYS_BEFORE_MONTH: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let m = (month as usize).saturating_sub(1).min(11);
+    DAYS_BEFORE_MONTH[m] + day as u16
+}
+
 /// Runs an annual hourly energy simulation.
 ///
 /// For each hour:
 ///   1. Set outdoor temperature from weather data
 ///   2. Calculate internal gains from schedule
-///   3. Estimate solar gains from weather radiation
+///   3. Compute solar gains from DNI/DHI + sun geometry + window SHGC
 ///   4. Run steady-state heat balance
 ///   5. Accumulate heating/cooling demand
+///
+/// If `solar_config` is `None`, solar gains are zero for all hours.
 pub fn run_annual_simulation(
     building: &Building,
     base_config: &ThermalConfig,
     weather: &WeatherData,
     gains_profile: Option<&InternalGainsProfile>,
-    solar_gain_factor: f64,
+    solar_config: Option<&SolarGainConfig>,
 ) -> AnnualResult {
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
@@ -62,8 +72,21 @@ pub fn run_annual_simulation(
             config.internal_gains = profile.gains_at(hour_idx);
         }
 
-        // Solar gains (simplified: fraction of global horizontal radiation * window area)
-        config.solar_gains = record.global_horizontal_radiation * solar_gain_factor;
+        // Solar gains from weather data + sun geometry + glazing properties
+        config.solar_gains = match solar_config {
+            Some(sc) => {
+                let params = SolarHourParams {
+                    direct_normal_irradiance: record.direct_normal_radiation,
+                    diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+                    day_of_year: day_of_year(record.month, record.day),
+                    hour: record.hour as f64,
+                    latitude: weather.latitude,
+                    longitude: weather.longitude,
+                };
+                compute_solar_gains(building, &params, sc)
+            }
+            None => 0.0,
+        };
 
         let result = calculate_heat_balance(building, &config);
 
@@ -99,13 +122,15 @@ pub fn run_annual_simulation(
 ///
 /// Unlike `run_annual_simulation` which is steady-state, this models
 /// the zone temperature state between time steps using a 1R1C model.
+///
+/// If `solar_config` is `None`, solar gains are zero for all hours.
 pub fn run_transient_simulation(
     building: &Building,
     base_config: &ThermalConfig,
     weather: &WeatherData,
     hvac: &HvacIdealLoads,
     gains_profile: Option<&InternalGainsProfile>,
-    solar_gain_factor: f64,
+    solar_config: Option<&SolarGainConfig>,
 ) -> AnnualResult {
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
@@ -164,7 +189,20 @@ pub fn run_transient_simulation(
 
     for (hour_idx, record) in weather.records.iter().enumerate() {
         let gains = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
-        let solar = record.global_horizontal_radiation * solar_gain_factor;
+        let solar = match solar_config {
+            Some(sc) => {
+                let params = SolarHourParams {
+                    direct_normal_irradiance: record.direct_normal_radiation,
+                    diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+                    day_of_year: day_of_year(record.month, record.day),
+                    hour: record.hour as f64,
+                    latitude: weather.latitude,
+                    longitude: weather.longitude,
+                };
+                compute_solar_gains(building, &params, sc)
+            }
+            None => 0.0,
+        };
         let total_gains = gains + solar;
 
         // Determine HVAC mode from free-floating temperature
@@ -237,7 +275,7 @@ mod tests {
         let config = ThermalConfig::new();
         let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
 
-        let result = run_annual_simulation(&building, &config, &weather, None, 0.0);
+        let result = run_annual_simulation(&building, &config, &weather, None, None);
 
         assert_eq!(result.hourly_heating.len(), 8760);
         assert_eq!(result.hourly_cooling.len(), 8760);
@@ -258,8 +296,8 @@ mod tests {
         let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
         let gains = InternalGainsProfile::office(100.0);
 
-        let result_no_gains = run_annual_simulation(&building, &config, &weather, None, 0.0);
-        let result_gains = run_annual_simulation(&building, &config, &weather, Some(&gains), 0.0);
+        let result_no_gains = run_annual_simulation(&building, &config, &weather, None, None);
+        let result_gains = run_annual_simulation(&building, &config, &weather, Some(&gains), None);
 
         // Internal gains should reduce heating demand
         assert!(
@@ -279,7 +317,7 @@ mod tests {
         let config = ThermalConfig::new();
         let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
 
-        let result = run_annual_simulation(&building, &config, &weather, None, 0.0);
+        let result = run_annual_simulation(&building, &config, &weather, None, None);
 
         let monthly_sum: f64 = result.monthly_heating_kwh.iter().sum();
         assert!(
@@ -299,7 +337,7 @@ mod tests {
         let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
         let hvac = HvacIdealLoads::new();
 
-        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, 0.0);
+        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, None);
 
         assert_eq!(result.hourly_heating.len(), 8760);
         assert!(
@@ -309,7 +347,7 @@ mod tests {
         assert!(result.peak_heating > 0.0, "Should have peak heating load");
 
         // Transient should have different results from steady-state due to thermal mass
-        let steady = run_annual_simulation(&building, &config, &weather, None, 0.0);
+        let steady = run_annual_simulation(&building, &config, &weather, None, None);
         // They won't be identical, but both should indicate heating is needed
         assert!(steady.annual_heating_kwh > 0.0);
     }

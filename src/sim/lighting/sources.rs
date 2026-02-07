@@ -8,17 +8,17 @@ pub trait LightSource {
     /// Returns the position of the light source (or representative point).
     fn position(&self) -> Point;
 
-    /// Returns the intensity [R, G, B] (in lumens or watts) at a given direction from the source.
+    /// Returns the radiant intensity [R, G, B] in W/sr at a given direction from the source.
     fn intensity(&self, direction: Vector) -> Rgb;
 
-    /// Total luminous flux (lumens) of the source.
+    /// Total radiant flux (W) of the source, summed across all RGB channels.
     fn total_flux(&self) -> f64;
 }
 
 /// An omnidirectional point light source.
 pub struct PointLight {
     pub position: Point,
-    /// RGB intensity (lumens per steradian in each channel).
+    /// RGB radiant intensity (W/sr per channel).
     pub intensity: Rgb,
 }
 
@@ -30,10 +30,12 @@ impl PointLight {
         }
     }
 
-    /// Creates a white point light with given total luminous flux (lumens).
-    pub fn white(position: Point, lumens: f64) -> Self {
-        // Distribute equally across RGB, over full sphere (4*pi steradians)
-        let i = lumens / (4.0 * std::f64::consts::PI);
+    /// Creates a white point light with given total radiant flux (W).
+    ///
+    /// The flux is distributed equally across three RGB channels over the full
+    /// sphere (4*pi sr), so each channel carries `flux / (3 * 4 * pi)` W/sr.
+    pub fn white(position: Point, flux: f64) -> Self {
+        let i = flux / (3.0 * 4.0 * std::f64::consts::PI);
         Self {
             position,
             intensity: [i, i, i],
@@ -52,7 +54,6 @@ impl LightSource for PointLight {
 
     fn total_flux(&self) -> f64 {
         (self.intensity[0] + self.intensity[1] + self.intensity[2]) * 4.0 * std::f64::consts::PI
-            / 3.0
     }
 }
 
@@ -66,7 +67,7 @@ pub struct AreaLight {
     pub width: f64,
     /// Height of the area light.
     pub height: f64,
-    /// RGB intensity per unit area.
+    /// RGB radiant intensity per unit area (W/(sr*m^2) per channel).
     pub intensity: Rgb,
 }
 
@@ -107,8 +108,8 @@ impl LightSource for AreaLight {
 
     fn total_flux(&self) -> f64 {
         let area = self.width * self.height;
-        // Lambertian emitter: flux = pi * intensity * area
-        (self.intensity[0] + self.intensity[1] + self.intensity[2]) / 3.0
+        // Lambertian emitter: flux = pi * sum(intensity) * area
+        (self.intensity[0] + self.intensity[1] + self.intensity[2])
             * std::f64::consts::PI
             * area
     }
@@ -118,7 +119,7 @@ impl LightSource for AreaLight {
 pub struct DirectionalLight {
     /// Direction the light travels (from source toward scene).
     pub direction: Vector,
-    /// RGB irradiance (W/m^2 or lux in each channel).
+    /// RGB irradiance (W/m^2 per channel).
     pub irradiance: Rgb,
 }
 
@@ -158,6 +159,13 @@ mod tests {
         assert!(i[0] > 0.0);
         assert!((i[0] - i[1]).abs() < 1e-10);
         assert!((i[1] - i[2]).abs() < 1e-10);
+
+        // total_flux should recover the original flux value
+        let flux = light.total_flux();
+        assert!(
+            (flux - 1000.0).abs() < 1e-6,
+            "white(1000).total_flux() should be 1000, got {flux}"
+        );
     }
 
     #[test]
