@@ -116,6 +116,57 @@ impl ImpulseResponse {
         output
     }
 
+    /// Converts a single frequency band to a pressure-squared time series.
+    ///
+    /// Same algorithm as [`to_time_series`](Self::to_time_series) but uses
+    /// `self.bands[i][band]` instead of `self.broadband[i]`.
+    pub fn band_to_time_series(&self, band: usize, sample_rate: f64) -> Vec<f64> {
+        if self.bands.is_empty() || sample_rate <= 0.0 || band >= NUM_OCTAVE_BANDS {
+            return Vec::new();
+        }
+        if self.time_resolution <= 0.0 {
+            return vec![0.0; self.bands.len()];
+        }
+
+        let band_data: Vec<f64> = self.bands.iter().map(|b| b[band]).collect();
+        let total_time = band_data.len() as f64 * self.time_resolution;
+        let num_samples = (total_time * sample_rate).ceil() as usize;
+        let mut output = vec![0.0; num_samples];
+
+        let sample_dt = 1.0 / sample_rate;
+
+        for (bin, &energy) in band_data.iter().enumerate() {
+            if energy == 0.0 {
+                continue;
+            }
+
+            let bin_t0 = bin as f64 * self.time_resolution;
+            let bin_t1 = (bin as f64 + 1.0) * self.time_resolution;
+
+            let start_sample = (bin_t0 * sample_rate).floor() as usize;
+            let end_sample = (bin_t1 * sample_rate).ceil() as usize;
+            let start_sample = start_sample.min(num_samples);
+            let end_sample = end_sample.min(num_samples);
+
+            if start_sample >= end_sample {
+                continue;
+            }
+
+            let energy_density = energy / self.time_resolution;
+            for (sample_idx, out) in output[start_sample..end_sample].iter_mut().enumerate() {
+                let sample_idx = sample_idx + start_sample;
+                let sample_t0 = sample_idx as f64 * sample_dt;
+                let sample_t1 = sample_t0 + sample_dt;
+                let overlap = bin_t1.min(sample_t1) - bin_t0.max(sample_t0);
+                if overlap > 0.0 {
+                    *out += energy_density * overlap;
+                }
+            }
+        }
+
+        output
+    }
+
     /// Schroeder backward integration for a given band.
     ///
     /// Returns the energy decay curve in dB, normalized to 0 dB at time 0.
@@ -196,6 +247,43 @@ mod tests {
         for i in 1..decay.len() {
             assert!(decay[i] <= decay[i - 1] + 1e-10);
         }
+    }
+
+    #[test]
+    fn test_band_to_time_series() {
+        let mut bands = vec![[0.0; NUM_OCTAVE_BANDS]; 10];
+        bands[0][2] = 0.7; // 500 Hz band
+        bands[0][4] = 0.3; // 2000 Hz band
+        let broadband = vec![0.0; 10];
+        let ir = ImpulseResponse::new(0.001, bands, broadband);
+
+        let ts_500 = ir.band_to_time_series(2, 44100.0);
+        let ts_2000 = ir.band_to_time_series(4, 44100.0);
+        assert!(!ts_500.is_empty());
+        assert!(!ts_2000.is_empty());
+
+        let total_500: f64 = ts_500.iter().sum();
+        let total_2000: f64 = ts_2000.iter().sum();
+        assert!((total_500 - 0.7).abs() < 1e-10);
+        assert!((total_2000 - 0.3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_band_to_time_series_with_empty_broadband() {
+        let mut bands = vec![[0.0; NUM_OCTAVE_BANDS]; 10];
+        bands[0][3] = 0.4;
+        let ir = ImpulseResponse::new(0.001, bands, vec![]);
+
+        let ts = ir.band_to_time_series(3, 44100.0);
+        assert!(!ts.is_empty());
+        let total: f64 = ts.iter().sum();
+        assert!((total - 0.4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_band_to_time_series_invalid_band() {
+        let ir = ImpulseResponse::new(0.001, vec![[0.0; NUM_OCTAVE_BANDS]; 10], vec![0.0; 10]);
+        assert!(ir.band_to_time_series(NUM_OCTAVE_BANDS, 44100.0).is_empty());
     }
 
     #[test]
