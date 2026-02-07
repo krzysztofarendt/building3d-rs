@@ -38,14 +38,16 @@ impl SolarPosition {
             lat.sin() * declination.sin() + lat.cos() * declination.cos() * hour_angle.cos();
         let altitude = sin_alt.asin().to_degrees();
 
-        // Solar azimuth
-        let cos_azimuth = (declination.sin() * lat.cos()
+        // Solar azimuth (atan2-based for numerical robustness)
+        let cos_alt = altitude.to_radians().cos().max(1e-10);
+        let sin_azi = -declination.cos() * hour_angle.sin() / cos_alt;
+        let cos_azi = (declination.sin() * lat.cos()
             - declination.cos() * lat.sin() * hour_angle.cos())
-            / altitude.to_radians().cos().max(1e-10);
+            / cos_alt;
 
-        let mut azimuth = cos_azimuth.clamp(-1.0, 1.0).acos().to_degrees();
-        if hour_angle > 0.0 {
-            azimuth = 360.0 - azimuth;
+        let mut azimuth = sin_azi.atan2(cos_azi).to_degrees();
+        if azimuth < 0.0 {
+            azimuth += 360.0;
         }
 
         Self { altitude, azimuth }
@@ -117,6 +119,30 @@ mod tests {
         assert!((dir.dz - 1.0).abs() < 1e-6);
         assert!(dir.dx.abs() < 1e-6);
         assert!((dir.dy - 0.0).abs() < 0.1); // cos(90) is approximately 0
+    }
+
+    #[test]
+    fn test_solar_azimuth_morning_vs_afternoon() {
+        // At 45°N on equinox, morning sun should be east (azi < 180),
+        // afternoon sun should be west (azi > 180).
+        let morning = SolarPosition::calculate(45.0, 0.0, 80, 8.0);
+        let afternoon = SolarPosition::calculate(45.0, 0.0, 80, 16.0);
+        assert!(
+            morning.azimuth < 180.0,
+            "Morning azimuth should be east (<180), got {}",
+            morning.azimuth
+        );
+        assert!(
+            afternoon.azimuth > 180.0,
+            "Afternoon azimuth should be west (>180), got {}",
+            afternoon.azimuth
+        );
+        // Azimuths should be roughly symmetric around south (180)
+        let diff = (morning.azimuth + afternoon.azimuth) / 2.0;
+        assert!(
+            (diff - 180.0).abs() < 5.0,
+            "Mean azimuth should be ~180 (south), got {diff}"
+        );
     }
 
     #[test]

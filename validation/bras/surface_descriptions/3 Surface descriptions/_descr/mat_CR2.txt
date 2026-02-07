@@ -1,0 +1,61 @@
+## Material/Surface information file "mat_CR2" (previous name: mat_scene9) [small room / seminar room]
+
+Author: 					Lukas Aspöck / las@akustik.rwth-aachen.de
+Date:						2019/11/21
+
+Notes:						This file contains information about the boundary conditions of the materials (5):
+							"mat_CR2_plaster", "mat_CR2_concrete", "mat_CR2_windows", "mat_CR2_floor", "mat_CR2_ceiling"
+														
+							All relevant values are given in separate files in the csv-format							
+
+							Be aware, that this data is mostly modeled or estimated for the provided room model. 
+							Therefore, the dataset does not describe the actual properties of the materials.
+
+## Material information:
+
+Scenes:						CR2 (previously named: "scene9")
+Origin of data: 			initial_estimates: Estimated/modeled data for absorption and scattering coefficients (based on database values and in situ measurements)
+							fitted_estimates:  Second dataset: Absorption coefficients matched to measured reverberation time according to Eyring equation
+											   (Room surface/volume: S = 202.53 m² / V = 146.1 m³ - based on provided 3d models)	
+
+Angle of incidence:			random incidence
+Data frequency Range:		20 Hz - 20 kHz (31 third octave values, see line 1 in csv file)	
+
+Absorption coefficients:	[x] (see line 2 in csv file)
+Scattering coefficients: 	[x] (see line 3 in csv file) 
+Impedance values:			[ ]	
+
+Surface Areas:				mat_CR2_plaster			34.93 m²
+							mat_CR2_concrete		56.94 m²
+							mat_CR2_windows		     9.75 m²
+							mat_CR2_floor			49.29 m²
+							mat_CR2_ceiling			51.62 m²
+							
+Characteristic depths:		mat_CR2_plaster			0.006 m
+							mat_CR2_concrete	   	0.005 m
+							mat_CR2_windows		    0.002 m
+							mat_CR2_floor			0.003 m	
+							mat_CR2_ceiling			0.060 m
+							
+							
+Data files:					/_csv/initial_estimates/mat_CR2_plaster.csv
+							/_csv/initial_estimates/mat_CR2_concrete.csv
+							/_csv/initial_estimates/mat_CR2_windows.csv
+							/_csv/initial_estimates/mat_CR2_floor.csv
+							/_csv/initial_estimates/mat_CR2_ceiling.csv
+							
+							/_csv/fitted_estimates/mat_CR2_plaster.csv
+							/_csv/fitted_estimates/mat_CR2_concrete.csv
+							/_csv/fitted_estimates/mat_CR2_windows.csv
+							/_csv/fitted_estimates/mat_CR2_floor.csv
+							/_csv/fitted_estimates/mat_CR2_ceiling.csv
+							
+Image files:
+							/_img/mat_CR2_ceiling_1.JPG
+							/_img/mat_CR2_ceiling_2.JPG
+							/_img/mat_CR2_concrete_1.JPG
+							/_img/mat_CR2_floor_1.JPG														
+							/_img/mat_CR2_plaster_1.JPG														
+							/_img/mat_CR2_plaster_2.JPG														
+							/_img/mat_CR2_windows_1.JPG														
+

@@ -13,7 +13,9 @@ use crate::{Building, Point, Polygon, Vector};
 use self::voxel_grid::VoxelGrid;
 
 /// Barycentric tolerance for ray-triangle intersection.
-const BARY_TOLERANCE: f64 = 1e-3;
+/// Reduced from 1e-3 to 1e-6 to prevent energy leaks from double-counted
+/// hits and wrong normals near triangle edges.
+const BARY_TOLERANCE: f64 = 1e-6;
 
 /// Flattened scene representation for fast indexed access during simulation.
 pub struct FlatScene {

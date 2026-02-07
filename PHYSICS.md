@@ -48,8 +48,7 @@ The intersection is valid when:
 A barycentric tolerance `tol = 1e-3` is used to prevent rays from slipping through cracks
 between adjacent triangles in a mesh.
 
-> **Known issue**: `tol = 1e-3` is large and can accept hits visibly outside triangles,
-> causing energy leaks and double hits. See [5.1](#51-shared-infrastructure).
+> **Fixed**: Tolerance reduced from `1e-3` to `1e-6`. See [5.1](#51-shared-infrastructure).
 
 ### 1.2 Voxel Grid Spatial Acceleration
 
@@ -164,11 +163,11 @@ Three reflection models:
 V_reflected = V_incident - 2 * (V_incident . N) * N
 ```
 
-**Diffuse** (labeled Lambertian, but currently uniform): Random direction uniformly sampled
-in the hemisphere opposite to the incident side, generated via rejection sampling.
+**Diffuse** (Lambertian): Cosine-weighted random direction in the hemisphere opposite to
+the incident side, generated via Malley's method (uniform disk projected onto hemisphere).
 
-> **Known issue**: Uniform hemisphere sampling is *not* Lambertian. True Lambertian
-> scattering requires cosine-weighted sampling. See [5.2](#52-acoustics).
+> **Fixed**: Now uses Malley's method for cosine-weighted Lambertian sampling.
+> See [5.2](#52-acoustics).
 
 **Hybrid**: Blends specular and diffuse using the scattering coefficient s:
 ```
@@ -201,9 +200,9 @@ Energy is accumulated into the time bin:
 bin = floor(t / time_resolution)
 ```
 
-> **Known issue**: Collected energy scales with receiver radius, timestep, and check
-> frequency, making results non-comparable across configurations. The receiver should
-> normalize by cross-sectional area and total emitted energy. See [5.2](#52-acoustics).
+> **Fixed**: Normalization methods added to `Receiver` that convert raw energy to
+> energy density (W/m^2), independent of receiver size and ray count.
+> See [5.2](#52-acoustics).
 
 ### 2.6 Impulse Response
 
@@ -216,10 +215,10 @@ energy_density = E / time_resolution
 sample_value = energy_density * overlap_duration
 ```
 
-> **Known issue**: This produces an *energy* time series (proportional to pressure^2), not
+> **Note**: This produces an *energy* time series (proportional to pressure^2), not
 > a signed pressure impulse response. It cannot be used for convolution reverb. For metrics
-> (RT, C80, D50) this is acceptable; for audio synthesis, pressure = sqrt(energy) with
-> phase reconstruction would be needed. See [5.2](#52-acoustics).
+> (RT, C80, D50) this is acceptable. The documentation now clearly states this.
+> See [5.2](#52-acoustics).
 
 ### 2.7 Schroeder Backward Integration
 
@@ -298,8 +297,7 @@ Simplified single-modulation-frequency estimate:
 - **Energy-based model**: rays carry scalar energy (or per-band intensity), no phase or
   wave interference. Valid in the geometric acoustics regime (room dimensions >> wavelength).
 - **No diffraction**: rays either hit or miss surfaces; no edge diffraction modeling.
-- **Diffuse scattering is uniform, not Lambertian**: the current implementation samples
-  uniformly on the hemisphere rather than cosine-weighted; this is a different BRDF.
+- **Cosine-weighted (Lambertian) diffuse scattering**: implemented via Malley's method.
 - **Uniform material properties per polygon**: no spatial variation within a surface.
 - **Omnidirectional receiver**: no listener directivity.
 - **Fixed atmospheric conditions**: air absorption assumes 20 C, 50% RH.
@@ -432,9 +430,8 @@ cos(azi) = (sin(delta)*cos(lat) - cos(delta)*sin(lat)*cos(h)) / cos(alt)
 if h > 0: azi = 360 - azi
 ```
 
-> **Known issue**: Using only `cos(azi)` with a sign flip is numerically fragile and can
-> fail near the poles or at certain hour angles. An `atan2`-based computation using both
-> sin and cos components would be more robust. See [5.3](#53-lighting).
+> **Fixed**: Now uses `atan2(sin_azi, cos_azi)` for numerically robust azimuth calculation.
+> See [5.3](#53-lighting).
 
 **Direction vector** (North = +Y, East = +X, Up = +Z):
 ```
@@ -629,11 +626,9 @@ The HVAC model maintains zone temperature between heating and cooling setpoints:
 Q_required = C * (T_setpoint - T_free_floating) / dt
 ```
 
-> **Known issue**: This only accounts for changing the lumped node temperature, not the
-> ongoing losses/gains during the same timestep. The correct formulation solves for Q_hvac
-> such that T(t+dt) = T_setpoint:
-> `Q_hvac = C*(T_set - T)/dt + (UA + Inf_cond)*(T_set - T_out) - Q_gains`
-> The current approach can under/over-shoot. See [5.4](#54-energy).
+> **Fixed**: `calculate_with_losses()` uses the implicit formulation that accounts for
+> concurrent envelope losses. The transient simulation now uses this method.
+> See [5.4](#54-energy).
 
 **Delivered power** (clamped to capacity):
 ```
@@ -757,82 +752,42 @@ Issues are grouped by severity: **bugs** (produce incorrect results and must be 
 through grid cells along the ray direction. `find_target_surface()` now uses this instead
 of `find_nearby()`, so rays originating far from geometry find intersections correctly.
 
-#### BIAS: Barycentric tolerance too large
+#### ~~BIAS: Barycentric tolerance too large~~ (FIXED)
 
-**Problem**: `tol = 1e-3` accepts hits visibly outside triangles, causing energy leaks
-(double-counted hits) and wrong normals near edges.
-
-**Fix (option A)**: Reduce tolerance to `1e-6` or scale it relative to triangle size.
-
-**Fix (option B)**: Switch to a watertight ray-triangle test (Woop et al. 2013) that
-guarantees no cracks without tolerance hacking.
-
-**Files**: `src/geom/ray.rs` (constant `BARY_TOLERANCE` in `src/sim/engine/mod.rs`)
-
-**Effort**: Low for option A, medium for option B.
+**Fixed**: Reduced `BARY_TOLERANCE` from `1e-3` to `1e-6` in `src/sim/engine/mod.rs`.
+This prevents energy leaks from double-counted hits and wrong normals near triangle edges.
 
 ### 5.2 Acoustics
 
-#### BIAS: Diffuse reflection is uniform, not Lambertian
+#### ~~BIAS: Diffuse reflection is uniform, not Lambertian~~ (FIXED)
 
-**Problem**: The diffuse reflection model samples directions uniformly on the hemisphere.
-True Lambertian scattering has a cosine-weighted distribution (`pdf = cos(theta) / pi`),
-which concentrates energy near the surface normal.
+**Fixed**: Replaced uniform hemisphere rejection sampling with Malley's method in the
+`Diffuse` reflection model (`src/sim/engine/reflection.rs`). The new implementation
+samples a uniform disk and projects onto the hemisphere, producing a cosine-weighted
+distribution (`pdf = cos(theta) / pi`). Verified by a test checking that the mean
+`cos(theta)` equals 2/3.
 
-**Fix**: Replace rejection sampling with Malley's method:
-1. Sample a uniform disk: `r = sqrt(u1)`, `theta = 2*pi*u2`
-2. Project onto hemisphere: `x = r*cos(theta)`, `y = r*sin(theta)`, `z = sqrt(1 - r^2)`
-3. Transform to surface-local frame
+#### ~~BIAS: Receiver energy depends on radius and timestep~~ (FIXED)
 
-**Files**: `src/sim/engine/reflection.rs` (Diffuse struct)
+**Fixed**: Added `normalization_factor(num_rays)`, `normalized_scalar_histogram(num_rays)`,
+and `normalized_histogram(num_rays)` methods to `Receiver` (`src/sim/acoustics/receiver.rs`).
+The normalization factor `4*pi / (pi * r^2 * N_rays)` converts raw collected energy to
+energy density (W/m^2) independent of receiver size and ray count. Raw recording is
+unchanged; normalization is applied as a post-processing step.
 
-**Effort**: Low. Drop-in replacement for the sampling function.
+#### ~~LABELING: Impulse response is energy, not pressure~~ (FIXED)
 
-#### BIAS: Receiver energy depends on radius and timestep
+**Fixed**: Updated `ImpulseResponse` documentation in `src/sim/acoustics/impulse_response.rs`
+to clearly state it contains energy values (proportional to pressure^2), not signed pressure.
+Doc comments on the struct and its `to_time_series` / `band_to_time_series` methods now
+note the energy nature and that it is suitable for metrics (RT, C80, D50) but not for
+convolution reverb.
 
-**Problem**: The spherical receiver adds full ray energy when the ray position falls inside
-the sphere. This makes collected energy scale with radius (larger sphere catches more),
-timestep (more checks per ray), and ray count in non-physical ways.
+#### ~~LABELING: STI should be called "STI-like index"~~ (FIXED)
 
-**Fix**: Normalize by receiver cross-section and emission:
-```
-E_normalized = E_raw / (pi * r^2) * (4*pi / N_rays)
-```
-This converts raw collected energy to an estimate of energy density (W/m^2) at the
-receiver location, independent of receiver size and ray count.
-
-**Files**: `src/sim/acoustics/receiver.rs`
-
-**Effort**: Low. Add normalization constants to the Receiver struct and apply at
-recording time or as a post-processing step.
-
-#### LABELING: Impulse response is energy, not pressure
-
-**Problem**: The "impulse response" output is an energy time series (proportional to
-pressure^2). It cannot be used for convolution reverb, which requires signed pressure.
-
-**Fix (minimal)**: Rename to "energy decay curve" or "energy impulse response" in the
-API and documentation. Add a note that for metrics (RT, C80, D50) this is appropriate.
-
-**Fix (full)**: For audio output, take `sqrt(energy)` and assign random sign per bin, or
-implement an image-source method for early specular paths to get signed pressure. This is
-a larger effort and may not be needed if the primary use case is metrics.
-
-**Files**: `src/sim/acoustics/impulse_response.rs`
-
-**Effort**: Low for labeling, high for full pressure IR.
-
-#### LABELING: STI should be called "STI-like index"
-
-**Problem**: The simplified STI uses 1 modulation frequency (instead of 14 per IEC
-60268-16), no noise/masking, and 6 bands (missing 8 kHz).
-
-**Fix**: Rename the function/metric to `sti_approximate` or `sti_like_index`. Document
-the limitations in the docstring and here.
-
-**Files**: `src/sim/acoustics/metrics.rs`
-
-**Effort**: Trivial.
+**Fixed**: Renamed `sti()` to `sti_approximate()` in `src/sim/acoustics/metrics.rs`.
+The struct field `RoomAcousticReport::sti` is now `sti_approximate`. The docstring
+documents the limitations (1 modulation frequency, no noise/masking, 6 bands).
 
 ### 5.3 Lighting
 
@@ -858,22 +813,11 @@ emerges naturally from the Monte Carlo solid angle sampling. A point light place
 off-center in a box confirms that the near surface receives significantly more flux
 than the far surface.
 
-#### BIAS: Solar azimuth numerically fragile
+#### ~~BIAS: Solar azimuth numerically fragile~~ (FIXED)
 
-**Problem**: Computing azimuth from `cos(azi)` alone loses quadrant information. The
-`if h > 0` correction is not robust for all latitude/declination combinations.
-
-**Fix**: Use `atan2(sin_azi, cos_azi)`:
-```
-sin_azi = -cos(delta) * sin(h) / cos(alt)
-cos_azi = (sin(delta)*cos(lat) - cos(delta)*sin(lat)*cos(h)) / cos(alt)
-azi = atan2(sin_azi, cos_azi)
-if azi < 0: azi += 2*pi
-```
-
-**Files**: `src/sim/lighting/solar.rs`
-
-**Effort**: Low.
+**Fixed**: Replaced `acos`-based azimuth calculation with `atan2(sin_azi, cos_azi)` in
+`SolarPosition::calculate()` (`src/sim/lighting/solar.rs`). This preserves quadrant
+information and is numerically robust for all latitude/declination combinations.
 
 #### ~~LABELING: Backward tracer variable naming~~ (FIXED)
 
@@ -891,34 +835,22 @@ SHGC. The `solar_gain_factor: f64` parameter was replaced with
 `run_transient_simulation()`. The legacy `SolarBridgeConfig`/`lighting_to_solar_gains()`
 functions remain for backward compatibility.
 
-#### BIAS: HVAC load calculation ignores concurrent losses
+#### ~~BIAS: HVAC load calculation ignores concurrent losses~~ (FIXED)
 
-**Problem**: `Q_required = C * (T_setpoint - T_free) / dt` only accounts for changing the
-node temperature, not the ongoing transmission and infiltration losses during the timestep.
+**Fixed**: Added `HvacIdealLoads::calculate_with_losses()` method in `src/sim/energy/hvac.rs`
+that uses the implicit formula:
+`Q_hvac = C*(T_set - T_zone)/dt + (UA + Inf_cond)*(T_set - T_out) - Q_gains`.
+Updated `run_transient_simulation()` in `src/sim/energy/simulation.rs` to use this method.
+The original `calculate_for_timestep()` is preserved for standalone use cases.
 
-**Fix**: Solve for Q_hvac that achieves T_setpoint at end of timestep:
-```
-Q_hvac = C * (T_set - T_zone) / dt + (UA + Inf_cond) * (T_set - T_out) - Q_gains
-```
+#### ~~LABELING: Window detection by name pattern~~ (FIXED)
 
-This is an implicit solution that accounts for the fact that as the zone heats up, losses
-increase.
-
-**Files**: `src/sim/energy/hvac.rs`
-
-**Effort**: Low (change the Q_required formula).
-
-#### LABELING: Window detection by name pattern
-
-**Problem**: Glazing surfaces are identified by substring matching ("window", "glazing",
-"glass") in path names. This is fragile and will misidentify surfaces.
-
-**Fix**: Add an `is_glazing: bool` or `surface_type: SurfaceType` field to the material
-or construction system. Use this flag for solar gain calculations instead of name matching.
-
-**Files**: `src/sim/energy/solar_bridge.rs`, `src/sim/materials.rs`
-
-**Effort**: Low-medium (add field, update construction presets, update solar bridge).
+**Fixed**: Added `is_glazing: bool` field to `Material` (`src/sim/materials.rs`) with a
+`with_glazing()` builder method. The glass preset is marked as glazing. Added
+`compute_solar_gains_with_materials()` in `src/sim/energy/solar_bridge.rs` that accepts
+an optional `MaterialLibrary` and checks `is_glazing` before falling back to name pattern
+matching. The original `compute_solar_gains()` delegates with `None` for backward
+compatibility.
 
 ### 5.5 Prioritized Fix Order
 
@@ -931,16 +863,16 @@ Issues are ordered by impact on result correctness:
 | 3 | RGB unit convention (radiometric) | BUG | **FIXED** |
 | 4 | Verify inverse-square for point lights | BUG | **FIXED** |
 | 5 | Voxel grid ray marching (3D-DDA) | BUG | **FIXED** |
-| 6 | Cosine-weighted diffuse reflection | BIAS | Open |
-| 7 | Receiver normalization | BIAS | Open |
-| 8 | HVAC concurrent-loss formula | BIAS | Open |
-| 9 | Solar azimuth atan2 | BIAS | Open |
-| 10 | Barycentric tolerance reduction | BIAS | Open |
-| 11 | Rename STI to STI-like | LABELING | Open |
-| 12 | Rename IR to energy IR | LABELING | Open |
+| 6 | Cosine-weighted diffuse reflection | BIAS | **FIXED** |
+| 7 | Receiver normalization | BIAS | **FIXED** |
+| 8 | HVAC concurrent-loss formula | BIAS | **FIXED** |
+| 9 | Solar azimuth atan2 | BIAS | **FIXED** |
+| 10 | Barycentric tolerance reduction | BIAS | **FIXED** |
+| 11 | Rename STI to STI-like | LABELING | **FIXED** |
+| 12 | Rename IR to energy IR | LABELING | **FIXED** |
 | 13 | Backward tracer variable names | LABELING | **FIXED** |
-| 14 | Window detection by material flag | LABELING | Open |
-| 15 | Document 1R1C capacity as tuning param | LABELING | Open |
+| 14 | Window detection by material flag | LABELING | **FIXED** |
+| 15 | Document 1R1C capacity as tuning param | LABELING | **FIXED** |
 
 ### 5.6 Acceptable Simplifications
 

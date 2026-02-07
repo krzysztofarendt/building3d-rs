@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::Building;
 use crate::sim::lighting::result::LightingResult;
 use crate::sim::lighting::solar::SolarPosition;
+use crate::sim::materials::MaterialLibrary;
 
 // Converts lighting simulation results to thermal solar heat gains.
 //
@@ -148,10 +149,28 @@ impl SolarGainConfig {
     }
 
     /// Returns the SHGC for a polygon path, or None if it's not glazing.
-    fn resolve_shgc(&self, path: &str) -> Option<f64> {
+    ///
+    /// Resolution order:
+    /// 1. Exact match in `shgc` map
+    /// 2. Material library `is_glazing` flag (if `material_library` provided)
+    /// 3. Substring pattern match (fallback)
+    fn resolve_shgc_with_materials(
+        &self,
+        path: &str,
+        material_library: Option<&MaterialLibrary>,
+    ) -> Option<f64> {
+        // 1. Exact match in per-surface SHGC map
         if let Some(&shgc) = self.shgc.get(path) {
             return Some(shgc);
         }
+        // 2. Check material library is_glazing flag
+        if let Some(lib) = material_library
+            && let Some(mat) = lib.lookup(path)
+            && mat.is_glazing
+        {
+            return Some(self.default_shgc);
+        }
+        // 3. Fallback: substring pattern match
         for pattern in &self.glazing_patterns {
             if path.contains(pattern.as_str()) {
                 return Some(self.default_shgc);
@@ -193,10 +212,26 @@ pub struct SolarHourParams {
 ///   - DHI = diffuse horizontal irradiance from weather record (W/m^2)
 ///   - cos(incidence) = max(0, sun_direction . polygon_normal)
 ///   - sky_view = 0.5 * (1 + max(0, normal_z)) isotropic sky view factor
+///
+/// Glazing surfaces are identified by (in order of priority):
+/// 1. Explicit per-surface SHGC entries in the config
+/// 2. `is_glazing` flag on the material (if `material_library` is provided)
+/// 3. Substring pattern matching on polygon path names (fallback)
 pub fn compute_solar_gains(
     building: &Building,
     params: &SolarHourParams,
     config: &SolarGainConfig,
+) -> f64 {
+    compute_solar_gains_with_materials(building, params, config, None)
+}
+
+/// Like [`compute_solar_gains`], but also accepts a material library for
+/// `is_glazing`-based surface identification.
+pub fn compute_solar_gains_with_materials(
+    building: &Building,
+    params: &SolarHourParams,
+    config: &SolarGainConfig,
+    material_library: Option<&MaterialLibrary>,
 ) -> f64 {
     let solar_pos = SolarPosition::calculate(
         params.latitude,
@@ -206,7 +241,12 @@ pub fn compute_solar_gains(
     );
     if !solar_pos.is_above_horizon() {
         // Sun below horizon: only diffuse contribution
-        return compute_diffuse_only(building, params.diffuse_horizontal_irradiance, config);
+        return compute_diffuse_only(
+            building,
+            params.diffuse_horizontal_irradiance,
+            config,
+            material_library,
+        );
     }
 
     let sun_dir = solar_pos.to_direction();
@@ -220,7 +260,8 @@ pub fn compute_solar_gains(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    if let Some(shgc) = config.resolve_shgc(&path) {
+                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
+                    {
                         let normal = polygon.vn;
                         let area = polygon.area();
 
@@ -252,6 +293,7 @@ fn compute_diffuse_only(
     building: &Building,
     diffuse_horizontal_irradiance: f64,
     config: &SolarGainConfig,
+    material_library: Option<&MaterialLibrary>,
 ) -> f64 {
     let mut total = 0.0;
     for zone in building.zones() {
@@ -262,7 +304,8 @@ fn compute_diffuse_only(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    if let Some(shgc) = config.resolve_shgc(&path) {
+                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
+                    {
                         let area = polygon.area();
                         let normal = polygon.vn;
                         let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));

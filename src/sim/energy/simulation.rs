@@ -169,7 +169,10 @@ pub fn run_transient_simulation(
         1.2 * 1005.0 * volume * base_config.infiltration_ach / 3600.0
     };
 
-    // Estimate thermal capacity from building volume (rough: 50 kJ/(m^3*K) for medium weight)
+    // Estimate thermal capacity from building volume.
+    // The factor 50 kJ/(m^3*K) is a tuning parameter for medium-weight construction.
+    // Typical range: ~30 kJ/(m^3*K) (lightweight) to ~80 kJ/(m^3*K) (heavyweight).
+    // For more accurate results, derive from actual construction layer properties.
     let volume: f64 = building.zones().iter().map(|z| z.volume()).sum();
     let thermal_capacity = volume * 50000.0; // J/K
 
@@ -205,34 +208,22 @@ pub fn run_transient_simulation(
         };
         let total_gains = gains + solar;
 
-        // Determine HVAC mode from free-floating temperature
-        let setpoint = hvac.active_setpoint(model.zone_temperature);
-
-        // Calculate required HVAC power to reach setpoint
-        let q_loss = (model.ua_total + model.infiltration_conductance)
-            * (model.zone_temperature - record.dry_bulb_temperature);
-        let q_needed = q_loss - total_gains;
-
-        let (heating_power, cooling_power) = if model.zone_temperature < hvac.heating_setpoint {
-            (q_needed.max(0.0), 0.0)
-        } else if model.zone_temperature > hvac.cooling_setpoint {
-            (0.0, (-q_needed).max(0.0))
-        } else {
-            (0.0, 0.0)
-        };
+        // Calculate HVAC power using implicit formula that accounts for
+        // concurrent envelope losses during the timestep.
+        let total_conductance = model.ua_total + model.infiltration_conductance;
+        let (heating_power, cooling_power) = hvac.calculate_with_losses(
+            model.zone_temperature,
+            record.dry_bulb_temperature,
+            total_conductance,
+            total_gains,
+            model.thermal_capacity,
+            3600.0,
+        );
 
         let hvac_net = heating_power - cooling_power;
 
         // Advance the thermal model
         model.step(record.dry_bulb_temperature, total_gains, hvac_net, 3600.0);
-
-        // Clamp temperature to setpoints if HVAC is active
-        if heating_power > 0.0 && model.zone_temperature < setpoint {
-            model.zone_temperature = setpoint;
-        }
-        if cooling_power > 0.0 && model.zone_temperature > setpoint {
-            model.zone_temperature = setpoint;
-        }
 
         hourly_heating.push(heating_power);
         hourly_cooling.push(cooling_power);

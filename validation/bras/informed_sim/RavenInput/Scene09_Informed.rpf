@@ -1,0 +1,192 @@
+#----------------------------------------------------------------------------------------------- = 
+[Global]
+ProjectName = RR_Scene09_SeminarRoom20200427T21073920200428T022618
+
+ProjectPath_Input = ..\RavenInput
+ProjectPath_Output = D:\OwnCloud\Diss\data\DataPublicationInformed\RavenOutput\
+ProjectPath_DirectivityDB = D:\OwnCloud\Diss\data\DataPublicationInformed\RavenDatabase\DirectivityDatabase
+ProjectPath_MaterialDB = D:\OwnCloud\Diss\data\DataPublicationInformed\RavenDatabase\BRASv2_fitted_rev2019v3_oldNames
+ProjectPath_PortalDB = ..\RavenDatabase\PortalDatabase
+ProjectPath_SoundDB = ..\RavenDatabase\SoundDatabase
+ProjectPath_HRTFDB = ..\RavenDatabase\HRTF\ITA-Kunstkopf_HRIR_AP11_Pressure_Equalized_3x3_256.daff
+
+# SimulationType: if both types are 1, all simulations are performed = 
+simulationTypeIS = 1
+simulationTypeRT = 1
+simulationTypeAR = 0
+
+# ImpulseResponses (if both 1, calulate both impulse responses) (generateRIR/BRIR) = 
+generateRIR = 1
+generateBRIR = 0
+generateISHOA = 0
+generateRTHOA = 0
+generateISVBAP = 0
+generateRTVBAP = 0
+
+# export Filter ( 1 yes 0 no) = 
+exportFilter = 1
+
+# Log Energy Histograms ( 1 yes 0 no) = 
+exportHistogram = 1
+exportWallHitList = 0
+exportPlaneWaveList = 0
+
+# log Performance = 
+logPerformance = 0
+
+
+#----------------------------------------------------------------------------------------------- = 
+[Rooms]
+# file list of rooms = 
+Model = D:\OwnCloud\Diss\data\DataPublicationInformed\RavenModels\scene9.ac
+
+#Room Temperature [degree C] = 
+#list of room temperature values, same order as file list of rooms = 
+Temperature = 19.5
+
+#Room Humidity [%] = 
+#list of room humidity values, same order as file list of rooms = 
+Humidity = 41.7
+
+#Room Pressure [Pa] = 
+#list of room humidity values, same order as file list of rooms = 
+Pressure = 101325
+
+# Disable air absorption? (0/1) = 
+noAirAbsorption = 0
+
+
+#----------------------------------------------------------------------------------------------- = 
+[Portals]
+# material (hier wird die art des portals bestimmt, spaeter sowas wie metaltuer, usw = 
+portalType = 
+
+#portal status (opened = 1/closed = 0)
+portalStatus = 
+
+
+#----------------------------------------------------------------------------------------------- = 
+[PrimarySources]
+
+#source names = 
+sourceNames = LS01-mid,LS02-mid
+
+# source directivity [ currently not used by Raven ] = 
+sourceDirectivity = ,
+
+# SOUND_MUTE = 0, SOUND_ACTIVE = 1
+sourceSoundStates = 1, 1
+
+#sources positions = 
+sourcePositions = 0.931, 0.723, 2.547,0.119, 0.723,-2.880
+
+#viewVectors = 
+sourceViewVectors = -1.000, 0.000, 0.000, 0.000, 0.000, 1.000
+
+#upVectors = 
+sourceUpVectors = 0.000,1.000,0.000
+
+# Level (sound pressure level in dB re 20microPa @ 1m distance on axis) = 
+sourceSoundLevel = 
+
+
+#----------------------------------------------------------------------------------------------- = 
+[Receiver]
+
+#receiver names = 
+receiverNames = MP01,MP02,MP03,MP04,MP05
+
+# RECEIVER_MUTE = 0, RECEIVER_ACTIVE = 1
+receiverStates = 1, 1, 1, 1, 1
+
+#positions (x,y,z) = 
+receiverPositions = -0.993, 1.230,-1.426, 0.439, 1.230, 0.147, 1.361, 1.230, 0.603,-1.110, 1.230, 0.256,-0.998, 1.230, 1.409
+
+#viewVectors (x,y,z) = 
+receiverViewVectors = 0.000,1.000,0.000,0.000,0.000,1.000,0.000,1.000,0.000,0.000,1.000,0.000,0.000,1.000,0.000,0.000,1.000,0.000
+
+#upVectors (x,y,z) = 
+receiverUpVectors = 0.000,1.000,0.000,0.000,1.000,0.000,0.000,1.000,0.000,0.000,1.000,0.000,0.000,1.000,0.000
+
+# receiver directivities for binaural reproduction module (e.g. HRTF file) = 
+receiverDirectivity = ITA-Kunstkopf_HRIR_AP11_Pressure_Equalized_3x3_256.daff
+
+
+#----------------------------------------------------------------------------------------------- = 
+[ImageSources]
+# IS Order = 
+ISOrder_PS = 2
+ISOrder_SS = 0
+
+# Skip Image Sources in Shadow Zone ( 1 yes / 0 no) = 
+ISSkipImageSourcesPS = 1
+ISSkipImageSourcesSS = 1
+
+# Skip direct sound = 
+ISSkipDirectSound = 0
+
+
+#----------------------------------------------------------------------------------------------- = 
+[RayTracing]
+
+# Number of Particles/Frequency Band = 
+numberOfParticles_DetectionSphere = 500000
+numberOfParticles_Portal = 10000
+
+# filterLength [ms] = 
+filterLength_DetectionSphere = 2800
+filterLength_Portal = 2800
+
+#Allowed loss of Energy/Particle [dB] = 
+energyLoss_DetectionSphere = 75
+energyLoss_Portal = 60
+
+# [0, Interval A] Resolution [ms] = 
+timeResolution_DetectionSphere = 2
+timeResolution_Portal = 2
+
+# Angular Quantization Resolution [degree] = 
+resolutionAzimuth_DetectionSphere = 10
+resolutionElevation_DetectionSphere = 10
+
+# Detection Sphere Radius [m] = 
+radius_DetectionSphere = 0.8
+
+# Same sequence of reflections (including scattering) beginning from the moment when the project was loaded? [0/1] = 
+fixReflectionPattern = 0
+
+# Number of threads used for ray tracing (0 = auto-detect)
+numberOfRayTracingThreads_DetectionSphere = 0
+
+
+#----------------------------------------------------------------------------------------------- = 
+[Filter]
+
+#Sampling Frequency = 
+samplingFrequency = 44100
+
+# FilterResolution (0 = THIRD_OCTAVE, 1 = OCTAVE, 2 = SINGLE_THIRD_OCTAVE_BAND, 3 = SINGLE_OCTAVE_BAND)
+filterResolution = 0
+
+# Which frequency band should be simulated (if single band selected)? (OCTAVE: 0..9 or THIRD_OCTAVE: 0..30) = 
+frequencyBand = 5
+
+# Use a fix pattern of reflections? (1/0) = 
+setFixPoissonSequence = 0
+
+# Select a pattern (if fixed) = 
+poissonSequenceNumber = 6667
+
+# use artificial reverberation if both RT and AR are active = 
+useARforCombinedIR = 0
+
+# Maximum reflection density of the ray tracing impulse response = 
+maximumReflectionDensity = 10000
+
+# Ambisonics = 
+ambisonicsOrder = -1
+fftDegreeForWallFilterInterpolation = 8
+
+sourceSoundLevels = 100, 100
+sourceSoundModes = 0, 0
+sourceSoundTypes = 0, 0
