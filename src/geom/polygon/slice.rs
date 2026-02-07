@@ -518,7 +518,7 @@ mod tests {
         let pts = vec![
             Point::new(0.0, 0.0, 0.0),
             Point::new(2.0, 0.0, 0.0),
-            Point::new(3.0, 1.0, 0.0),  // edge from (2,0) to (3,1)
+            Point::new(3.0, 1.0, 0.0), // edge from (2,0) to (3,1)
             Point::new(2.0, 2.0, 0.0),
             Point::new(0.0, 2.0, 0.0),
             Point::new(-1.0, 1.0, 0.0), // edge from (0,2) to (-1,1)
@@ -526,11 +526,7 @@ mod tests {
         let hex = Polygon::new("hex", pts, None);
         if let Ok(hex) = hex {
             // Slice horizontally at y=1 — should cross edges normally
-            let result = slice_polygon(
-                &hex,
-                Point::new(-2.0, 1.0, 0.0),
-                Point::new(4.0, 1.0, 0.0),
-            );
+            let result = slice_polygon(&hex, Point::new(-2.0, 1.0, 0.0), Point::new(4.0, 1.0, 0.0));
             // Whether it succeeds or not depends on edge intersections
             if let Ok(res) = result {
                 assert!(res.poly1.vertices().len() >= 3);

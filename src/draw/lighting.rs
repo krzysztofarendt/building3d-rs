@@ -5,6 +5,7 @@ use crate::sim::lighting::result::LightingResult;
 use crate::sim::lighting::sensor::SensorGrid;
 use crate::{Building, HasMesh};
 
+use super::config::RerunConfig;
 use super::rerun::{draw_faces, start_session};
 
 const SESSION_NAME: &str = "Building3d";
@@ -18,8 +19,10 @@ pub fn draw_illuminance_heatmap(
     result: &LightingResult,
     building: &Building,
 ) -> Result<()> {
+    let config = RerunConfig::default();
+
     // Draw building mesh as wireframe background
-    draw_faces(session, building, (0.9, 0.9, 0.9, 0.1))?;
+    draw_faces(session, building, (0.9, 0.9, 0.9, 0.1), &config)?;
 
     // Find illuminance range for normalization
     let mut max_lux = 0.0_f64;
@@ -122,7 +125,8 @@ fn lux_to_color(t: f32) -> (f32, f32, f32) {
 
 /// Convenience: creates a session and draws the illuminance heatmap.
 pub fn show_illuminance(result: &LightingResult, building: &Building) -> Result<()> {
-    let session = start_session()?;
+    let config = RerunConfig::default();
+    let session = start_session(&config)?;
     draw_illuminance_heatmap(&session, result, building)?;
     Ok(())
 }

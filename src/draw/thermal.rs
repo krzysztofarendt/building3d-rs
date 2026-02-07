@@ -5,6 +5,7 @@ use crate::sim::energy::result::ThermalResult;
 use crate::sim::energy::simulation::AnnualResult;
 use crate::{Building, HasMesh};
 
+use super::config::RerunConfig;
 use super::rerun::draw_faces;
 
 const SESSION_NAME: &str = "Building3d";
@@ -18,8 +19,10 @@ pub fn draw_heat_loss_heatmap(
     result: &ThermalResult,
     building: &Building,
 ) -> Result<()> {
+    let config = RerunConfig::default();
+
     // Draw building mesh as transparent background
-    draw_faces(session, building, (0.9, 0.9, 0.9, 0.1))?;
+    draw_faces(session, building, (0.9, 0.9, 0.9, 0.1), &config)?;
 
     // Find max heat loss for normalization
     let mut max_loss = 0.0_f64;

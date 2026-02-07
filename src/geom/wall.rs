@@ -195,7 +195,10 @@ mod tests {
         let poly = make_triangle("p1", 0.)?;
         let mut wall = Wall::new("w", vec![poly])?;
         let replacement = make_triangle("p2", 1.)?;
-        assert!(wall.replace_polygon("nonexistent", vec![replacement]).is_err());
+        assert!(
+            wall.replace_polygon("nonexistent", vec![replacement])
+                .is_err()
+        );
         Ok(())
     }
 

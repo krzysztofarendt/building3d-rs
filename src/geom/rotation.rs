@@ -379,10 +379,7 @@ mod tests {
 
     #[test]
     fn test_rotate_points_zero_angle() {
-        let pts = vec![
-            Point::new(1.0, 0.0, 0.0),
-            Point::new(0.0, 1.0, 0.0),
-        ];
+        let pts = vec![Point::new(1.0, 0.0, 0.0), Point::new(0.0, 1.0, 0.0)];
         let u = Vector::new(0.0, 0.0, 1.0);
         let rotated = rotate_points_around_vector(&pts, &u, 0.0);
         assert!(rotated[0].is_close(&pts[0]));
@@ -415,10 +412,7 @@ mod tests {
 
     #[test]
     fn test_calculate_plane_normal_few_points() {
-        let pts = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(1.0, 0.0, 0.0),
-        ];
+        let pts = vec![Point::new(0.0, 0.0, 0.0), Point::new(1.0, 0.0, 0.0)];
         assert!(calculate_plane_normal(&pts).is_none());
     }
 }

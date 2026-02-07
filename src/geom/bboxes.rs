@@ -93,10 +93,7 @@ mod tests {
 
     #[test]
     fn test_is_point_inside_bbox() {
-        let pts = vec![
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(2.0, 2.0, 2.0),
-        ];
+        let pts = vec![Point::new(0.0, 0.0, 0.0), Point::new(2.0, 2.0, 2.0)];
         assert!(is_point_inside_bbox(Point::new(1.0, 1.0, 1.0), &pts));
         assert!(!is_point_inside_bbox(Point::new(3.0, 1.0, 1.0), &pts));
     }
@@ -106,11 +103,23 @@ mod tests {
         let pmin = Point::new(0.0, 0.0, 0.0);
         let pmax = Point::new(2.0, 2.0, 2.0);
         // Interior point
-        assert!(is_point_strictly_inside_bbox(Point::new(1.0, 1.0, 1.0), pmin, pmax));
+        assert!(is_point_strictly_inside_bbox(
+            Point::new(1.0, 1.0, 1.0),
+            pmin,
+            pmax
+        ));
         // On boundary - not strictly inside
-        assert!(!is_point_strictly_inside_bbox(Point::new(0.0, 1.0, 1.0), pmin, pmax));
+        assert!(!is_point_strictly_inside_bbox(
+            Point::new(0.0, 1.0, 1.0),
+            pmin,
+            pmax
+        ));
         // Outside
-        assert!(!is_point_strictly_inside_bbox(Point::new(3.0, 1.0, 1.0), pmin, pmax));
+        assert!(!is_point_strictly_inside_bbox(
+            Point::new(3.0, 1.0, 1.0),
+            pmin,
+            pmax
+        ));
     }
 
     #[test]
