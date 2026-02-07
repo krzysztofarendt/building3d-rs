@@ -42,30 +42,75 @@ impl HvacIdealLoads {
 
     /// Calculates the HVAC energy to maintain zone temperature.
     ///
-    /// Returns (heating_power_w, cooling_power_w, resulting_zone_temperature).
+    /// Returns (heating_electric_power_w, cooling_electric_power_w, resulting_zone_temperature).
     ///
     /// - `free_floating_temp`: zone temperature without HVAC
     /// - `zone_thermal_capacity`: total zone thermal capacity in J/K
-    ///   (not used for ideal loads, but available for future use)
+    ///
+    /// This is a simple "ideal loads" control model: it computes the *average*
+    /// power over an assumed 1-hour timestep required to bring the zone back to
+    /// the active setpoint, optionally limited by max capacities and converted
+    /// to electrical power using COPs.
     pub fn calculate(
         &self,
         free_floating_temp: f64,
-        _zone_thermal_capacity: f64,
+        zone_thermal_capacity: f64,
     ) -> (f64, f64, f64) {
-        if free_floating_temp < self.heating_setpoint {
-            // Needs heating
-            // For ideal loads, we don't need to compute exact power from capacity
-            // Instead, the zone heat balance gives us the demand
-            let temp = self.heating_setpoint;
-            // Heating is indicated, cooling is zero
-            (1.0, 0.0, temp)
-        } else if free_floating_temp > self.cooling_setpoint {
-            // Needs cooling
-            let temp = self.cooling_setpoint;
-            (0.0, 1.0, temp)
+        self.calculate_for_timestep(free_floating_temp, zone_thermal_capacity, 3600.0)
+    }
+
+    /// Like [`Self::calculate`], but with an explicit timestep in seconds.
+    pub fn calculate_for_timestep(
+        &self,
+        free_floating_temp: f64,
+        zone_thermal_capacity: f64,
+        dt_s: f64,
+    ) -> (f64, f64, f64) {
+        if dt_s <= 0.0 || zone_thermal_capacity <= 0.0 {
+            return (0.0, 0.0, free_floating_temp);
+        }
+
+        let target_temp = self.active_setpoint(free_floating_temp);
+        let delta_t = target_temp - free_floating_temp;
+        if delta_t == 0.0 {
+            return (0.0, 0.0, free_floating_temp);
+        }
+
+        let required_thermal_power_w = (zone_thermal_capacity * delta_t.abs()) / dt_s;
+        let (max_capacity_w, cop) = if delta_t > 0.0 {
+            (
+                if self.max_heating_capacity > 0.0 {
+                    self.max_heating_capacity
+                } else {
+                    f64::INFINITY
+                },
+                self.heating_cop.max(1e-9),
+            )
         } else {
-            // Within deadband — no HVAC needed
-            (0.0, 0.0, free_floating_temp)
+            (
+                if self.max_cooling_capacity > 0.0 {
+                    self.max_cooling_capacity
+                } else {
+                    f64::INFINITY
+                },
+                self.cooling_cop.max(1e-9),
+            )
+        };
+
+        let delivered_thermal_power_w = required_thermal_power_w.min(max_capacity_w);
+        let delivered_delta_t = (delivered_thermal_power_w * dt_s) / zone_thermal_capacity;
+        let resulting_temp = if delta_t > 0.0 {
+            (free_floating_temp + delivered_delta_t).min(target_temp)
+        } else {
+            (free_floating_temp - delivered_delta_t).max(target_temp)
+        };
+
+        let electric_power_w = delivered_thermal_power_w / cop;
+
+        if delta_t > 0.0 {
+            (electric_power_w, 0.0, resulting_temp)
+        } else {
+            (0.0, electric_power_w, resulting_temp)
         }
     }
 
@@ -153,8 +198,12 @@ mod tests {
     #[test]
     fn test_hvac_heating_mode() {
         let hvac = HvacIdealLoads::new();
-        let (heating, cooling, temp) = hvac.calculate(15.0, 0.0);
-        assert!(heating > 0.0, "Should indicate heating needed");
+        // 5 K below setpoint, capacity 3600 J/K over 1 hour -> 5 W thermal, COP=1 -> 5 W electric.
+        let (heating, cooling, temp) = hvac.calculate(15.0, 3600.0);
+        assert!(
+            (heating - 5.0).abs() < 1e-10,
+            "Expected 5 W electric heating"
+        );
         assert!((cooling - 0.0).abs() < 1e-10, "No cooling needed");
         assert!(
             (temp - 20.0).abs() < 1e-10,
@@ -165,9 +214,13 @@ mod tests {
     #[test]
     fn test_hvac_cooling_mode() {
         let hvac = HvacIdealLoads::new();
-        let (heating, cooling, temp) = hvac.calculate(30.0, 0.0);
+        // 4 K above setpoint, capacity 3600 J/K over 1 hour -> 4 W thermal, COP=3 -> 1.333.. W electric.
+        let (heating, cooling, temp) = hvac.calculate(30.0, 3600.0);
         assert!((heating - 0.0).abs() < 1e-10, "No heating needed");
-        assert!(cooling > 0.0, "Should indicate cooling needed");
+        assert!(
+            (cooling - (4.0 / 3.0)).abs() < 1e-10,
+            "Expected cooling electric power of 4/3 W"
+        );
         assert!(
             (temp - 26.0).abs() < 1e-10,
             "Should maintain cooling setpoint"
@@ -177,13 +230,27 @@ mod tests {
     #[test]
     fn test_hvac_deadband() {
         let hvac = HvacIdealLoads::new();
-        let (heating, cooling, temp) = hvac.calculate(23.0, 0.0);
+        let (heating, cooling, temp) = hvac.calculate(23.0, 3600.0);
         assert!((heating - 0.0).abs() < 1e-10);
         assert!((cooling - 0.0).abs() < 1e-10);
         assert!(
             (temp - 23.0).abs() < 1e-10,
             "Temperature unchanged in deadband"
         );
+    }
+
+    #[test]
+    fn test_hvac_capacity_limits_resulting_temp() {
+        let mut hvac = HvacIdealLoads::new();
+        hvac.max_heating_capacity = 2.0; // W thermal
+
+        // Need 5 W thermal to raise 5 K in an hour with C=3600 J/K, but only 2 W available.
+        let (heating_elec, cooling_elec, temp) = hvac.calculate(15.0, 3600.0);
+        assert!(cooling_elec.abs() < 1e-12);
+        // COP=1 -> electric == thermal
+        assert!((heating_elec - 2.0).abs() < 1e-10);
+        // Delivered deltaT = 2 W * 3600 s / 3600 J/K = 2 K
+        assert!((temp - 17.0).abs() < 1e-10);
     }
 
     #[test]

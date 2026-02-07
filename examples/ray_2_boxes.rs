@@ -5,10 +5,10 @@ use building3d::{Building, Point, Solid, Zone};
 
 fn main() -> Result<()> {
     // Create building: two adjacent boxes in the same zone
-    let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0");
-    let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1");
-    let zone = Zone::new("z", vec![s0, s1]);
-    let building = Building::new("b", vec![zone]);
+    let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0")?;
+    let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1")?;
+    let zone = Zone::new("z", vec![s0, s1])?;
+    let building = Building::new("b", vec![zone])?;
 
     // Configure simulation
     let mut config = SimulationConfig::new();

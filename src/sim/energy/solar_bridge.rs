@@ -75,6 +75,10 @@ pub fn lighting_to_solar_gains(
     lighting_result: &LightingResult,
     config: &SolarBridgeConfig,
 ) -> f64 {
+    if config.luminous_efficacy <= 0.0 {
+        return 0.0;
+    }
+
     let mut total_gains = 0.0;
 
     for (path, flux) in &lighting_result.incident_flux {
@@ -95,6 +99,10 @@ pub fn lighting_to_solar_gains_per_surface(
     lighting_result: &LightingResult,
     config: &SolarBridgeConfig,
 ) -> HashMap<String, f64> {
+    if config.luminous_efficacy <= 0.0 {
+        return HashMap::new();
+    }
+
     let mut gains = HashMap::new();
 
     for (path, flux) in &lighting_result.incident_flux {
@@ -176,5 +184,20 @@ mod tests {
         // w2: 720/120*0.6 = 3.6
         assert!((per_surface["zone/room/window/w1"] - 1.8).abs() < 0.1);
         assert!((per_surface["zone/room/window/w2"] - 3.6).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_zero_efficacy_guard() {
+        let mut result = LightingResult::new();
+        result.record_hit("zone/room/window/w1", [120.0, 120.0, 120.0]);
+
+        let mut config = SolarBridgeConfig::new();
+        config.luminous_efficacy = 0.0;
+
+        let gains = lighting_to_solar_gains(&result, &config);
+        assert!(gains == 0.0);
+
+        let per_surface = lighting_to_solar_gains_per_surface(&result, &config);
+        assert!(per_surface.is_empty());
     }
 }

@@ -20,8 +20,16 @@ impl ReflectionModel for Specular {
 pub struct Diffuse;
 
 impl ReflectionModel for Diffuse {
-    fn reflect(&self, _incident: Vector, normal: Vector) -> Vector {
+    fn reflect(&self, incident: Vector, normal: Vector) -> Vector {
         use rand::Rng;
+        // Flip the hemisphere so the reflected ray stays on the same side of the surface
+        // as the incident ray (handles outward-facing normals for interior propagation).
+        let hemisphere_normal = if incident.dot(&normal) >= 0.0 {
+            normal * -1.0
+        } else {
+            normal
+        };
+
         let mut rng = rand::thread_rng();
         loop {
             let x: f64 = rng.gen_range(-1.0..1.0);
@@ -31,12 +39,12 @@ impl ReflectionModel for Diffuse {
             if len2 > 1e-6 && len2 <= 1.0 {
                 let len = len2.sqrt();
                 let v = Vector::new(x / len, y / len, z / len);
-                // Ensure the reflected direction is in the same hemisphere as the normal
-                if v.dot(&normal) > 0.0 {
-                    return v;
+                // Ensure the reflected direction is in the chosen hemisphere.
+                return if v.dot(&hemisphere_normal) >= 0.0 {
+                    v
                 } else {
-                    return v * -1.0;
-                }
+                    v * -1.0
+                };
             }
         }
     }
@@ -106,6 +114,21 @@ mod tests {
             assert!(
                 reflected.dot(&normal) > 0.0,
                 "Diffuse reflection should be in the same hemisphere as normal"
+            );
+        }
+    }
+
+    #[test]
+    fn test_diffuse_respects_incident_side() {
+        let diffuse = Diffuse;
+        let normal = Vector::new(0.0, 0.0, 1.0);
+        // Incident coming from the same side as the normal (e.g. inside a solid with outward normal)
+        let incident = Vector::new(0.0, 0.0, 1.0);
+        for _ in 0..100 {
+            let reflected = diffuse.reflect(incident, normal);
+            assert!(
+                reflected.dot(&normal) < 0.0,
+                "Diffuse reflection should be in the opposite hemisphere when incident·normal > 0"
             );
         }
     }

@@ -67,24 +67,49 @@ impl ImpulseResponse {
 
     /// Converts to a pressure-squared time series for a given sample rate.
     ///
-    /// Each sample is the energy in the corresponding time bin,
-    /// distributed across the samples that fall within that bin.
+    /// Each sample receives the portion of each time bin's energy that overlaps
+    /// the sample's time interval. This avoids rounding artifacts (e.g. bins
+    /// spanning 44 vs 45 samples) and preserves total energy under resampling.
     pub fn to_time_series(&self, sample_rate: f64) -> Vec<f64> {
+        if self.is_empty() || sample_rate <= 0.0 {
+            return Vec::new();
+        }
+        if self.time_resolution <= 0.0 {
+            // No meaningful bin duration -> cannot distribute energy in time.
+            return vec![0.0; self.broadband.len()];
+        }
+
         let total_time = self.broadband.len() as f64 * self.time_resolution;
         let num_samples = (total_time * sample_rate).ceil() as usize;
         let mut output = vec![0.0; num_samples];
 
-        let samples_per_bin = (self.time_resolution * sample_rate).max(1.0);
+        let sample_dt = 1.0 / sample_rate;
 
         for (bin, &energy) in self.broadband.iter().enumerate() {
-            let start_sample = (bin as f64 * self.time_resolution * sample_rate) as usize;
-            let end_sample =
-                ((bin as f64 + 1.0) * self.time_resolution * sample_rate).ceil() as usize;
+            if energy == 0.0 {
+                continue;
+            }
+
+            let bin_t0 = bin as f64 * self.time_resolution;
+            let bin_t1 = (bin as f64 + 1.0) * self.time_resolution;
+
+            let start_sample = (bin_t0 * sample_rate).floor() as usize;
+            let end_sample = (bin_t1 * sample_rate).ceil() as usize;
+            let start_sample = start_sample.min(num_samples);
             let end_sample = end_sample.min(num_samples);
 
-            let energy_per_sample = energy / samples_per_bin;
-            for sample in &mut output[start_sample..end_sample] {
-                *sample = energy_per_sample;
+            if start_sample >= end_sample {
+                continue;
+            }
+
+            let energy_density = energy / self.time_resolution; // energy per second within the bin
+            for sample_idx in start_sample..end_sample {
+                let sample_t0 = sample_idx as f64 * sample_dt;
+                let sample_t1 = sample_t0 + sample_dt;
+                let overlap = bin_t1.min(sample_t1) - bin_t0.max(sample_t0);
+                if overlap > 0.0 {
+                    output[sample_idx] += energy_density * overlap;
+                }
             }
         }
 
@@ -181,8 +206,8 @@ mod tests {
 
         let ts = ir.to_time_series(44100.0);
         assert!(!ts.is_empty());
-        // Total energy in time series should approximate the IR energy
-        let total: f64 = ts.iter().sum();
-        assert!(total > 0.0);
+        // Total energy in time series should match the IR energy (up to fp error)
+        let total_ts: f64 = ts.iter().sum();
+        assert!((total_ts - ir.total_energy()).abs() < 1e-10);
     }
 }
