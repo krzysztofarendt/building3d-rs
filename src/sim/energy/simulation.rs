@@ -347,7 +347,8 @@ mod tests {
 
     #[test]
     fn test_annual_energy_conservation() {
-        // Sum of hourly demands (W) should equal annual total (kWh) * 1000.
+        // With a 1-hour timestep, summing hourly demands (W) over all hours is numerically
+        // equivalent to the annual energy in Wh, i.e. annual_kwh * 1000.
         let s = Solid::from_box(4.0, 4.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s]).unwrap();
         let building = Building::new("b", vec![zone]).unwrap();
@@ -411,26 +412,55 @@ mod tests {
     }
 
     #[test]
-    fn test_constant_outdoor_matches_steady_state() {
-        // With constant outdoor temperature, every hour should produce
-        // the same demand as a single steady-state calculation.
-        // Note: synthetic weather has a ±3°C daily swing even with amplitude=0,
-        // so hours at the same time-of-day should match each other.
+    fn test_annual_hour_matches_steady_state_heat_balance() {
         let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s]).unwrap();
         let building = Building::new("b", vec![zone]).unwrap();
 
         let mut config = ThermalConfig::new();
         config.indoor_temperature = 20.0;
-        config.outdoor_temperature = 5.0;
 
         // Synthetic weather with 0 annual amplitude (still has daily variation)
         let weather = WeatherData::synthetic("Const", 50.0, 10.0, 5.0, 0.0);
 
         let result = run_annual_simulation(&building, &config, &weather, None, None);
 
-        // Hours at the same time-of-day on different days should produce
-        // identical demand (since annual amplitude=0, only daily cycle matters).
+        // Annual simulation runs a steady-state heat balance every hour. Spot-check one hour.
+        let record = &weather.records[0];
+        let mut hour_config = config.clone();
+        hour_config.outdoor_temperature = record.dry_bulb_temperature;
+        hour_config.internal_gains = 0.0;
+        hour_config.solar_gains = 0.0;
+        let hour_result = calculate_heat_balance(&building, &hour_config);
+
+        assert!(
+            (result.hourly_heating[0] - hour_result.heating_demand).abs() < 1e-12,
+            "Hour 0 heating mismatch: annual={} vs heat_balance={}",
+            result.hourly_heating[0],
+            hour_result.heating_demand
+        );
+        assert!(
+            (result.hourly_cooling[0] - hour_result.cooling_demand).abs() < 1e-12,
+            "Hour 0 cooling mismatch: annual={} vs heat_balance={}",
+            result.hourly_cooling[0],
+            hour_result.cooling_demand
+        );
+    }
+
+    #[test]
+    fn test_synthetic_weather_amplitude_zero_repeats_daily_cycle() {
+        // Synthetic weather always has a ±3°C daily swing; with `temp_amplitude=0.0`,
+        // the annual component is removed, so the day-to-day pattern repeats.
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = ThermalConfig::new();
+        config.indoor_temperature = 20.0;
+
+        let weather = WeatherData::synthetic("Const", 50.0, 10.0, 5.0, 0.0);
+        let result = run_annual_simulation(&building, &config, &weather, None, None);
+
         // Compare day 1 vs day 2 (hours 0..24 vs 24..48).
         for h in 0..24 {
             let day1 = result.hourly_heating[h];
@@ -443,7 +473,10 @@ mod tests {
 
         // All heating values should be non-negative
         for (i, &val) in result.hourly_heating.iter().enumerate() {
-            assert!(val >= 0.0, "Hour {i}: heating should be non-negative, got {val}");
+            assert!(
+                val >= 0.0,
+                "Hour {i}: heating should be non-negative, got {val}"
+            );
         }
     }
 
