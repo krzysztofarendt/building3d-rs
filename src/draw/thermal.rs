@@ -68,10 +68,33 @@ pub fn draw_heat_loss_heatmap(
     Ok(())
 }
 
-/// Draws annual simulation results as an animated temperature timeline.
+/// Draws annual simulation results as a time-series chart.
 ///
-/// Logs hourly heating/cooling demands as scalar values to Rerun's timeline.
+/// Logs hourly heating/cooling demands as scalar values on the "hour" timeline.
+/// Uses SeriesLines to configure line colors and labels.
 pub fn draw_annual_timeline(session: &rr::RecordingStream, result: &AnnualResult) -> Result<()> {
+    // Use top-level paths (not under Building3d/) so Rerun auto-generates
+    // a dedicated time series view separate from the 3D spatial view.
+    let heating_path = "energy/heating_demand";
+    let cooling_path = "energy/cooling_demand";
+
+    // Configure series appearance (static, logged once)
+    session.log_static(
+        heating_path,
+        &rr::SeriesLines::new()
+            .with_colors([[255, 80, 80]])
+            .with_names(["Heating (W)"])
+            .with_widths([1.5]),
+    )?;
+    session.log_static(
+        cooling_path,
+        &rr::SeriesLines::new()
+            .with_colors([[80, 80, 255]])
+            .with_names(["Cooling (W)"])
+            .with_widths([1.5]),
+    )?;
+
+    // Log hourly values
     for (hour, (heating, cooling)) in result
         .hourly_heating
         .iter()
@@ -79,15 +102,8 @@ pub fn draw_annual_timeline(session: &rr::RecordingStream, result: &AnnualResult
         .enumerate()
     {
         session.set_time_sequence("hour", hour as i64);
-
-        session.log(
-            format!("{}/energy/heating_demand", SESSION_NAME),
-            &rr::Scalars::new([*heating]),
-        )?;
-        session.log(
-            format!("{}/energy/cooling_demand", SESSION_NAME),
-            &rr::Scalars::new([*cooling]),
-        )?;
+        session.log(heating_path, &rr::Scalars::single(*heating))?;
+        session.log(cooling_path, &rr::Scalars::single(*cooling))?;
     }
 
     Ok(())
