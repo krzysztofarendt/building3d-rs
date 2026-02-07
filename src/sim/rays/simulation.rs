@@ -530,4 +530,202 @@ mod tests {
         assert!(result.band_energies.is_some());
         assert!(result.band_hits.is_some());
     }
+
+    // ── Physics verification tests ──────────────────────────────────────
+
+    #[test]
+    fn test_energy_decay_monotonic() {
+        // Total ray energy should decrease (or stay equal) over time
+        // as energy is absorbed at each reflection.
+        //
+        // Use a small room (2m) with high absorption (0.5) and many time
+        // steps (2000) so rays undergo many reflections with significant loss.
+        // Mean free path = 4*V/S = 4*8/24 = 1.33m, distance per step = 343*2.5e-5 = 0.00858m.
+        // Over 2000 steps distance = 17.2m → ~13 reflections → (0.5)^13 ≈ 0.0001.
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 2000;
+        config.num_rays = 100;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.default_absorption = 0.5;
+        config.store_ray_history = true;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        // Compute total energy at each step
+        let total_per_step: Vec<f64> = result
+            .energies
+            .iter()
+            .map(|step| step.iter().sum::<f64>())
+            .collect();
+
+        // Energy should be non-increasing (allowing for small numerical noise)
+        for i in 1..total_per_step.len() {
+            assert!(
+                total_per_step[i] <= total_per_step[i - 1] + 1e-10,
+                "Energy should not increase: step {i} has {:.6} > step {} had {:.6}",
+                total_per_step[i],
+                i - 1,
+                total_per_step[i - 1]
+            );
+        }
+
+        // Energy should actually decrease significantly over many reflections
+        let first = total_per_step[0];
+        let last = *total_per_step.last().unwrap();
+        assert!(
+            last < first * 0.1,
+            "Energy should decay to <10% of initial: first={first:.3}, last={last:.3}"
+        );
+    }
+
+    #[test]
+    fn test_higher_absorption_faster_decay() {
+        // Higher absorption coefficients should cause energy to decay faster.
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let run_with_absorption = |alpha: f64| -> f64 {
+            let mut config = SimulationConfig::new();
+            config.num_steps = 2000;
+            config.num_rays = 200;
+            config.source = Point::new(1.0, 1.0, 1.0);
+            config.default_absorption = alpha;
+            config.store_ray_history = true;
+
+            let sim = Simulation::new(&building, config).unwrap();
+            let result = sim.run();
+
+            // Return total energy at last step
+            result.energies.last().unwrap().iter().sum()
+        };
+
+        let energy_low_abs = run_with_absorption(0.1);
+        let energy_high_abs = run_with_absorption(0.5);
+
+        assert!(
+            energy_high_abs < energy_low_abs,
+            "Higher absorption should result in less remaining energy. \
+             α=0.1 → {energy_low_abs:.4}, α=0.5 → {energy_high_abs:.4}"
+        );
+    }
+
+    #[test]
+    fn test_larger_room_slower_decay() {
+        // In a larger room, rays travel longer between reflections so energy
+        // decays more slowly per time step (Sabine: RT ∝ V/A).
+        let run_for_room_size = |size: f64| -> f64 {
+            let s0 = Solid::from_box(size, size, size, None, "room").unwrap();
+            let zone = Zone::new("z", vec![s0]).unwrap();
+            let building = Building::new("b", vec![zone]).unwrap();
+
+            let mut config = SimulationConfig::new();
+            config.num_steps = 2000;
+            config.num_rays = 200;
+            config.source = Point::new(size / 2.0, size / 2.0, size / 2.0);
+            config.default_absorption = 0.3;
+            config.store_ray_history = true;
+
+            let sim = Simulation::new(&building, config).unwrap();
+            let result = sim.run();
+
+            result.energies.last().unwrap().iter().sum()
+        };
+
+        let energy_small = run_for_room_size(2.0); // 2×2×2 m
+        let energy_large = run_for_room_size(6.0); // 6×6×6 m
+
+        assert!(
+            energy_large > energy_small,
+            "Larger room should have more remaining energy (slower decay). \
+             small={energy_small:.4}, large={energy_large:.4}"
+        );
+    }
+
+    #[test]
+    fn test_absorber_collects_energy_proportional_to_solid_angle() {
+        // A larger absorber should collect more energy.
+        let s0 = Solid::from_box(4.0, 4.0, 4.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let run_with_radius = |radius: f64| -> f64 {
+            let mut config = SimulationConfig::new();
+            config.num_steps = 500;
+            config.num_rays = 1000;
+            config.source = Point::new(2.0, 2.0, 2.0);
+            config.absorbers = vec![Point::new(1.0, 1.0, 1.0)];
+            config.absorber_radius = radius;
+
+            let sim = Simulation::new(&building, config).unwrap();
+            let result = sim.run();
+            result.hits.iter().map(|h| h[0]).sum()
+        };
+
+        let energy_small = run_with_radius(0.2);
+        let energy_large = run_with_radius(0.5);
+
+        assert!(
+            energy_large > energy_small,
+            "Larger absorber should collect more energy. \
+             r=0.2 → {energy_small:.4}, r=0.5 → {energy_large:.4}"
+        );
+    }
+
+    #[test]
+    fn test_frequency_dependent_decay_ordering() {
+        // With frequency-dependent absorption [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
+        // higher bands should have less remaining energy after many steps.
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut lib = MaterialLibrary::new();
+        lib.add(
+            Material::new("walls").with_acoustic(AcousticMaterial::new(
+                "walls",
+                [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
+                [0.1; 6],
+            )),
+        );
+        lib.assign("/", "walls");
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 2000;
+        config.num_rays = 200;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.material_library = Some(lib);
+        config.store_ray_history = true;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        let band_e = result.band_energies.as_ref().unwrap();
+        let last_step = band_e.last().unwrap();
+
+        // Sum remaining energy per band across all rays
+        let mut band_totals = [0.0_f64; 6];
+        for ray_bands in last_step {
+            for (b, &e) in ray_bands.iter().enumerate() {
+                band_totals[b] += e;
+            }
+        }
+
+        // Each band should have less energy than the previous (lower absorption)
+        for b in 1..6 {
+            assert!(
+                band_totals[b] <= band_totals[b - 1] + 1e-6,
+                "Band {b} ({:.4}) should have ≤ energy than band {} ({:.4})",
+                band_totals[b],
+                b - 1,
+                band_totals[b - 1]
+            );
+        }
+    }
 }

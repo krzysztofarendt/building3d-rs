@@ -20,6 +20,10 @@ pub struct LightingConfig {
     pub material_library: Option<MaterialLibrary>,
     /// Default diffuse reflectance (fraction per channel, 0-1) if no material is assigned.
     pub default_reflectance: Rgb,
+    /// Sensor grid spacing in meters (None = no sensor grids).
+    pub sensor_spacing: Option<f64>,
+    /// Path patterns for sensor placement (empty = all polygons).
+    pub sensor_patterns: Vec<String>,
 }
 
 impl LightingConfig {
@@ -33,6 +37,8 @@ impl LightingConfig {
             voxel_size: 0.1,
             material_library: None,
             default_reflectance: [0.5, 0.5, 0.5],
+            sensor_spacing: None,
+            sensor_patterns: Vec::new(),
         }
     }
 }

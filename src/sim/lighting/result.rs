@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::Point;
+use super::sensor::SensorGrid;
 use super::sources::Rgb;
 
 /// Result of a lighting simulation.
@@ -10,6 +12,8 @@ pub struct LightingResult {
     pub incident_flux: HashMap<String, Rgb>,
     /// Number of ray hits per polygon.
     pub hit_count: HashMap<String, usize>,
+    /// Sensor grids with recorded illuminance data.
+    pub sensor_grids: Vec<SensorGrid>,
 }
 
 impl LightingResult {
@@ -18,6 +22,7 @@ impl LightingResult {
             illuminance: HashMap::new(),
             incident_flux: HashMap::new(),
             hit_count: HashMap::new(),
+            sensor_grids: Vec::new(),
         }
     }
 
@@ -42,6 +47,31 @@ impl LightingResult {
                     path.clone(),
                     [flux[0] / area, flux[1] / area, flux[2] / area],
                 );
+            }
+        }
+    }
+
+    /// Records a ray hit on a sensor grid, distributing energy to the nearest sensor.
+    pub fn record_sensor_hit(&mut self, grid_idx: usize, hit_pos: Point, energy: Rgb, sensor_area: f64) {
+        if let Some(grid) = self.sensor_grids.get_mut(grid_idx) {
+            // Find nearest sensor
+            let mut best_idx = None;
+            let mut best_dist2 = f64::INFINITY;
+            for (i, sensor) in grid.sensors.iter().enumerate() {
+                let d = hit_pos - sensor.position;
+                let dist2 = d.dx * d.dx + d.dy * d.dy + d.dz * d.dz;
+                if dist2 < best_dist2 {
+                    best_dist2 = dist2;
+                    best_idx = Some(i);
+                }
+            }
+            if let Some(idx) = best_idx {
+                let sensor = &mut grid.sensors[idx];
+                // Convert flux to irradiance: E = flux / area
+                sensor.illuminance[0] += energy[0] / sensor_area;
+                sensor.illuminance[1] += energy[1] / sensor_area;
+                sensor.illuminance[2] += energy[2] / sensor_area;
+                sensor.hit_count += 1;
             }
         }
     }
