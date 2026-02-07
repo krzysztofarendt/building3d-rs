@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents when working with code in this repository.
 
 ## Build and Test Commands
 
@@ -22,6 +22,9 @@ cargo run --example floor_plan
 cargo run --example ray_2_boxes
 cargo run --example ray_teapot
 cargo run --example bench_teapot
+cargo run --example sim_acoustics
+cargo run --example sim_lighting
+cargo run --example sim_energy
 
 # Check code without building
 cargo check
@@ -95,16 +98,17 @@ Shared infrastructure for ray-based simulations:
 
 #### Acoustic Ray Tracing (`sim/rays/`)
 
-- **SimulationConfig**: ray count, speed, source/absorber positions, scalar or frequency-dependent mode, material library integration
+- **SimulationConfig**: ray count, speed, source/absorber positions, scalar or frequency-dependent mode, material library integration, `store_ray_history` flag (set `false` to avoid ~800 MB RAM for large runs)
 - **Simulation**: builds `FlatScene`, runs time-stepped ray tracing with configurable absorption/reflection/propagation
-- **SimulationResult**: per-step ray positions, energies, absorber hits (scalar and per-band)
+- **SimulationResult**: per-step ray positions/energies (optional, controlled by `store_ray_history`), absorber hits (scalar and per-band)
 
 #### Acoustics (`sim/acoustics/`)
 
 - **Receiver**: spherical receiver accumulating energy-time-frequency histograms
 - **ImpulseResponse**: extracted from receiver data (per-band and broadband)
-- **Metrics**: Schroeder backward integration for reverberation time (RT20/RT30/EDT), clarity (C50/C80), definition (D50)
+- **Metrics**: Schroeder backward integration for reverberation time (RT20/RT30/EDT), clarity (C50/C80), definition (D50), STI; `RoomAcousticReport` aggregates all metrics
 - **Source directivity**: `Omnidirectional`, `Cardioid` patterns via `SourceDirectivity` trait
+- **Auralization** (`auralization/`): WAV export of impulse responses (`write_ir_wav`), convolution with dry audio (`auralize`, `auralize_per_band`), octave-band filtering, resampling utilities
 
 #### Lighting (`sim/lighting/`)
 
@@ -193,13 +197,19 @@ src/
 │   │   ├── find_transparent.rs  # Transparent surface detection
 │   │   └── voxel_grid.rs   # Spatial hash grid
 │   ├── rays/
+│   │   ├── mod.rs      # Re-exports AcousticMode, SimulationConfig, Simulation, SimulationResult
 │   │   ├── config.rs   # SimulationConfig, AcousticMode
 │   │   └── simulation.rs   # Simulation, SimulationResult
 │   ├── acoustics/
 │   │   ├── source.rs   # SourceDirectivity, Omnidirectional, Cardioid
 │   │   ├── receiver.rs # Receiver (spherical energy-time collector)
 │   │   ├── impulse_response.rs  # ImpulseResponse extraction
-│   │   └── metrics.rs  # RT, EDT, C50, C80, D50
+│   │   ├── metrics.rs  # RT, EDT, C50, C80, D50, STI, RoomAcousticReport
+│   │   └── auralization/  # Audio output from simulation results
+│   │       ├── mod.rs     # write_ir_wav(), auralize(), auralize_per_band()
+│   │       ├── convolve.rs    # Fast convolution
+│   │       ├── filters.rs     # Octave-band filters (125-4000 Hz)
+│   │       └── wav.rs         # WAV file I/O
 │   ├── lighting/
 │   │   ├── config.rs   # LightingConfig
 │   │   ├── simulation.rs   # LightingSimulation (forward ray tracing)

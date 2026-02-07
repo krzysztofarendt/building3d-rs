@@ -21,9 +21,10 @@ Each entity has:
 - Building analysis: path-based access (`zone/solid/wall/polygon`), adjacency graph, stitching report
 - Simulation:
   - **Materials**: unified `MaterialLibrary` with acoustic, optical, and thermal properties; built-in presets (concrete, glass, gypsum, carpet, wood, metal)
-  - **Engine**: shared ray tracing infrastructure with voxel-grid acceleration, pluggable absorption/reflection/propagation models
+  - **Engine**: shared ray tracing infrastructure with voxel-grid acceleration, pluggable absorption/reflection/propagation models, optional ray history storage (`store_ray_history`)
   - **Acoustic ray tracing**: scalar or frequency-dependent (6 octave bands), configurable source/absorber positions (`building3d::sim::rays`)
-  - **Acoustics**: spherical receivers, impulse response extraction, room acoustic metrics (RT20/RT30/EDT, C50/C80, D50), source directivity patterns (`building3d::sim::acoustics`)
+  - **Acoustics**: spherical receivers, impulse response extraction, room acoustic metrics (RT20/RT30/EDT, C50/C80, D50, STI), source directivity patterns (`building3d::sim::acoustics`)
+  - **Auralization**: WAV export of impulse responses, convolution with dry audio, per-band frequency-dependent auralization (`building3d::sim::acoustics::auralization`)
   - **Lighting**: forward ray tracing with RGB illuminance, point/directional lights, CIE sky models, solar position, sensor grids, backward tracing (`building3d::sim::lighting`)
   - **Energy**: steady-state heat balance, layered wall constructions, EPW weather data, internal gains schedules, HVAC models, annual hourly simulation (`building3d::sim::energy`)
 - File I/O:
@@ -61,6 +62,9 @@ cargo run --example floor_plan
 cargo run --example ray_2_boxes
 cargo run --example ray_teapot
 cargo run --example bench_teapot
+cargo run --example sim_acoustics
+cargo run --example sim_lighting
+cargo run --example sim_energy
 ```
 
 ## I/O
