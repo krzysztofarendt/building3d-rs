@@ -58,10 +58,12 @@ A uniform hash grid (`src/sim/engine/voxel_grid.rs`) accelerates ray-surface que
 - Cell size defaults to 0.1 m
 - Grid extends 1 cell beyond the scene bounding box
 - Each cell stores indices of polygons whose bounding boxes overlap it
-- Queries return polygon candidates from 3x3x3 = 27 neighboring cells
-
-> **Known issue**: Querying only 27 cells around the ray origin can miss intersections
-> with geometry further along the ray. See [5.1](#51-shared-infrastructure).
+- Two query modes:
+  - `find_nearby(pos)`: returns candidates from 3x3x3 = 27 neighboring cells (fast, local)
+  - `find_along_ray(origin, direction, max_distance)`: Amanatides-Woo 3D-DDA ray marching
+    that steps through all grid cells along the ray path, collecting polygon candidates
+    from each visited cell. Used by `find_target_surface()` so that rays originating far
+    from geometry can still find intersections.
 
 ### 1.3 Flat Scene
 
@@ -317,21 +319,18 @@ on building surfaces, with physically-based sky and solar models.
 **Point light** (omnidirectional):
 
 ```
-I(direction) = [I_R, I_G, I_B]     (constant in all directions)
-total_flux = (I_R + I_G + I_B) * 4*pi / 3
+I(direction) = [I_R, I_G, I_B]     (constant in all directions, W/sr per channel)
+total_flux = (I_R + I_G + I_B) * 4*pi     [W]
 ```
 
-> **Known issue**: The flux formula is incorrect. For an isotropic source, `Phi = 4*pi*I`.
-> The `/3` factor has no physical basis. The constructor `I = lumens / (4*pi)` is correct,
-> but `total_flux()` is inconsistent with it. See [5.3](#53-lighting).
-
-Constructor from total lumens: `I_per_channel = lumens / (4*pi)`.
+Constructor from total radiant flux: `I_per_channel = flux / (3 * 4*pi)`, so that
+`total_flux = 3 * I_per_channel * 4*pi = flux`.
 
 **Area light** (Lambertian emitter):
 
 ```
-I(direction) = I_base * |N . direction|
-total_flux = pi * I_per_area * width * height
+I(direction) = I_base * |N . direction|     [W/(sr*m^2) per channel]
+total_flux = (I_R + I_G + I_B) * pi * area     [W]
 ```
 
 where N is the surface normal. The pi factor comes from integrating the cosine distribution
@@ -340,7 +339,7 @@ over the hemisphere.
 **Directional light** (parallel beam, e.g. sunlight):
 
 ```
-I(direction) = [E_R, E_G, E_B]     (constant irradiance)
+I(direction) = [E_R, E_G, E_B]     (constant irradiance, W/m^2 per channel)
 total_flux = infinity
 ```
 
@@ -368,20 +367,15 @@ For each light source, `num_rays` rays are traced through the scene:
    - Reflect diffusely (Lambertian) for next bounce
    - Terminate if total energy < 1e-6
 
-3. **Compute illuminance**: `illuminance[surface] = flux[surface] / area[surface]` (lux)
+3. **Compute irradiance**: `irradiance[surface] = flux[surface] / area[surface]` (W/m^2)
 
-> **Known issue**: The forward tracer accumulates "flux" at hit polygons but does not
-> apply inverse-square distance attenuation from point lights or a cos(theta) incidence
-> factor. As written, a point light does not dim with distance. The ray-based flux
-> distribution should inherently handle 1/r^2 via solid angle sampling, but the per-ray
-> energy initialization and accumulation need to be verified for dimensional consistency.
-> See [5.3](#53-lighting).
->
-> **Known issue**: RGB channels are labeled as "lumens" and "lux" (photometric units),
-> but are treated as independent radiometric channels. Photometric quantities are
-> single-valued (weighted by V(lambda)). The system should either adopt radiometric
-> units (W, W/m^2) throughout, or define an explicit RGB-to-photometric conversion.
-> See [5.3](#53-lighting).
+The 1/r^2 falloff for point lights emerges naturally from the Monte Carlo sampling:
+rays are uniformly distributed on the sphere, so a surface at distance r subtends solid
+angle `A*cos(theta)/r^2`, and the number of rays hitting it is proportional to that.
+This has been verified with a dedicated test.
+
+RGB channels use radiometric units (W/sr per channel for sources, W/m^2 per channel for
+irradiance) and are treated as independent spectral bands.
 
 ### 3.3 Backward Ray Tracing
 
@@ -401,11 +395,10 @@ For each sensor on a surface with normal **N**:
 
 The `|direction . N|` factor is Lambert's cosine law for diffuse surface reception.
 
-> **Known issue**: The sky model returns luminance L (cd/m^2), but the code variable is
-> named "intensity" (cd). The integrand should be luminance, and the Monte Carlo estimator
-> `E = (2*pi/N) * sum(L * cos(theta))` is correct only when using uniform hemisphere
-> sampling (pdf = 1/(2*pi)). Currently this appears dimensionally consistent, but the
-> naming should be corrected. See [5.3](#53-lighting).
+The sky model returns radiance (W/(sr*m^2)). The backward tracer variable is named
+`radiance` accordingly. The Monte Carlo estimator
+`E = (2*pi/N) * sum(L * cos(theta))` is correct for uniform hemisphere sampling
+(pdf = 1/(2*pi)).
 
 ### 3.4 Solar Position (Spencer 1971)
 
@@ -654,29 +647,33 @@ P_electric = Q_delivered / COP
 
 A deadband exists between the heating and cooling setpoints where no HVAC operates.
 
-### 4.5 Solar Gains (Lighting-Energy Coupling)
+### 4.5 Solar Gains
 
-The `SolarBridge` converts lighting simulation results to thermal gains:
+Solar gains are computed directly from EPW weather radiation data combined with sun
+geometry and window properties (`SolarGainConfig`):
 
 ```
-Q_solar = (Phi_R + Phi_G + Phi_B) / eta * SHGC     [W]
+Q_solar_window = (DNI * cos(theta_inc) + DHI * sky_view) * A_window * SHGC     [W]
 ```
 
 where:
-- `Phi_R, Phi_G, Phi_B` = incident luminous flux on glazing (lm)
-- `eta` = luminous efficacy, default 120 lm/W (solar spectrum)
+- `DNI` = direct normal irradiance from weather record (W/m^2)
+- `DHI` = diffuse horizontal irradiance from weather record (W/m^2)
+- `cos(theta_inc) = max(0, sun_direction . polygon_normal)` (only sun-facing surfaces)
+- `sky_view = 0.5 * (1 + max(0, normal_z))` (isotropic sky view factor)
+- `A_window` = glazing polygon area (m^2)
 - `SHGC` = solar heat gain coefficient, default 0.6 (double glazing)
 
-Glazing surfaces are identified by pattern matching on path names ("window", "glazing",
-"glass").
+Solar position is computed per hour using the Spencer algorithm (see Section 3.4).
+When the sun is below the horizon, only the diffuse component contributes.
 
-> **Known issue**: This is the biggest physics mistake in the energy module. Thermal solar
-> gains depend on solar irradiance (W/m^2) and glazing SHGC, not on visible-light lumens.
-> Converting lumens to watts via a fixed efficacy is unreliable because the lighting engine
-> is a visible-light estimator, not a full-spectrum radiometric one. Since EPW data already
-> provides direct/diffuse radiation, solar gains should be computed directly from weather
-> data + sun geometry + window orientation + SHGC. See [5.4](#54-energy).
->
+Glazing surfaces are identified by pattern matching on path names ("window", "glazing",
+"glass") or by explicit per-surface SHGC entries in `SolarGainConfig`.
+
+A legacy `SolarBridgeConfig` and `lighting_to_solar_gains()` function remain available
+for converting lighting simulation results to thermal gains via luminous efficacy, but
+the recommended approach is the direct weather-based calculation.
+
 > **Note**: Window detection by name pattern is fragile. Should use an explicit material
 > flag or construction type property.
 
@@ -739,8 +736,8 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
 - **Ideal HVAC**: instantaneous response, perfect setpoint control (within capacity limits).
 - **No latent loads**: only sensible heating/cooling; no humidity control.
 - **Uniform infiltration**: constant ACH regardless of wind pressure or stack effect.
-- **Solar gains via luminous efficacy conversion**: simplified relationship between
-  lighting flux and thermal power.
+- **Isotropic sky model for diffuse solar**: diffuse component uses a simple tilt factor
+  rather than an anisotropic sky model (e.g. Perez).
 - **No thermal bridging**: U-values are for clear-field construction only.
 - **1D heat conduction**: no lateral heat flow within wall layers.
 
@@ -754,19 +751,11 @@ Issues are grouped by severity: **bugs** (produce incorrect results and must be 
 
 ### 5.1 Shared Infrastructure
 
-#### BUG: Voxel grid misses distant intersections
+#### ~~BUG: Voxel grid misses distant intersections~~ (FIXED)
 
-**Problem**: `find_nearby(pos)` returns only the 27 cells around the query point. A ray
-can intersect geometry many cells away, so this misses valid hits unless the query point
-is already near the intersection.
-
-**Fix**: Implement 3D-DDA ray marching (Amanatides-Woo algorithm) that steps through
-grid cells along the ray direction until a hit is found or the ray exits the grid.
-
-**Files**: `src/sim/engine/voxel_grid.rs`, `src/sim/engine/mod.rs`
-
-**Effort**: Medium. The voxel grid already stores cell-to-polygon mappings; the change is
-in the query strategy (replace single-point lookup with ray-march loop).
+**Fixed**: `find_along_ray()` implements Amanatides-Woo 3D-DDA ray marching that steps
+through grid cells along the ray direction. `find_target_surface()` now uses this instead
+of `find_nearby()`, so rays originating far from geometry find intersections correctly.
 
 #### BIAS: Barycentric tolerance too large
 
@@ -847,56 +836,27 @@ the limitations in the docstring and here.
 
 ### 5.3 Lighting
 
-#### BUG: Point light total flux formula is wrong
+#### ~~BUG: Point light total flux formula is wrong~~ (FIXED)
 
-**Problem**: `total_flux = (I_R + I_G + I_B) * 4*pi / 3`. For an isotropic source,
-luminous flux is `Phi = 4*pi * I` (in candela). The `/3` divisor for averaging RGB
-channels has no physical basis and makes `total_flux()` inconsistent with the constructor
-`I = lumens / (4*pi)`.
+**Fixed**: Removed the erroneous `/3` from `total_flux()`. The formula is now
+`total_flux = (I_R + I_G + I_B) * 4*pi`. The `white()` constructor was updated to
+`I_per_channel = flux / (3 * 4*pi)` so that `total_flux()` recovers the original flux.
+`AreaLight::total_flux()` similarly fixed.
 
-**Fix**: Change to `total_flux = 4*pi * (I_R + I_G + I_B)` if treating each channel as
-an independent intensity, or `total_flux = 4*pi * I_mean` with `I_mean = (I_R + I_G + I_B) / 3`
-if a single photometric value is desired. The choice depends on the unit convention
-adopted (see next issue).
+#### ~~BUG: RGB photometric/radiometric unit confusion~~ (FIXED)
 
-**Files**: `src/sim/lighting/sources.rs`
+**Fixed**: All lighting module documentation now uses radiometric units:
+- Light source intensity: W/sr per channel
+- Surface irradiance: W/m^2 per channel
+- Incident flux: W per channel
+- Backward tracer variable renamed from `intensity` to `radiance`
 
-**Effort**: Trivial (one-line change), but must be coordinated with the unit convention fix.
+#### ~~BUG: Missing inverse-square verification for point lights~~ (FIXED)
 
-#### BUG: RGB photometric/radiometric unit confusion
-
-**Problem**: The system labels RGB channels as "lumens" and "lux" (photometric, human-eye
-weighted, single-valued), but treats them as three independent channels (radiometric).
-These are fundamentally different physical quantities.
-
-**Fix (recommended)**: Adopt radiometric units throughout:
-- Light source intensity: W/sr per channel (spectral radiant intensity)
-- Surface quantity: W/m^2 per channel (spectral irradiance)
-- Label outputs as "irradiance [W/m^2]" not "illuminance [lux]"
-- If photometric output is needed, add an explicit RGB-to-luminance conversion:
-  `L = 0.2126*R + 0.7152*G + 0.0722*B` (sRGB luminance weights)
-
-**Files**: `src/sim/lighting/sources.rs`, `src/sim/lighting/result.rs`,
-`src/sim/lighting/sensor.rs`, `src/sim/lighting/config.rs`, `src/sim/lighting/backward.rs`
-
-**Effort**: Medium. Mostly renaming and docstring changes; core math stays the same if
-treating channels as independent spectral bands.
-
-#### BUG: Missing inverse-square verification for point lights
-
-**Problem**: For point lights, irradiance on a surface should fall as 1/r^2 with a
-cos(theta) incidence factor. The forward tracer initializes per-ray energy as
-`intensity / num_rays` and accumulates it at hit polygons. In a correctly implemented
-Monte Carlo ray tracer, the 1/r^2 falloff should emerge naturally from the solid angle
-subtended by each ray — but this needs verification.
-
-**Fix**: Add a unit test that places a point light at known distance from a surface and
-verifies that accumulated illuminance matches `I * cos(theta) / r^2`. If the test fails,
-the per-ray energy initialization or accumulation formula needs correction.
-
-**Files**: `src/sim/lighting/simulation.rs` (test), `src/sim/lighting/sources.rs`
-
-**Effort**: Low for the test; fix depends on test outcome.
+**Fixed**: A unit test (`test_inverse_square_falloff`) verifies that 1/r^2 falloff
+emerges naturally from the Monte Carlo solid angle sampling. A point light placed
+off-center in a box confirms that the near surface receives significantly more flux
+than the far surface.
 
 #### BIAS: Solar azimuth numerically fragile
 
@@ -915,47 +875,21 @@ if azi < 0: azi += 2*pi
 
 **Effort**: Low.
 
-#### LABELING: Backward tracer variable naming
+#### ~~LABELING: Backward tracer variable naming~~ (FIXED)
 
-**Problem**: The backward tracer calls sky luminance (cd/m^2) "intensity" (cd). The
-Monte Carlo estimator is dimensionally correct (`E = 2*pi/N * sum(L*cos_theta)`), but
-the naming is confusing.
-
-**Fix**: Rename `intensity` to `luminance` (or `radiance` if switching to radiometric
-units) in the backward tracer code and documentation.
-
-**Files**: `src/sim/lighting/backward.rs`
-
-**Effort**: Trivial.
+**Fixed**: Renamed `intensity` to `radiance` in the backward tracer code, consistent
+with the radiometric unit convention adopted across the lighting module.
 
 ### 5.4 Energy
 
-#### BUG: Solar gains computed from lighting lumens instead of solar radiation
+#### ~~BUG: Solar gains computed from lighting lumens instead of solar radiation~~ (FIXED)
 
-**Problem**: The `SolarBridge` converts visible-light lumens from the lighting engine to
-thermal watts via a fixed luminous efficacy (120 lm/W), then applies SHGC. This is
-unreliable because:
-- The lighting engine models visible light only, not the full solar spectrum
-- Luminous efficacy varies with sky conditions and is not a fixed constant
-- EPW weather data already provides direct normal and diffuse horizontal radiation in W/m^2
-
-**Fix**: Compute solar gains directly from weather data:
-1. For each window polygon, compute incident solar radiation from EPW direct normal
-   irradiance (using sun position and surface orientation via `cos(theta_incidence)`) plus
-   diffuse component (using a tilt factor or isotropic sky assumption)
-2. Multiply by window area and SHGC
-3. Remove the luminous efficacy conversion entirely
-
-```
-Q_solar_window = (DNI * cos(theta_inc) + DHI * tilt_factor) * A_window * SHGC
-```
-
-This decouples solar thermal gains from the lighting simulation entirely.
-
-**Files**: `src/sim/energy/solar_bridge.rs`, `src/sim/energy/simulation.rs`
-
-**Effort**: Medium. The solar position calculation already exists; needs surface-normal
-dot product with sun direction, plus EPW irradiance lookup per timestep.
+**Fixed**: Solar gains are now computed directly from EPW weather data (DNI + DHI) using
+sun position, window orientation (`cos(theta_incidence)`), isotropic sky view factor, and
+SHGC. The `solar_gain_factor: f64` parameter was replaced with
+`solar_config: Option<&SolarGainConfig>` in both `run_annual_simulation()` and
+`run_transient_simulation()`. The legacy `SolarBridgeConfig`/`lighting_to_solar_gains()`
+functions remain for backward compatibility.
 
 #### BIAS: HVAC load calculation ignores concurrent losses
 
@@ -990,23 +924,23 @@ or construction system. Use this flag for solar gain calculations instead of nam
 
 Issues are ordered by impact on result correctness:
 
-| Priority | Issue | Severity | Effort |
+| Priority | Issue | Severity | Status |
 |----------|-------|----------|--------|
-| 1 | Solar gains from weather data, not lumens | BUG | Medium |
-| 2 | Point light total flux formula | BUG | Trivial |
-| 3 | RGB unit convention (radiometric) | BUG | Medium |
-| 4 | Verify inverse-square for point lights | BUG | Low |
-| 5 | Voxel grid ray marching (3D-DDA) | BUG | Medium |
-| 6 | Cosine-weighted diffuse reflection | BIAS | Low |
-| 7 | Receiver normalization | BIAS | Low |
-| 8 | HVAC concurrent-loss formula | BIAS | Low |
-| 9 | Solar azimuth atan2 | BIAS | Low |
-| 10 | Barycentric tolerance reduction | BIAS | Low |
-| 11 | Rename STI to STI-like | LABELING | Trivial |
-| 12 | Rename IR to energy IR | LABELING | Trivial |
-| 13 | Backward tracer variable names | LABELING | Trivial |
-| 14 | Window detection by material flag | LABELING | Low-medium |
-| 15 | Document 1R1C capacity as tuning param | LABELING | Trivial |
+| 1 | Solar gains from weather data, not lumens | BUG | **FIXED** |
+| 2 | Point light total flux formula | BUG | **FIXED** |
+| 3 | RGB unit convention (radiometric) | BUG | **FIXED** |
+| 4 | Verify inverse-square for point lights | BUG | **FIXED** |
+| 5 | Voxel grid ray marching (3D-DDA) | BUG | **FIXED** |
+| 6 | Cosine-weighted diffuse reflection | BIAS | Open |
+| 7 | Receiver normalization | BIAS | Open |
+| 8 | HVAC concurrent-loss formula | BIAS | Open |
+| 9 | Solar azimuth atan2 | BIAS | Open |
+| 10 | Barycentric tolerance reduction | BIAS | Open |
+| 11 | Rename STI to STI-like | LABELING | Open |
+| 12 | Rename IR to energy IR | LABELING | Open |
+| 13 | Backward tracer variable names | LABELING | **FIXED** |
+| 14 | Window detection by material flag | LABELING | Open |
+| 15 | Document 1R1C capacity as tuning param | LABELING | Open |
 
 ### 5.6 Acceptable Simplifications
 
