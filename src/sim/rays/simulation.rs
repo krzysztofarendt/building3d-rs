@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rayon::prelude::*;
 
 use crate::sim::engine::absorption::{
     AbsorptionModel, AirAbsorption, FrequencyDependentAbsorption, ScalarAbsorption,
@@ -94,6 +95,10 @@ impl Simulation {
 
         let eps = 1e-10;
         let bbox_margin = 1e-6;
+        let min_alive_fraction = self.config.min_alive_fraction;
+
+        // Track whether each ray was inside each absorber on the previous step
+        let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
 
         for _step in 0..num_steps {
             let mut step_hits = vec![0.0; num_absorbers];
@@ -108,86 +113,104 @@ impl Simulation {
                     let dz = positions[ray].z - absorber.z;
                     let dist2 = dx * dx + dy * dy + dz * dz;
                     if dist2 <= absorber_r2 {
-                        step_hits[ai] += energies[ray];
-                        energies[ray] = 0.0;
-                        break;
+                        if !was_inside[ray][ai] {
+                            // First entry: record the hit
+                            step_hits[ai] += energies[ray];
+                            was_inside[ray][ai] = true;
+                        }
+                        // Ray continues (NOT killed)
+                    } else {
+                        was_inside[ray][ai] = false;
                     }
                 }
             }
 
-            for ray in 0..num_rays {
-                if energies[ray] <= eps {
-                    continue;
-                }
-
-                let pos = positions[ray];
-                if !self.scene.is_in_bounds(pos, bbox_margin) {
-                    energies[ray] = 0.0;
-                    continue;
-                }
-
-                let vel_norm = match velocities[ray].normalize() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        energies[ray] = 0.0;
-                        continue;
+            positions
+                .par_iter_mut()
+                .zip(velocities.par_iter_mut())
+                .zip(energies.par_iter_mut())
+                .for_each(|((pos, vel), energy)| {
+                    if *energy <= eps {
+                        return;
                     }
-                };
 
-                if let Some((target_idx, target_dist)) =
-                    self.scene.find_target_surface(pos, vel_norm)
-                {
-                    if target_dist <= reflection_dist {
-                        let mut current_target = Some((target_idx, target_dist));
-                        let mut search_pos = pos;
+                    let orig_pos = *pos;
+                    if !self.scene.is_in_bounds(orig_pos, bbox_margin) {
+                        *energy = 0.0;
+                        return;
+                    }
 
-                        while let Some((tidx, _tdist)) = current_target {
-                            if energies[ray] <= eps {
-                                break;
-                            }
+                    let vel_norm = match vel.normalize() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            *energy = 0.0;
+                            return;
+                        }
+                    };
 
-                            energies[ray] = absorption.apply(energies[ray], tidx);
-                            if energies[ray] <= eps {
-                                energies[ray] = 0.0;
-                                break;
-                            }
+                    if let Some((target_idx, target_dist)) =
+                        self.scene.find_target_surface(orig_pos, vel_norm)
+                    {
+                        if target_dist <= reflection_dist {
+                            let mut current_target = Some((target_idx, target_dist));
+                            let mut search_pos = orig_pos;
 
-                            let normal = self.scene.polygons[tidx].vn;
-                            velocities[ray] = reflection_model.reflect(velocities[ray], normal);
+                            while let Some((tidx, _tdist)) = current_target {
+                                if *energy <= eps {
+                                    break;
+                                }
 
-                            let new_vel_norm = match velocities[ray].normalize() {
-                                Ok(v) => v,
-                                Err(_) => break,
-                            };
+                                *energy = absorption.apply(*energy, tidx);
+                                if *energy <= eps {
+                                    *energy = 0.0;
+                                    break;
+                                }
 
-                            current_target =
-                                self.scene.find_target_surface(search_pos, new_vel_norm);
+                                let normal = self.scene.polygons[tidx].vn;
+                                *vel = reflection_model.reflect(*vel, normal);
 
-                            if let Some((_, next_dist)) = current_target {
-                                if next_dist > reflection_dist {
-                                    current_target = None;
-                                } else {
-                                    search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
+                                let new_vel_norm = match vel.normalize() {
+                                    Ok(v) => v,
+                                    Err(_) => break,
+                                };
+
+                                current_target =
+                                    self.scene.find_target_surface(search_pos, new_vel_norm);
+
+                                if let Some((_, next_dist)) = current_target {
+                                    if next_dist > reflection_dist {
+                                        current_target = None;
+                                    } else {
+                                        search_pos =
+                                            search_pos + new_vel_norm * (next_dist * 0.5);
+                                    }
                                 }
                             }
-                        }
 
-                        if energies[ray] > eps {
-                            positions[ray] = propagation_model.advance(pos, velocities[ray], dt);
+                            if *energy > eps {
+                                *pos = propagation_model.advance(orig_pos, *vel, dt);
+                            }
+                        } else {
+                            *pos = propagation_model.advance(orig_pos, *vel, dt);
                         }
                     } else {
-                        positions[ray] = propagation_model.advance(pos, velocities[ray], dt);
+                        *pos = propagation_model.advance(orig_pos, *vel, dt);
                     }
-                } else {
-                    positions[ray] = propagation_model.advance(pos, velocities[ray], dt);
-                }
-            }
+                });
 
             if store_history {
                 all_positions.push(positions.clone());
                 all_energies.push(energies.clone());
             }
             all_hits.push(step_hits);
+
+            // Early termination if too few rays are alive
+            if min_alive_fraction > 0.0 {
+                let alive = energies.iter().filter(|&&e| e > eps).count();
+                if (alive as f64) / (num_rays as f64) < min_alive_fraction {
+                    break;
+                }
+            }
         }
 
         SimulationResult {
@@ -242,6 +265,10 @@ impl Simulation {
 
         let eps = 1e-10;
         let bbox_margin = 1e-6;
+        let min_alive_fraction = self.config.min_alive_fraction;
+
+        // Track whether each ray was inside each absorber on the previous step
+        let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
 
         for _step in 0..num_steps {
             let mut step_hits = vec![0.0; num_absorbers];
@@ -259,119 +286,130 @@ impl Simulation {
                     let dz = positions[ray].z - absorber.z;
                     let dist2 = dx * dx + dy * dy + dz * dz;
                     if dist2 <= absorber_r2 {
-                        step_hits[ai] += total_energy;
-                        for b in 0..NUM_OCTAVE_BANDS {
-                            step_band_hits[ai][b] += band_energies[ray][b];
+                        if !was_inside[ray][ai] {
+                            // First entry: record the hit
+                            step_hits[ai] += total_energy;
+                            for b in 0..NUM_OCTAVE_BANDS {
+                                step_band_hits[ai][b] += band_energies[ray][b];
+                            }
+                            was_inside[ray][ai] = true;
                         }
-                        band_energies[ray] = [0.0; NUM_OCTAVE_BANDS];
-                        break;
+                        // Ray continues (NOT killed)
+                    } else {
+                        was_inside[ray][ai] = false;
                     }
                 }
             }
 
-            // Propagate rays
-            for ray in 0..num_rays {
-                let total_energy: f64 = band_energies[ray].iter().sum();
-                if total_energy <= eps {
-                    continue;
-                }
-
-                let pos = positions[ray];
-                if !self.scene.is_in_bounds(pos, bbox_margin) {
-                    band_energies[ray] = [0.0; NUM_OCTAVE_BANDS];
-                    continue;
-                }
-
-                let vel_norm = match velocities[ray].normalize() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        band_energies[ray] = [0.0; NUM_OCTAVE_BANDS];
-                        continue;
+            // Propagate rays (parallel)
+            positions
+                .par_iter_mut()
+                .zip(velocities.par_iter_mut())
+                .zip(band_energies.par_iter_mut())
+                .for_each(|((pos, vel), be)| {
+                    let total_energy: f64 = be.iter().sum();
+                    if total_energy <= eps {
+                        return;
                     }
-                };
 
-                if let Some((target_idx, target_dist)) =
-                    self.scene.find_target_surface(pos, vel_norm)
-                {
-                    if target_dist <= reflection_dist {
-                        let mut current_target = Some((target_idx, target_dist));
-                        let mut search_pos = pos;
+                    let orig_pos = *pos;
+                    if !self.scene.is_in_bounds(orig_pos, bbox_margin) {
+                        *be = [0.0; NUM_OCTAVE_BANDS];
+                        return;
+                    }
 
-                        while let Some((tidx, _tdist)) = current_target {
-                            let total_e: f64 = band_energies[ray].iter().sum();
-                            if total_e <= eps {
-                                break;
-                            }
+                    let vel_norm = match vel.normalize() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            *be = [0.0; NUM_OCTAVE_BANDS];
+                            return;
+                        }
+                    };
 
-                            // Apply frequency-dependent absorption
-                            band_energies[ray] = absorption.apply_bands(&band_energies[ray], tidx);
+                    if let Some((target_idx, target_dist)) =
+                        self.scene.find_target_surface(orig_pos, vel_norm)
+                    {
+                        if target_dist <= reflection_dist {
+                            let mut current_target = Some((target_idx, target_dist));
+                            let mut search_pos = orig_pos;
 
-                            let total_e: f64 = band_energies[ray].iter().sum();
-                            if total_e <= eps {
-                                band_energies[ray] = [0.0; NUM_OCTAVE_BANDS];
-                                break;
-                            }
+                            while let Some((tidx, _tdist)) = current_target {
+                                let total_e: f64 = be.iter().sum();
+                                if total_e <= eps {
+                                    break;
+                                }
 
-                            // Use hybrid reflection with mean scattering
-                            let mean_scattering: f64 = scattering_coeffs[tidx].iter().sum::<f64>()
-                                / NUM_OCTAVE_BANDS as f64;
-                            let reflection_model = Hybrid::new(mean_scattering);
+                                // Apply frequency-dependent absorption
+                                *be = absorption.apply_bands(be, tidx);
 
-                            let normal = self.scene.polygons[tidx].vn;
-                            velocities[ray] = reflection_model.reflect(velocities[ray], normal);
+                                let total_e: f64 = be.iter().sum();
+                                if total_e <= eps {
+                                    *be = [0.0; NUM_OCTAVE_BANDS];
+                                    break;
+                                }
 
-                            let new_vel_norm = match velocities[ray].normalize() {
-                                Ok(v) => v,
-                                Err(_) => break,
-                            };
+                                // Use hybrid reflection with mean scattering
+                                let mean_scattering: f64 =
+                                    scattering_coeffs[tidx].iter().sum::<f64>()
+                                        / NUM_OCTAVE_BANDS as f64;
+                                let reflection_model = Hybrid::new(mean_scattering);
 
-                            current_target =
-                                self.scene.find_target_surface(search_pos, new_vel_norm);
+                                let normal = self.scene.polygons[tidx].vn;
+                                *vel = reflection_model.reflect(*vel, normal);
 
-                            if let Some((_, next_dist)) = current_target {
-                                if next_dist > reflection_dist {
-                                    current_target = None;
-                                } else {
-                                    search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
+                                let new_vel_norm = match vel.normalize() {
+                                    Ok(v) => v,
+                                    Err(_) => break,
+                                };
+
+                                current_target =
+                                    self.scene.find_target_surface(search_pos, new_vel_norm);
+
+                                if let Some((_, next_dist)) = current_target {
+                                    if next_dist > reflection_dist {
+                                        current_target = None;
+                                    } else {
+                                        search_pos =
+                                            search_pos + new_vel_norm * (next_dist * 0.5);
+                                    }
                                 }
                             }
-                        }
 
-                        // Apply air absorption for this step
-                        if let Some(ref air) = air_absorption {
-                            let step_distance = speed * dt;
-                            let factors = air.apply_distance(step_distance);
-                            for (be, f) in band_energies[ray].iter_mut().zip(factors.iter()) {
-                                *be *= f;
+                            // Apply air absorption for this step
+                            if let Some(ref air) = air_absorption {
+                                let step_distance = speed * dt;
+                                let factors = air.apply_distance(step_distance);
+                                for (b, f) in be.iter_mut().zip(factors.iter()) {
+                                    *b *= f;
+                                }
                             }
-                        }
 
-                        let total_e: f64 = band_energies[ray].iter().sum();
-                        if total_e > eps {
-                            positions[ray] = propagation_model.advance(pos, velocities[ray], dt);
+                            let total_e: f64 = be.iter().sum();
+                            if total_e > eps {
+                                *pos = propagation_model.advance(orig_pos, *vel, dt);
+                            }
+                        } else {
+                            // Apply air absorption for free-flight step
+                            if let Some(ref air) = air_absorption {
+                                let step_distance = speed * dt;
+                                let factors = air.apply_distance(step_distance);
+                                for (b, f) in be.iter_mut().zip(factors.iter()) {
+                                    *b *= f;
+                                }
+                            }
+                            *pos = propagation_model.advance(orig_pos, *vel, dt);
                         }
                     } else {
-                        // Apply air absorption for free-flight step
                         if let Some(ref air) = air_absorption {
                             let step_distance = speed * dt;
                             let factors = air.apply_distance(step_distance);
-                            for (be, f) in band_energies[ray].iter_mut().zip(factors.iter()) {
-                                *be *= f;
+                            for (b, f) in be.iter_mut().zip(factors.iter()) {
+                                *b *= f;
                             }
                         }
-                        positions[ray] = propagation_model.advance(pos, velocities[ray], dt);
+                        *pos = propagation_model.advance(orig_pos, *vel, dt);
                     }
-                } else {
-                    if let Some(ref air) = air_absorption {
-                        let step_distance = speed * dt;
-                        let factors = air.apply_distance(step_distance);
-                        for (be, f) in band_energies[ray].iter_mut().zip(factors.iter()) {
-                            *be *= f;
-                        }
-                    }
-                    positions[ray] = propagation_model.advance(pos, velocities[ray], dt);
-                }
-            }
+                });
 
             // Record state
             if store_history {
@@ -383,6 +421,17 @@ impl Simulation {
             }
             all_hits.push(step_hits);
             all_band_hits.push(step_band_hits);
+
+            // Early termination if too few rays are alive
+            if min_alive_fraction > 0.0 {
+                let alive = band_energies
+                    .iter()
+                    .filter(|be| be.iter().sum::<f64>() > eps)
+                    .count();
+                if (alive as f64) / (num_rays as f64) < min_alive_fraction {
+                    break;
+                }
+            }
         }
 
         SimulationResult {

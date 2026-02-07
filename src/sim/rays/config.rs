@@ -39,6 +39,12 @@ pub struct SimulationConfig {
     // Air absorption
     pub enable_air_absorption: bool,
 
+    // Early termination
+    /// Minimum fraction of rays that must still be alive (energy > eps) to continue.
+    /// When the alive fraction drops below this threshold, the simulation ends early.
+    /// Set to 0.0 to disable early termination. Default: 0.0 (disabled).
+    pub min_alive_fraction: f64,
+
     // Memory
     /// If `true`, store per-step ray positions and energies in the result.
     /// Required for `draw_simulation()` but uses ~800 MB for 5000 rays × 2000 steps.
@@ -65,6 +71,7 @@ impl SimulationConfig {
             material_library: None,
             default_acoustic_material: None,
             enable_air_absorption: false,
+            min_alive_fraction: 0.0,
             store_ray_history: false,
         }
     }
