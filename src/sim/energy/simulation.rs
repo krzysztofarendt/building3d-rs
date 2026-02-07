@@ -3,7 +3,7 @@ use crate::Building;
 use super::config::ThermalConfig;
 use super::hvac::{HvacIdealLoads, LumpedThermalModel};
 use super::schedule::InternalGainsProfile;
-use super::solar_bridge::{compute_solar_gains, SolarGainConfig, SolarHourParams};
+use super::solar_bridge::{SolarGainConfig, SolarHourParams, compute_solar_gains};
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance;
 

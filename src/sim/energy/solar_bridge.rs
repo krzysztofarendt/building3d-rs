@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use crate::Building;
 use crate::sim::lighting::result::LightingResult;
 use crate::sim::lighting::solar::SolarPosition;
-use crate::Building;
 
 // Converts lighting simulation results to thermal solar heat gains.
 //
@@ -206,11 +206,7 @@ pub fn compute_solar_gains(
     );
     if !solar_pos.is_above_horizon() {
         // Sun below horizon: only diffuse contribution
-        return compute_diffuse_only(
-            building,
-            params.diffuse_horizontal_irradiance,
-            config,
-        );
+        return compute_diffuse_only(building, params.diffuse_horizontal_irradiance, config);
     }
 
     let sun_dir = solar_pos.to_direction();
@@ -415,9 +411,6 @@ mod tests {
         };
         let gains = compute_solar_gains(&building, &params, &config);
 
-        assert!(
-            gains.abs() < 1e-10,
-            "Zero radiation should give zero gains"
-        );
+        assert!(gains.abs() < 1e-10, "Zero radiation should give zero gains");
     }
 }

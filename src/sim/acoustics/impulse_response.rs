@@ -103,12 +103,13 @@ impl ImpulseResponse {
             }
 
             let energy_density = energy / self.time_resolution; // energy per second within the bin
-            for sample_idx in start_sample..end_sample {
+            for (offset, out) in output[start_sample..end_sample].iter_mut().enumerate() {
+                let sample_idx = start_sample + offset;
                 let sample_t0 = sample_idx as f64 * sample_dt;
                 let sample_t1 = sample_t0 + sample_dt;
                 let overlap = bin_t1.min(sample_t1) - bin_t0.max(sample_t0);
                 if overlap > 0.0 {
-                    output[sample_idx] += energy_density * overlap;
+                    *out += energy_density * overlap;
                 }
             }
         }

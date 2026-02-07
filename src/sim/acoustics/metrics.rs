@@ -209,11 +209,11 @@ mod tests {
         // Exponential decay with different rates per band
         for (i, (bb, band)) in broadband.iter_mut().zip(bands.iter_mut()).enumerate() {
             let t = i as f64 * dt;
-            for b in 0..NUM_OCTAVE_BANDS {
+            for (b, band_energy) in band.iter_mut().enumerate() {
                 // Faster decay at higher frequencies
                 let decay_rate = 10.0 + b as f64 * 2.0;
                 let energy = (-decay_rate * t).exp() * 0.01;
-                band[b] = energy;
+                *band_energy = energy;
                 *bb += energy;
             }
         }

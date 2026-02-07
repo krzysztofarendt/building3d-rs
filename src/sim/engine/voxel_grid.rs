@@ -116,9 +116,27 @@ impl VoxelGrid {
         }
 
         // Step direction: +1 or -1 per axis
-        let step_i: i32 = if direction.dx > 0.0 { 1 } else if direction.dx < 0.0 { -1 } else { 0 };
-        let step_j: i32 = if direction.dy > 0.0 { 1 } else if direction.dy < 0.0 { -1 } else { 0 };
-        let step_k: i32 = if direction.dz > 0.0 { 1 } else if direction.dz < 0.0 { -1 } else { 0 };
+        let step_i: i32 = if direction.dx > 0.0 {
+            1
+        } else if direction.dx < 0.0 {
+            -1
+        } else {
+            0
+        };
+        let step_j: i32 = if direction.dy > 0.0 {
+            1
+        } else if direction.dy < 0.0 {
+            -1
+        } else {
+            0
+        };
+        let step_k: i32 = if direction.dz > 0.0 {
+            1
+        } else if direction.dz < 0.0 {
+            -1
+        } else {
+            0
+        };
 
         // t_max: distance along ray to the next cell boundary for each axis
         // t_delta: distance along ray to traverse one full cell for each axis
@@ -198,10 +216,7 @@ impl VoxelGrid {
             }
 
             // Safety: if all t_max are infinity, we're stuck
-            if t_max_x == f64::INFINITY
-                && t_max_y == f64::INFINITY
-                && t_max_z == f64::INFINITY
-            {
+            if t_max_x == f64::INFINITY && t_max_y == f64::INFINITY && t_max_z == f64::INFINITY {
                 break;
             }
         }

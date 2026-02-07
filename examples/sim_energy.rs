@@ -6,6 +6,7 @@ use building3d::sim::energy::construction::{concrete_wall, double_glazing, insul
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::schedule::InternalGainsProfile;
 use building3d::sim::energy::simulation::run_transient_simulation;
+use building3d::sim::energy::solar_bridge::SolarGainConfig;
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::energy::zone::calculate_heat_balance;
 use building3d::{Building, FloorPlan, RerunConfig, Solid, Zone};
@@ -97,7 +98,11 @@ fn main() -> Result<()> {
     println!();
 
     // Run transient annual simulation
-    let solar_gain_factor = 0.3; // 30% of solar radiation enters as gains
+    let solar_gain_factor = 0.3; // treated as SHGC for glazing surfaces
+    let mut solar_config = SolarGainConfig::new();
+    solar_config.default_shgc = solar_gain_factor;
+    // This example assigns double glazing to `wall-0`, so treat that wall as glazing.
+    solar_config.glazing_patterns = vec!["wall-0".to_string()];
     println!("Running transient annual simulation...");
     let annual = run_transient_simulation(
         &building,
@@ -105,7 +110,7 @@ fn main() -> Result<()> {
         &weather,
         &hvac,
         Some(&gains),
-        solar_gain_factor,
+        Some(&solar_config),
     );
 
     // Print annual results

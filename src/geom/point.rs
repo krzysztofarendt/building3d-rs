@@ -208,7 +208,7 @@ mod tests {
     fn test_add_point_ref_vector() {
         let p = Point::new(1.0, 2.0, 3.0);
         let v = Vector::new(0.1, 0.2, 0.3);
-        let result = p + &v;
+        let result = p + v;
         assert!(result.is_close(&Point::new(1.1, 2.2, 3.3)));
     }
 

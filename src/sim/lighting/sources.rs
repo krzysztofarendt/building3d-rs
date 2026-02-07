@@ -109,9 +109,7 @@ impl LightSource for AreaLight {
     fn total_flux(&self) -> f64 {
         let area = self.width * self.height;
         // Lambertian emitter: flux = pi * sum(intensity) * area
-        (self.intensity[0] + self.intensity[1] + self.intensity[2])
-            * std::f64::consts::PI
-            * area
+        (self.intensity[0] + self.intensity[1] + self.intensity[2]) * std::f64::consts::PI * area
     }
 }
 
