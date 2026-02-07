@@ -6,10 +6,12 @@
 //! - STL: Triangulated mesh format (ASCII/Binary)
 //! - BIM: dotbim format for BIM interoperability
 
+pub mod ac3d;
 pub mod b3d;
 pub mod bim;
 pub mod stl;
 
+pub use ac3d::{Ac3dCoordSystem, read_ac3d};
 pub use b3d::{read_b3d, write_b3d};
 pub use bim::{read_bim, write_bim};
 pub use stl::{StlFormat, read_stl, write_stl};
