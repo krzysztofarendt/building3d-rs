@@ -1,0 +1,39 @@
+# Large downloadable archives
+*.zip
+
+# PDFs (downloadable from source, see SOURCES.md)
+*.pdf
+
+# Binary audio/directivity databases
+informed_sim/RavenDatabase/
+
+# Images and plots
+surface_descriptions/3 Surface descriptions/_img/
+surface_descriptions/3 Surface descriptions/_plots/
+additional_data/4 Additional data/Room acoustic parameters/plots/
+additional_data/4 Additional data/Audio/
+
+# MATLAB scripts (reference only, we don't use them)
+additional_data/4 Additional data/Room acoustic parameters/*.m
+
+# Materials/scenes we don't need yet
+surface_descriptions/3 Surface descriptions/_csv/initial_estimates/
+surface_descriptions/3 Surface descriptions/_csv/fitted_estimates/mat_CR1_*
+surface_descriptions/3 Surface descriptions/_csv/fitted_estimates/mat_CR3_*
+surface_descriptions/3 Surface descriptions/_csv/fitted_estimates/mat_CR4_*
+surface_descriptions/3 Surface descriptions/_descr/mat_CR1.txt
+surface_descriptions/3 Surface descriptions/_descr/mat_CR3.txt
+surface_descriptions/3 Surface descriptions/_descr/mat_CR4.txt
+surface_descriptions/3 Surface descriptions/_descr/mat_MDF*
+surface_descriptions/3 Surface descriptions/_descr/mat_RockFon*
+surface_descriptions/3 Surface descriptions/_descr/mat_Tiles*
+
+# RAVEN input files we don't need yet
+informed_sim/RavenInput/Scene11_*
+informed_sim/RavenInput/Scene08_*
+informed_sim/RavenInput/Scene01_*
+
+# Round-robin variant
+informed_sim/RavenModels/scene9_RR.ac
+informed_sim/RavenModels/scene1_*
+informed_sim/RavenModels/scene8_*
