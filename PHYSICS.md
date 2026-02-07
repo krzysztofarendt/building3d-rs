@@ -11,7 +11,8 @@ acoustics, lighting, and energy simulation modules.
 2. [Acoustics](#2-acoustics)
 3. [Lighting](#3-lighting)
 4. [Energy](#4-energy)
-5. [Potential Improvements](#5-potential-improvements)
+5. [Known Issues and Fix Plan](#5-known-issues-and-fix-plan)
+6. [Potential Improvements](#6-potential-improvements)
 
 ---
 
@@ -47,6 +48,9 @@ The intersection is valid when:
 A barycentric tolerance `tol = 1e-3` is used to prevent rays from slipping through cracks
 between adjacent triangles in a mesh.
 
+> **Known issue**: `tol = 1e-3` is large and can accept hits visibly outside triangles,
+> causing energy leaks and double hits. See [5.1](#51-shared-infrastructure).
+
 ### 1.2 Voxel Grid Spatial Acceleration
 
 A uniform hash grid (`src/sim/engine/voxel_grid.rs`) accelerates ray-surface queries:
@@ -55,6 +59,9 @@ A uniform hash grid (`src/sim/engine/voxel_grid.rs`) accelerates ray-surface que
 - Grid extends 1 cell beyond the scene bounding box
 - Each cell stores indices of polygons whose bounding boxes overlap it
 - Queries return polygon candidates from 3x3x3 = 27 neighboring cells
+
+> **Known issue**: Querying only 27 cells around the ray origin can miss intersections
+> with geometry further along the ray. See [5.1](#51-shared-infrastructure).
 
 ### 1.3 Flat Scene
 
@@ -155,8 +162,11 @@ Three reflection models:
 V_reflected = V_incident - 2 * (V_incident . N) * N
 ```
 
-**Diffuse** (Lambertian): Random direction uniformly sampled in the hemisphere opposite
-to the incident side, generated via rejection sampling.
+**Diffuse** (labeled Lambertian, but currently uniform): Random direction uniformly sampled
+in the hemisphere opposite to the incident side, generated via rejection sampling.
+
+> **Known issue**: Uniform hemisphere sampling is *not* Lambertian. True Lambertian
+> scattering requires cosine-weighted sampling. See [5.2](#52-acoustics).
 
 **Hybrid**: Blends specular and diffuse using the scattering coefficient s:
 ```
@@ -189,6 +199,10 @@ Energy is accumulated into the time bin:
 bin = floor(t / time_resolution)
 ```
 
+> **Known issue**: Collected energy scales with receiver radius, timestep, and check
+> frequency, making results non-comparable across configurations. The receiver should
+> normalize by cross-sectional area and total emitted energy. See [5.2](#52-acoustics).
+
 ### 2.6 Impulse Response
 
 The impulse response is extracted from the receiver histogram. For audio output, the
@@ -199,6 +213,11 @@ uniformly within each bin:
 energy_density = E / time_resolution
 sample_value = energy_density * overlap_duration
 ```
+
+> **Known issue**: This produces an *energy* time series (proportional to pressure^2), not
+> a signed pressure impulse response. It cannot be used for convolution reverb. For metrics
+> (RT, C80, D50) this is acceptable; for audio synthesis, pressure = sqrt(energy) with
+> phase reconstruction would be needed. See [5.2](#52-acoustics).
 
 ### 2.7 Schroeder Backward Integration
 
@@ -277,13 +296,14 @@ Simplified single-modulation-frequency estimate:
 - **Energy-based model**: rays carry scalar energy (or per-band intensity), no phase or
   wave interference. Valid in the geometric acoustics regime (room dimensions >> wavelength).
 - **No diffraction**: rays either hit or miss surfaces; no edge diffraction modeling.
-- **Lambertian diffuse scattering**: uniform hemisphere distribution, no angle-dependent
-  BRDF.
+- **Diffuse scattering is uniform, not Lambertian**: the current implementation samples
+  uniformly on the hemisphere rather than cosine-weighted; this is a different BRDF.
 - **Uniform material properties per polygon**: no spatial variation within a surface.
 - **Omnidirectional receiver**: no listener directivity.
 - **Fixed atmospheric conditions**: air absorption assumes 20 C, 50% RH.
-- **Simplified STI**: uses single modulation frequency (1 Hz) instead of the full
-  14-frequency-per-band IEC 60268-16 method.
+- **Simplified STI-like index**: uses single modulation frequency (1 Hz) instead of the
+  full 14-frequency-per-band IEC 60268-16 method. Uses 6 bands (125-4k Hz); many STI
+  variants include 7 bands up to 8 kHz. Should not be labeled "STI" without qualification.
 
 ---
 
@@ -300,6 +320,10 @@ on building surfaces, with physically-based sky and solar models.
 I(direction) = [I_R, I_G, I_B]     (constant in all directions)
 total_flux = (I_R + I_G + I_B) * 4*pi / 3
 ```
+
+> **Known issue**: The flux formula is incorrect. For an isotropic source, `Phi = 4*pi*I`.
+> The `/3` factor has no physical basis. The constructor `I = lumens / (4*pi)` is correct,
+> but `total_flux()` is inconsistent with it. See [5.3](#53-lighting).
 
 Constructor from total lumens: `I_per_channel = lumens / (4*pi)`.
 
@@ -346,6 +370,19 @@ For each light source, `num_rays` rays are traced through the scene:
 
 3. **Compute illuminance**: `illuminance[surface] = flux[surface] / area[surface]` (lux)
 
+> **Known issue**: The forward tracer accumulates "flux" at hit polygons but does not
+> apply inverse-square distance attenuation from point lights or a cos(theta) incidence
+> factor. As written, a point light does not dim with distance. The ray-based flux
+> distribution should inherently handle 1/r^2 via solid angle sampling, but the per-ray
+> energy initialization and accumulation need to be verified for dimensional consistency.
+> See [5.3](#53-lighting).
+>
+> **Known issue**: RGB channels are labeled as "lumens" and "lux" (photometric units),
+> but are treated as independent radiometric channels. Photometric quantities are
+> single-valued (weighted by V(lambda)). The system should either adopt radiometric
+> units (W, W/m^2) throughout, or define an explicit RGB-to-photometric conversion.
+> See [5.3](#53-lighting).
+
 ### 3.3 Backward Ray Tracing
 
 Sensor-centric calculation for daylight analysis:
@@ -363,6 +400,12 @@ For each sensor on a surface with normal **N**:
    ```
 
 The `|direction . N|` factor is Lambert's cosine law for diffuse surface reception.
+
+> **Known issue**: The sky model returns luminance L (cd/m^2), but the code variable is
+> named "intensity" (cd). The integrand should be luminance, and the Monte Carlo estimator
+> `E = (2*pi/N) * sum(L * cos(theta))` is correct only when using uniform hemisphere
+> sampling (pdf = 1/(2*pi)). Currently this appears dimensionally consistent, but the
+> naming should be corrected. See [5.3](#53-lighting).
 
 ### 3.4 Solar Position (Spencer 1971)
 
@@ -395,6 +438,10 @@ sin(alt) = sin(lat)*sin(delta) + cos(lat)*cos(delta)*cos(h)
 cos(azi) = (sin(delta)*cos(lat) - cos(delta)*sin(lat)*cos(h)) / cos(alt)
 if h > 0: azi = 360 - azi
 ```
+
+> **Known issue**: Using only `cos(azi)` with a sign flip is numerically fragile and can
+> fail near the poles or at certain hour angles. An `atan2`-based computation using both
+> sin and cos components would be more robust. See [5.3](#53-lighting).
 
 **Direction vector** (North = +Y, East = +X, Up = +Z):
 ```
@@ -555,6 +602,10 @@ C = V * 50000     [J/K]
 
 The factor 50 kJ/(m^3*K) represents a medium-weight construction estimate.
 
+> **Note**: This is a tuning parameter with large influence on dynamics. Typical values
+> range from ~30 kJ/(m^3*K) (lightweight) to ~80 kJ/(m^3*K) (heavyweight). Should be
+> documented as such and ideally derived from actual construction layers.
+
 **Temperature evolution** (explicit Euler):
 ```
 Q_losses = (UA_total + Infiltration_cond) * (T_zone - T_outdoor)
@@ -585,6 +636,12 @@ The HVAC model maintains zone temperature between heating and cooling setpoints:
 Q_required = C * (T_setpoint - T_free_floating) / dt
 ```
 
+> **Known issue**: This only accounts for changing the lumped node temperature, not the
+> ongoing losses/gains during the same timestep. The correct formulation solves for Q_hvac
+> such that T(t+dt) = T_setpoint:
+> `Q_hvac = C*(T_set - T)/dt + (UA + Inf_cond)*(T_set - T_out) - Q_gains`
+> The current approach can under/over-shoot. See [5.4](#54-energy).
+
 **Delivered power** (clamped to capacity):
 ```
 Q_delivered = min(|Q_required|, Q_max_capacity)
@@ -612,6 +669,16 @@ where:
 
 Glazing surfaces are identified by pattern matching on path names ("window", "glazing",
 "glass").
+
+> **Known issue**: This is the biggest physics mistake in the energy module. Thermal solar
+> gains depend on solar irradiance (W/m^2) and glazing SHGC, not on visible-light lumens.
+> Converting lumens to watts via a fixed efficacy is unreliable because the lighting engine
+> is a visible-light estimator, not a full-spectrum radiometric one. Since EPW data already
+> provides direct/diffuse radiation, solar gains should be computed directly from weather
+> data + sun geometry + window orientation + SHGC. See [5.4](#54-energy).
+>
+> **Note**: Window detection by name pattern is fragile. Should use an explicit material
+> flag or construction type property.
 
 ### 4.6 Weather Data
 
@@ -679,9 +746,286 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
 
 ---
 
-## 5. Potential Improvements
+## 5. Known Issues and Fix Plan
 
-### 5.1 Acoustics
+Issues are grouped by severity: **bugs** (produce incorrect results and must be fixed),
+**biases** (produce results that depend on numerical parameters in non-physical ways), and
+**labeling** (code works but documentation or naming is misleading).
+
+### 5.1 Shared Infrastructure
+
+#### BUG: Voxel grid misses distant intersections
+
+**Problem**: `find_nearby(pos)` returns only the 27 cells around the query point. A ray
+can intersect geometry many cells away, so this misses valid hits unless the query point
+is already near the intersection.
+
+**Fix**: Implement 3D-DDA ray marching (Amanatides-Woo algorithm) that steps through
+grid cells along the ray direction until a hit is found or the ray exits the grid.
+
+**Files**: `src/sim/engine/voxel_grid.rs`, `src/sim/engine/mod.rs`
+
+**Effort**: Medium. The voxel grid already stores cell-to-polygon mappings; the change is
+in the query strategy (replace single-point lookup with ray-march loop).
+
+#### BIAS: Barycentric tolerance too large
+
+**Problem**: `tol = 1e-3` accepts hits visibly outside triangles, causing energy leaks
+(double-counted hits) and wrong normals near edges.
+
+**Fix (option A)**: Reduce tolerance to `1e-6` or scale it relative to triangle size.
+
+**Fix (option B)**: Switch to a watertight ray-triangle test (Woop et al. 2013) that
+guarantees no cracks without tolerance hacking.
+
+**Files**: `src/geom/ray.rs` (constant `BARY_TOLERANCE` in `src/sim/engine/mod.rs`)
+
+**Effort**: Low for option A, medium for option B.
+
+### 5.2 Acoustics
+
+#### BIAS: Diffuse reflection is uniform, not Lambertian
+
+**Problem**: The diffuse reflection model samples directions uniformly on the hemisphere.
+True Lambertian scattering has a cosine-weighted distribution (`pdf = cos(theta) / pi`),
+which concentrates energy near the surface normal.
+
+**Fix**: Replace rejection sampling with Malley's method:
+1. Sample a uniform disk: `r = sqrt(u1)`, `theta = 2*pi*u2`
+2. Project onto hemisphere: `x = r*cos(theta)`, `y = r*sin(theta)`, `z = sqrt(1 - r^2)`
+3. Transform to surface-local frame
+
+**Files**: `src/sim/engine/reflection.rs` (Diffuse struct)
+
+**Effort**: Low. Drop-in replacement for the sampling function.
+
+#### BIAS: Receiver energy depends on radius and timestep
+
+**Problem**: The spherical receiver adds full ray energy when the ray position falls inside
+the sphere. This makes collected energy scale with radius (larger sphere catches more),
+timestep (more checks per ray), and ray count in non-physical ways.
+
+**Fix**: Normalize by receiver cross-section and emission:
+```
+E_normalized = E_raw / (pi * r^2) * (4*pi / N_rays)
+```
+This converts raw collected energy to an estimate of energy density (W/m^2) at the
+receiver location, independent of receiver size and ray count.
+
+**Files**: `src/sim/acoustics/receiver.rs`
+
+**Effort**: Low. Add normalization constants to the Receiver struct and apply at
+recording time or as a post-processing step.
+
+#### LABELING: Impulse response is energy, not pressure
+
+**Problem**: The "impulse response" output is an energy time series (proportional to
+pressure^2). It cannot be used for convolution reverb, which requires signed pressure.
+
+**Fix (minimal)**: Rename to "energy decay curve" or "energy impulse response" in the
+API and documentation. Add a note that for metrics (RT, C80, D50) this is appropriate.
+
+**Fix (full)**: For audio output, take `sqrt(energy)` and assign random sign per bin, or
+implement an image-source method for early specular paths to get signed pressure. This is
+a larger effort and may not be needed if the primary use case is metrics.
+
+**Files**: `src/sim/acoustics/impulse_response.rs`
+
+**Effort**: Low for labeling, high for full pressure IR.
+
+#### LABELING: STI should be called "STI-like index"
+
+**Problem**: The simplified STI uses 1 modulation frequency (instead of 14 per IEC
+60268-16), no noise/masking, and 6 bands (missing 8 kHz).
+
+**Fix**: Rename the function/metric to `sti_approximate` or `sti_like_index`. Document
+the limitations in the docstring and here.
+
+**Files**: `src/sim/acoustics/metrics.rs`
+
+**Effort**: Trivial.
+
+### 5.3 Lighting
+
+#### BUG: Point light total flux formula is wrong
+
+**Problem**: `total_flux = (I_R + I_G + I_B) * 4*pi / 3`. For an isotropic source,
+luminous flux is `Phi = 4*pi * I` (in candela). The `/3` divisor for averaging RGB
+channels has no physical basis and makes `total_flux()` inconsistent with the constructor
+`I = lumens / (4*pi)`.
+
+**Fix**: Change to `total_flux = 4*pi * (I_R + I_G + I_B)` if treating each channel as
+an independent intensity, or `total_flux = 4*pi * I_mean` with `I_mean = (I_R + I_G + I_B) / 3`
+if a single photometric value is desired. The choice depends on the unit convention
+adopted (see next issue).
+
+**Files**: `src/sim/lighting/sources.rs`
+
+**Effort**: Trivial (one-line change), but must be coordinated with the unit convention fix.
+
+#### BUG: RGB photometric/radiometric unit confusion
+
+**Problem**: The system labels RGB channels as "lumens" and "lux" (photometric, human-eye
+weighted, single-valued), but treats them as three independent channels (radiometric).
+These are fundamentally different physical quantities.
+
+**Fix (recommended)**: Adopt radiometric units throughout:
+- Light source intensity: W/sr per channel (spectral radiant intensity)
+- Surface quantity: W/m^2 per channel (spectral irradiance)
+- Label outputs as "irradiance [W/m^2]" not "illuminance [lux]"
+- If photometric output is needed, add an explicit RGB-to-luminance conversion:
+  `L = 0.2126*R + 0.7152*G + 0.0722*B` (sRGB luminance weights)
+
+**Files**: `src/sim/lighting/sources.rs`, `src/sim/lighting/result.rs`,
+`src/sim/lighting/sensor.rs`, `src/sim/lighting/config.rs`, `src/sim/lighting/backward.rs`
+
+**Effort**: Medium. Mostly renaming and docstring changes; core math stays the same if
+treating channels as independent spectral bands.
+
+#### BUG: Missing inverse-square verification for point lights
+
+**Problem**: For point lights, irradiance on a surface should fall as 1/r^2 with a
+cos(theta) incidence factor. The forward tracer initializes per-ray energy as
+`intensity / num_rays` and accumulates it at hit polygons. In a correctly implemented
+Monte Carlo ray tracer, the 1/r^2 falloff should emerge naturally from the solid angle
+subtended by each ray — but this needs verification.
+
+**Fix**: Add a unit test that places a point light at known distance from a surface and
+verifies that accumulated illuminance matches `I * cos(theta) / r^2`. If the test fails,
+the per-ray energy initialization or accumulation formula needs correction.
+
+**Files**: `src/sim/lighting/simulation.rs` (test), `src/sim/lighting/sources.rs`
+
+**Effort**: Low for the test; fix depends on test outcome.
+
+#### BIAS: Solar azimuth numerically fragile
+
+**Problem**: Computing azimuth from `cos(azi)` alone loses quadrant information. The
+`if h > 0` correction is not robust for all latitude/declination combinations.
+
+**Fix**: Use `atan2(sin_azi, cos_azi)`:
+```
+sin_azi = -cos(delta) * sin(h) / cos(alt)
+cos_azi = (sin(delta)*cos(lat) - cos(delta)*sin(lat)*cos(h)) / cos(alt)
+azi = atan2(sin_azi, cos_azi)
+if azi < 0: azi += 2*pi
+```
+
+**Files**: `src/sim/lighting/solar.rs`
+
+**Effort**: Low.
+
+#### LABELING: Backward tracer variable naming
+
+**Problem**: The backward tracer calls sky luminance (cd/m^2) "intensity" (cd). The
+Monte Carlo estimator is dimensionally correct (`E = 2*pi/N * sum(L*cos_theta)`), but
+the naming is confusing.
+
+**Fix**: Rename `intensity` to `luminance` (or `radiance` if switching to radiometric
+units) in the backward tracer code and documentation.
+
+**Files**: `src/sim/lighting/backward.rs`
+
+**Effort**: Trivial.
+
+### 5.4 Energy
+
+#### BUG: Solar gains computed from lighting lumens instead of solar radiation
+
+**Problem**: The `SolarBridge` converts visible-light lumens from the lighting engine to
+thermal watts via a fixed luminous efficacy (120 lm/W), then applies SHGC. This is
+unreliable because:
+- The lighting engine models visible light only, not the full solar spectrum
+- Luminous efficacy varies with sky conditions and is not a fixed constant
+- EPW weather data already provides direct normal and diffuse horizontal radiation in W/m^2
+
+**Fix**: Compute solar gains directly from weather data:
+1. For each window polygon, compute incident solar radiation from EPW direct normal
+   irradiance (using sun position and surface orientation via `cos(theta_incidence)`) plus
+   diffuse component (using a tilt factor or isotropic sky assumption)
+2. Multiply by window area and SHGC
+3. Remove the luminous efficacy conversion entirely
+
+```
+Q_solar_window = (DNI * cos(theta_inc) + DHI * tilt_factor) * A_window * SHGC
+```
+
+This decouples solar thermal gains from the lighting simulation entirely.
+
+**Files**: `src/sim/energy/solar_bridge.rs`, `src/sim/energy/simulation.rs`
+
+**Effort**: Medium. The solar position calculation already exists; needs surface-normal
+dot product with sun direction, plus EPW irradiance lookup per timestep.
+
+#### BIAS: HVAC load calculation ignores concurrent losses
+
+**Problem**: `Q_required = C * (T_setpoint - T_free) / dt` only accounts for changing the
+node temperature, not the ongoing transmission and infiltration losses during the timestep.
+
+**Fix**: Solve for Q_hvac that achieves T_setpoint at end of timestep:
+```
+Q_hvac = C * (T_set - T_zone) / dt + (UA + Inf_cond) * (T_set - T_out) - Q_gains
+```
+
+This is an implicit solution that accounts for the fact that as the zone heats up, losses
+increase.
+
+**Files**: `src/sim/energy/hvac.rs`
+
+**Effort**: Low (change the Q_required formula).
+
+#### LABELING: Window detection by name pattern
+
+**Problem**: Glazing surfaces are identified by substring matching ("window", "glazing",
+"glass") in path names. This is fragile and will misidentify surfaces.
+
+**Fix**: Add an `is_glazing: bool` or `surface_type: SurfaceType` field to the material
+or construction system. Use this flag for solar gain calculations instead of name matching.
+
+**Files**: `src/sim/energy/solar_bridge.rs`, `src/sim/materials.rs`
+
+**Effort**: Low-medium (add field, update construction presets, update solar bridge).
+
+### 5.5 Prioritized Fix Order
+
+Issues are ordered by impact on result correctness:
+
+| Priority | Issue | Severity | Effort |
+|----------|-------|----------|--------|
+| 1 | Solar gains from weather data, not lumens | BUG | Medium |
+| 2 | Point light total flux formula | BUG | Trivial |
+| 3 | RGB unit convention (radiometric) | BUG | Medium |
+| 4 | Verify inverse-square for point lights | BUG | Low |
+| 5 | Voxel grid ray marching (3D-DDA) | BUG | Medium |
+| 6 | Cosine-weighted diffuse reflection | BIAS | Low |
+| 7 | Receiver normalization | BIAS | Low |
+| 8 | HVAC concurrent-loss formula | BIAS | Low |
+| 9 | Solar azimuth atan2 | BIAS | Low |
+| 10 | Barycentric tolerance reduction | BIAS | Low |
+| 11 | Rename STI to STI-like | LABELING | Trivial |
+| 12 | Rename IR to energy IR | LABELING | Trivial |
+| 13 | Backward tracer variable names | LABELING | Trivial |
+| 14 | Window detection by material flag | LABELING | Low-medium |
+| 15 | Document 1R1C capacity as tuning param | LABELING | Trivial |
+
+### 5.6 Acceptable Simplifications
+
+The following are deliberate simplifications that do not need fixing, but should remain
+clearly documented:
+
+- Energy-only acoustics (no phase/interference) -- standard for geometric room acoustics
+- No edge diffraction -- acceptable at mid/high frequencies
+- Diffuse-only lighting reflections -- acceptable for matte interiors
+- 1R1C zone thermal model -- standard simplified method (ISO 13790)
+- Steady-state option for quick estimates
+- Fixed atmospheric conditions for air absorption
+- No latent loads in energy model
+
+---
+
+## 6. Potential Improvements
+
+### 6.1 Acoustics
 
 - **Edge diffraction**: Add UTD (Uniform Theory of Diffraction) or Biot-Tolstoy-Medwin
   diffraction around edges, important for low frequencies and barriers.
@@ -695,7 +1039,7 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
   interference effects.
 - **Listener directivity**: HRTF-weighted receiver for binaural metrics.
 
-### 5.2 Lighting
+### 6.2 Lighting
 
 - **Specular and glossy reflections**: Add a Cook-Torrance or Phong BRDF for materials
   like polished metal and glass.
@@ -709,7 +1053,7 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
   solar time directly).
 - **Participating media**: Volumetric scattering for fog, smoke, or hazy conditions.
 
-### 5.3 Energy
+### 6.3 Energy
 
 - **Multi-zone air flow**: Implement pressure network or CFD coupling for inter-zone
   air movement.
