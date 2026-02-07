@@ -291,4 +291,50 @@ mod tests {
         let angle = vx.angle(&vxy).unwrap();
         assert!(angle.is_close(deg45));
     }
+
+    #[test]
+    fn test_angle_zero_vector() {
+        let v = Vector::new(1., 0., 0.);
+        let zero = Vector::new(0., 0., 0.);
+        assert!(v.angle(&zero).is_none());
+        assert!(zero.angle(&v).is_none());
+    }
+
+    #[test]
+    fn test_add_f64() {
+        let v = Vector::new(1., 2., 3.);
+        let result = v + 10.;
+        assert!(result.is_close(&Vector::new(11., 12., 13.)));
+    }
+
+    #[test]
+    fn test_sub_f64() {
+        let v = Vector::new(10., 20., 30.);
+        let result = v - 5.;
+        assert!(result.is_close(&Vector::new(5., 15., 25.)));
+    }
+
+    #[test]
+    fn test_f64_sub_vector() {
+        let v = Vector::new(1., 2., 3.);
+        let result = 10. - v;
+        assert!(result.is_close(&Vector::new(9., 8., 7.)));
+    }
+
+    #[test]
+    fn test_f64_add_vector() {
+        let v = Vector::new(1., 2., 3.);
+        let result = 10. + v;
+        assert!(result.is_close(&Vector::new(11., 12., 13.)));
+    }
+
+    #[test]
+    fn test_display() {
+        let v = Vector::new(1.0, 2.0, 3.0);
+        let s = format!("{}", v);
+        assert_eq!(s, "Vector(1.00, 2.00, 3.00)");
+
+        let s4 = format!("{:.4}", v);
+        assert_eq!(s4, "Vector(1.0000, 2.0000, 3.0000)");
+    }
 }

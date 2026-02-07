@@ -21,6 +21,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_are_vectors_close_empty() {
+        assert!(are_vectors_close(&[]));
+    }
+
+    #[test]
+    fn test_are_vectors_not_close() {
+        let v0 = Vector::new(1.0, 0.0, 0.0);
+        let v1 = Vector::new(0.0, 1.0, 0.0);
+        assert!(!are_vectors_close(&[v0, v1]));
+    }
+
+    #[test]
     fn test_are_vectors_close() {
         let v0 = Vector::new(1.1, 2.2, 3.3);
         let v1 = Vector::new(1.1, 2.2, 3.3);

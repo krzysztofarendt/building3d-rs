@@ -44,6 +44,7 @@ pub fn are_bboxes_overlapping(min1: Point, max1: Point, min2: Point, max2: Point
     true
 }
 
+/// Returns the bounding box of a set of points.
 pub fn bounding_box(pts: &[Point]) -> (Point, Point) {
     if pts.is_empty() {
         let zero = Point::new(0.0, 0.0, 0.0);
@@ -79,4 +80,73 @@ pub fn bounding_box(pts: &[Point]) -> (Point, Point) {
     }
 
     (Point::new(xmin, ymin, zmin), Point::new(xmax, ymax, zmax))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_point_inside_bbox_empty() {
+        assert!(!is_point_inside_bbox(Point::new(0.0, 0.0, 0.0), &[]));
+    }
+
+    #[test]
+    fn test_is_point_inside_bbox() {
+        let pts = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(2.0, 2.0, 2.0),
+        ];
+        assert!(is_point_inside_bbox(Point::new(1.0, 1.0, 1.0), &pts));
+        assert!(!is_point_inside_bbox(Point::new(3.0, 1.0, 1.0), &pts));
+    }
+
+    #[test]
+    fn test_is_point_strictly_inside_bbox() {
+        let pmin = Point::new(0.0, 0.0, 0.0);
+        let pmax = Point::new(2.0, 2.0, 2.0);
+        // Interior point
+        assert!(is_point_strictly_inside_bbox(Point::new(1.0, 1.0, 1.0), pmin, pmax));
+        // On boundary - not strictly inside
+        assert!(!is_point_strictly_inside_bbox(Point::new(0.0, 1.0, 1.0), pmin, pmax));
+        // Outside
+        assert!(!is_point_strictly_inside_bbox(Point::new(3.0, 1.0, 1.0), pmin, pmax));
+    }
+
+    #[test]
+    fn test_bounding_box_empty() {
+        let (pmin, pmax) = bounding_box(&[]);
+        assert!((pmin.x - 0.0).abs() < 1e-10);
+        assert!((pmax.x - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_bounding_box() {
+        let pts = vec![
+            Point::new(-1.0, 2.0, 0.5),
+            Point::new(3.0, -1.0, 4.0),
+            Point::new(0.0, 0.0, 0.0),
+        ];
+        let (pmin, pmax) = bounding_box(&pts);
+        assert!((pmin.x - (-1.0)).abs() < 1e-10);
+        assert!((pmin.y - (-1.0)).abs() < 1e-10);
+        assert!((pmin.z - 0.0).abs() < 1e-10);
+        assert!((pmax.x - 3.0).abs() < 1e-10);
+        assert!((pmax.y - 2.0).abs() < 1e-10);
+        assert!((pmax.z - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_are_bboxes_overlapping() {
+        let min1 = Point::new(0.0, 0.0, 0.0);
+        let max1 = Point::new(2.0, 2.0, 2.0);
+        let min2 = Point::new(1.0, 1.0, 1.0);
+        let max2 = Point::new(3.0, 3.0, 3.0);
+        assert!(are_bboxes_overlapping(min1, max1, min2, max2));
+
+        // Non-overlapping
+        let min3 = Point::new(5.0, 5.0, 5.0);
+        let max3 = Point::new(6.0, 6.0, 6.0);
+        assert!(!are_bboxes_overlapping(min1, max1, min3, max3));
+    }
 }

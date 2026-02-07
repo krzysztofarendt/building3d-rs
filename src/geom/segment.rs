@@ -618,4 +618,128 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_degenerate_segment_both_same() {
+        // Both endpoints are the same point
+        let p = Point::new(1.0, 1.0, 1.0);
+        let q = Point::new(1.0, 1.0, 1.0);
+
+        // Two identical points
+        let result = segment_intersection(p, q, p, q);
+        assert!(matches!(result, SegmentIntersection::Point(_)));
+
+        // Point on a segment
+        let p1 = Point::new(0.0, 0.0, 0.0);
+        let p2 = Point::new(2.0, 0.0, 0.0);
+        let pt = Point::new(1.0, 0.0, 0.0);
+        let result = segment_intersection(pt, pt, p1, p2);
+        assert!(matches!(result, SegmentIntersection::Point(_)));
+    }
+
+    #[test]
+    fn test_point_segment_on_another_segment() {
+        // First segment is a point (degenerate), on the second segment
+        let pt = Point::new(0.5, 0.0, 0.0);
+        let p1 = Point::new(0.0, 0.0, 0.0);
+        let p2 = Point::new(1.0, 0.0, 0.0);
+        let result = segment_intersection(pt, pt, p1, p2);
+        match result {
+            SegmentIntersection::Point(p) => {
+                assert!(p.is_close(&pt));
+            }
+            _ => panic!("Expected Point intersection, got {:?}", result),
+        }
+
+        // Second segment is a point on the first
+        let result = segment_intersection(p1, p2, pt, pt);
+        match result {
+            SegmentIntersection::Point(p) => {
+                assert!(p.is_close(&pt));
+            }
+            _ => panic!("Expected Point intersection, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_point_not_on_segment() {
+        // Point not on segment
+        let pt = Point::new(5.0, 5.0, 5.0);
+        let p1 = Point::new(0.0, 0.0, 0.0);
+        let p2 = Point::new(1.0, 0.0, 0.0);
+        let result = segment_intersection(pt, pt, p1, p2);
+        assert!(matches!(result, SegmentIntersection::None));
+    }
+
+    #[test]
+    fn test_distance_point_to_degenerate_segment() {
+        // Segment is a single point
+        let pt = Point::new(3.0, 4.0, 0.0);
+        let seg_pt = Point::new(0.0, 0.0, 0.0);
+        let dist = distance_point_to_segment(pt, seg_pt, seg_pt);
+        assert!(dist.is_close(5.0)); // distance from (3,4,0) to origin
+    }
+
+    #[test]
+    fn test_distance_point_to_degenerate_line() {
+        // Line defined by same point
+        let pt = Point::new(3.0, 4.0, 0.0);
+        let line_pt = Point::new(0.0, 0.0, 0.0);
+        let dist = distance_point_to_line(pt, line_pt, line_pt);
+        assert!(dist.is_close(5.0));
+    }
+
+    #[test]
+    fn test_closest_point_on_degenerate_line() {
+        let pt = Point::new(5.0, 5.0, 5.0);
+        let line_pt = Point::new(1.0, 1.0, 1.0);
+        let closest = closest_point_on_line(pt, line_pt, line_pt);
+        assert!(closest.is_close(&line_pt));
+    }
+
+    #[test]
+    fn test_closest_point_on_degenerate_segment() {
+        let pt = Point::new(5.0, 5.0, 5.0);
+        let seg_pt = Point::new(1.0, 1.0, 1.0);
+        let closest = closest_point_on_segment(pt, seg_pt, seg_pt);
+        assert!(closest.is_close(&seg_pt));
+    }
+
+    #[test]
+    fn test_segment_coplanar_with_polygon() -> anyhow::Result<()> {
+        // Segment lies in the polygon's plane and endpoint is inside
+        let pts = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(2.0, 2.0, 0.0),
+            Point::new(0.0, 2.0, 0.0),
+        ];
+        let polygon = Polygon::new("square", pts, None)?;
+
+        // Segment in the same plane, with start inside the polygon
+        let seg_start = Point::new(1.0, 1.0, 0.0);
+        let seg_end = Point::new(3.0, 1.0, 0.0);
+        let result = segment_crosses_polygon(seg_start, seg_end, &polygon);
+        assert!(result.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_second_segment_is_point_not_on_first() {
+        // Second segment is a point, not on the first segment
+        let p1 = Point::new(0.0, 0.0, 0.0);
+        let p2 = Point::new(1.0, 0.0, 0.0);
+        let pt = Point::new(0.5, 5.0, 0.0); // Not on segment
+        let result = segment_intersection(p1, p2, pt, pt);
+        assert!(matches!(result, SegmentIntersection::None));
+    }
+
+    #[test]
+    fn test_collinear_overlap_degenerate_d1() {
+        // Edge case: first segment is zero-length but points are different addresses
+        let p = Point::new(1.0, 0.0, 0.0);
+        let result = segment_intersection(p, p, p, p);
+        assert!(matches!(result, SegmentIntersection::Point(_)));
+    }
 }

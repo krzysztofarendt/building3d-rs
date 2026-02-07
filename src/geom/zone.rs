@@ -293,4 +293,39 @@ mod tests {
         assert!(max.is_close(&Point::new(3.0, 3.0, 3.0)));
         Ok(())
     }
+
+    #[test]
+    fn test_get_solid() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let zone = Zone::new("zone1", vec![s1])?;
+
+        assert!(zone.get_solid("box1").is_some());
+        assert_eq!(zone.get_solid("box1").unwrap().name, "box1");
+        assert!(zone.get_solid("nonexistent").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_point_at_boundary() -> Result<()> {
+        let s1 = Solid::from_box(2.0, 2.0, 2.0, None, "box1")?;
+        let zone = Zone::new("zone1", vec![s1])?;
+
+        // On surface
+        assert!(zone.is_point_at_boundary(Point::new(0.0, 1.0, 1.0)));
+        // Not on surface (outside)
+        assert!(!zone.is_point_at_boundary(Point::new(5.0, 5.0, 5.0)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_zone_rotate() -> Result<()> {
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, None, "box1")?;
+        let mut zone = Zone::new("zone1", vec![s1])?;
+
+        // Just verify rotation doesn't panic and structure is preserved
+        zone.rotate(std::f64::consts::PI / 2., &Vector::new(0., 0., 1.));
+        assert_eq!(zone.solids().len(), 1);
+        assert_eq!(zone.walls().len(), 6);
+        Ok(())
+    }
 }

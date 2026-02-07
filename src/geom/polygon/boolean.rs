@@ -504,4 +504,53 @@ mod tests {
         assert_eq!(result.len(), 0);
         assert_eq!(result.total_area(), 0.0);
     }
+
+    #[test]
+    fn test_polygon_difference_hole() -> Result<()> {
+        // Large square with small square inside -> hole
+        let large = make_square(4.0, (0.0, 0.0))?;
+        let small = make_square(1.0, (1.5, 1.5))?;
+
+        let result = polygon_difference(&large, &small)?;
+        // Should have one polygon (with hole bridge)
+        assert_eq!(result.len(), 1);
+        // The bridge technique creates a polygon that includes both outer and hole vertices
+        // The resulting area should be less than the original (hole removed)
+        let area = result.total_area();
+        assert!(area < large.area(), "Area should be less than original");
+        assert!(area > 0.0, "Area should be positive");
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygon_difference_poly1_inside_poly2() -> Result<()> {
+        // poly1 entirely inside poly2 -> empty result
+        let small = make_square(1.0, (1.0, 1.0))?;
+        let large = make_square(4.0, (0.0, 0.0))?;
+
+        let result = polygon_difference(&small, &large)?;
+        // poly1 is entirely inside poly2, remaining area should be ~0
+        assert!(result.is_empty() || result.total_area() < 0.1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygon_difference_non_coplanar_error() {
+        let pts1 = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(1.0, 1.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+        ];
+        let pts2 = vec![
+            Point::new(0.0, 0.0, 1.0),
+            Point::new(1.0, 0.0, 1.0),
+            Point::new(1.0, 0.0, 2.0),
+            Point::new(0.0, 0.0, 2.0),
+        ];
+        let poly1 = Polygon::new("p1", pts1, None).unwrap();
+        let poly2 = Polygon::new("p2", pts2, None).unwrap();
+
+        assert!(polygon_difference(&poly1, &poly2).is_err());
+    }
 }

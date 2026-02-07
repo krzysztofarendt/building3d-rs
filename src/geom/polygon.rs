@@ -890,4 +890,66 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_display_default_precision() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(0.5, 1., 0.),
+        ];
+        let poly = Polygon::new("tri", pts, None)?;
+        let s = format!("{}", poly);
+        assert!(s.starts_with("Polygon(\"tri\", "));
+        assert!(s.ends_with(")"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_custom_precision() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(0.5, 1., 0.),
+        ];
+        let poly = Polygon::new("tri", pts, None)?;
+        let s = format!("{:.4}", poly);
+        assert!(s.starts_with("Polygon(\"tri\", "));
+        assert!(s.ends_with(")"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_uid() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(0.5, 1., 0.),
+        ];
+        let poly = Polygon::new("tri", pts, None)?;
+        let uid = poly.uid();
+        assert!(!uid.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_flip() -> Result<()> {
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+            Point::new(0., 1., 0.),
+        ];
+        let poly = Polygon::new("square", pts, None)?;
+        let flipped = poly.flip("flipped")?;
+
+        assert_eq!(flipped.name, "flipped");
+        // Normal should be reversed
+        let dot = poly.vn.dot(&flipped.vn);
+        assert!(dot.is_close(-1.0));
+        // Area should be preserved
+        assert!(poly.area().is_close(flipped.area()));
+
+        Ok(())
+    }
 }
