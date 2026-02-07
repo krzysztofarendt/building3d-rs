@@ -171,6 +171,16 @@ pub fn triangulate_with_holes(
     vn: Vector,
     num_try: usize,
 ) -> Result<(Vec<Point>, Vec<TriangleIndex>)> {
+    if outer.len() < 3 {
+        return Err(anyhow!("Outer boundary must have at least 3 points"));
+    }
+
+    for (i, hole) in holes.iter().enumerate() {
+        if hole.len() < 3 {
+            return Err(anyhow!("Hole boundary {} must have at least 3 points", i));
+        }
+    }
+
     if holes.is_empty() {
         return triangulate(outer, vn, num_try);
     }
@@ -186,7 +196,7 @@ pub fn triangulate_with_holes(
         .collect();
 
     // Merge holes into outer boundary in 2D
-    let merged_2d = merge_holes_into_boundary(outer_2d, holes_2d);
+    let merged_2d = merge_holes_into_boundary(outer_2d, holes_2d)?;
 
     // Unproject back to 3D
     let merged_3d: Vec<Point> = merged_2d
@@ -257,9 +267,9 @@ fn is_point_in_triangle_2d(
 fn merge_holes_into_boundary(
     mut outer: Vec<(f64, f64)>,
     holes: Vec<Vec<(f64, f64)>>,
-) -> Vec<(f64, f64)> {
+) -> Result<Vec<(f64, f64)>> {
     if holes.is_empty() {
-        return outer;
+        return Ok(outer);
     }
 
     // For each hole, find index of rightmost vertex and the x value
@@ -300,7 +310,9 @@ fn merge_holes_into_boundary(
         }
 
         let Some(ix) = best_ix else {
-            continue; // hole is outside outer boundary (shouldn't happen for valid input)
+            return Err(anyhow!(
+                "Failed to bridge hole into outer boundary (no ray intersection found)"
+            ));
         };
         let edge_idx = best_edge_idx.unwrap();
 
@@ -366,7 +378,7 @@ fn merge_holes_into_boundary(
         outer = new_outer;
     }
 
-    outer
+    Ok(outer)
 }
 
 #[cfg(test)]
@@ -583,10 +595,37 @@ mod tests {
         let outer = vec![(0., 0.), (4., 0.), (4., 4.), (0., 4.)];
         // 2x2 hole
         let hole = vec![(1., 1.), (1., 3.), (3., 3.), (3., 1.)];
-        let merged = merge_holes_into_boundary(outer.clone(), vec![hole.clone()]);
+        let merged = merge_holes_into_boundary(outer.clone(), vec![hole.clone()]).unwrap();
 
         // Merged boundary: outer(4) + hole(4) + 1 (return to hole start) + 1 (bridge back) = 10
         // = outer vertices + hole vertices + 2 bridge duplicates
         assert_eq!(merged.len(), outer.len() + hole.len() + 2);
+    }
+
+    #[test]
+    fn test_triangulate_with_holes_rejects_empty_outer() {
+        let outer: Vec<Point> = vec![];
+        let vn = Vector::new(0., 0., 1.);
+        assert!(triangulate_with_holes(outer, vec![], vn, 0).is_err());
+    }
+
+    #[test]
+    fn test_triangulate_with_holes_errors_on_unbridgeable_hole() {
+        // Outer square
+        let outer = vec![
+            Point::new(0., 0., 0.),
+            Point::new(4., 0., 0.),
+            Point::new(4., 4., 0.),
+            Point::new(0., 4., 0.),
+        ];
+        // Hole completely to the right of the outer boundary -> ray never intersects
+        let hole = vec![
+            Point::new(10., 1., 0.),
+            Point::new(10., 2., 0.),
+            Point::new(11., 2., 0.),
+            Point::new(11., 1., 0.),
+        ];
+        let vn = Vector::new(0., 0., 1.);
+        assert!(triangulate_with_holes(outer, vec![hole], vn, 0).is_err());
     }
 }

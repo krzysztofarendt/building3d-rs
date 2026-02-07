@@ -9,7 +9,7 @@
 //! - Finding overlap areas (intersection)
 
 use crate::geom::projection::PlaneBasis;
-use crate::{Point, Polygon};
+use crate::{Point, Polygon, Vector};
 use anyhow::{Result, anyhow};
 
 /// Result of a boolean operation that may produce multiple polygons.
@@ -296,10 +296,21 @@ fn are_polygons_coplanar(poly1: &Polygon, poly2: &Polygon) -> bool {
 /// Creates a polygon with a hole by merging the hole into the outer boundary.
 fn create_polygon_with_hole(outer: &Polygon, hole: &Polygon) -> Result<Polygon> {
     let outer_verts = outer.vertices().to_vec();
-    let hole_verts = hole.vertices().to_vec();
+    let mut hole_verts = hole.vertices().to_vec();
 
     if outer_verts.is_empty() || hole_verts.is_empty() {
         return Err(anyhow!("Cannot create polygon with hole: empty vertices"));
+    }
+
+    // `Polygon::with_holes()` requires hole winding opposite to the outer boundary
+    // (CW vs outer CCW w.r.t the polygon normal).
+    let outer_signed = ring_signed_area(&outer_verts, &outer.vn);
+    let hole_signed = ring_signed_area(&hole_verts, &outer.vn);
+    if outer_signed.abs() < crate::geom::EPS || hole_signed.abs() < crate::geom::EPS {
+        return Err(anyhow!("Cannot create polygon with hole: degenerate ring"));
+    }
+    if outer_signed.signum() == hole_signed.signum() {
+        hole_verts.reverse();
     }
 
     Polygon::with_holes(
@@ -308,6 +319,20 @@ fn create_polygon_with_hole(outer: &Polygon, hole: &Polygon) -> Result<Polygon> 
         vec![hole_verts],
         Some(outer.vn),
     )
+}
+
+fn ring_signed_area(pts: &[Point], vn: &Vector) -> f64 {
+    let n = pts.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut cross_sum = Vector::new(0.0, 0.0, 0.0);
+    for i in 0..n {
+        let v1 = Vector::from_a_point(pts[i]);
+        let v2 = Vector::from_a_point(pts[(i + 1) % n]);
+        cross_sum = cross_sum + v1.cross(&v2);
+    }
+    0.5 * cross_sum.dot(vn)
 }
 
 /// Computes overlap area between two coplanar polygons.
@@ -404,6 +429,31 @@ mod tests {
             "Should return original area ~4.0, got {}",
             area
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygon_difference_creates_hole_with_correct_winding() -> Result<()> {
+        let poly1 = make_square(4.0, (0.0, 0.0))?;
+        let poly2 = make_square(1.0, (1.0, 1.0))?;
+
+        let result = polygon_difference(&poly1, &poly2)?;
+        assert_eq!(result.len(), 1);
+
+        let p = &result.polygons[0];
+        assert!(p.has_holes());
+        assert_eq!(p.holes().len(), 1);
+        assert!(
+            (p.area() - 15.0).abs() < 0.1,
+            "Area should be ~15.0, got {}",
+            p.area()
+        );
+
+        // Point inside hole should be outside
+        assert!(!p.is_point_inside(Point::new(1.5, 1.5, 0.0), false));
+        // Point in solid part should be inside
+        assert!(p.is_point_inside(Point::new(0.5, 0.5, 0.0), false));
 
         Ok(())
     }

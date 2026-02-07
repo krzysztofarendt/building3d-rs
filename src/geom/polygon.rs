@@ -4,6 +4,7 @@ use crate::UID;
 use crate::Vector;
 use crate::geom;
 use crate::geom::point::check::are_point_sequences_close_rot;
+use crate::geom::point::check::are_points_collinear;
 use crate::geom::point::check::are_points_coplanar;
 use crate::geom::rotation::rotate_points_around_vector;
 use crate::geom::triangles::{triangulate, triangulate_with_holes};
@@ -104,7 +105,7 @@ impl Polygon {
     /// `holes` is a list of hole boundaries (clockwise winding, i.e. opposite to outer).
     pub fn with_holes(
         name: &str,
-        outer: Vec<Point>,
+        mut outer: Vec<Point>,
         holes: Vec<Vec<Point>>,
         normal: Option<Vector>,
     ) -> Result<Self> {
@@ -127,10 +128,49 @@ impl Polygon {
             }
         };
 
-        let outer_boundary = outer.clone();
-        let hole_boundaries = holes.clone();
+        if Self::ring_signed_area(&outer, &vn).abs() < crate::geom::EPS {
+            return Err(anyhow!("Polygon outer boundary is degenerate."));
+        }
 
-        let (pts, tri) = triangulate_with_holes(outer, holes, vn, 0)?;
+        // Normalize outer winding to CCW w.r.t. normal
+        if Self::ring_signed_area(&outer, &vn) < 0.0 {
+            outer.reverse();
+        }
+
+        // Validate & normalize holes
+        let plane_d = -vn.dot(&Vector::from_a_point(outer[0]));
+        let mut hole_boundaries: Vec<Vec<Point>> = Vec::with_capacity(holes.len());
+        for (i, mut hole) in holes.into_iter().enumerate() {
+            if hole.len() < 3 {
+                return Err(anyhow!("Polygon hole boundary {} is invalid.", i));
+            }
+            if !are_points_coplanar(&hole) {
+                return Err(anyhow!("Polygon hole boundary {} points are invalid.", i));
+            }
+            if are_points_collinear(&hole) {
+                return Err(anyhow!("Polygon hole boundary {} is degenerate.", i));
+            }
+            for pt in &hole {
+                let dist = (plane_d + vn.dot(&Vector::from_a_point(*pt))).abs();
+                if dist > crate::geom::EPS {
+                    return Err(anyhow!("Polygon hole boundary {} is not coplanar.", i));
+                }
+            }
+
+            // Normalize hole winding to CW (opposite of outer) w.r.t. normal
+            let signed = Self::ring_signed_area(&hole, &vn);
+            if signed.abs() < crate::geom::EPS {
+                return Err(anyhow!("Polygon hole boundary {} is degenerate.", i));
+            }
+            if signed > 0.0 {
+                hole.reverse();
+            }
+            hole_boundaries.push(hole);
+        }
+
+        let outer_boundary = outer.clone();
+
+        let (pts, tri) = triangulate_with_holes(outer, hole_boundaries.clone(), vn, 0)?;
 
         let mesh = Mesh {
             vertices: pts,
@@ -146,6 +186,20 @@ impl Polygon {
             outer_boundary,
             holes: hole_boundaries,
         })
+    }
+
+    fn ring_signed_area(pts: &[Point], vn: &Vector) -> f64 {
+        let n = pts.len();
+        if n < 3 {
+            return 0.0;
+        }
+        let mut cross_sum = Vector::new(0.0, 0.0, 0.0);
+        for i in 0..n {
+            let v1 = Vector::from_a_point(pts[i]);
+            let v2 = Vector::from_a_point(pts[(i + 1) % n]);
+            cross_sum = cross_sum + v1.cross(&v2);
+        }
+        0.5 * cross_sum.dot(vn)
     }
 
     pub fn uid(&self) -> &str {
@@ -775,6 +829,33 @@ mod tests {
         assert!((restored.area() - 15.0).abs() < 0.01);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_polygon_with_holes_rejects_empty_hole() {
+        let outer = vec![
+            Point::new(0., 0., 0.),
+            Point::new(4., 0., 0.),
+            Point::new(4., 4., 0.),
+            Point::new(0., 4., 0.),
+        ];
+
+        let err = Polygon::with_holes("holed", outer, vec![vec![]], None).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("hole"));
+    }
+
+    #[test]
+    fn test_polygon_with_holes_rejects_degenerate_hole() {
+        let outer = vec![
+            Point::new(0., 0., 0.),
+            Point::new(4., 0., 0.),
+            Point::new(4., 4., 0.),
+            Point::new(0., 4., 0.),
+        ];
+        let hole = vec![Point::new(1.0, 1.0, 0.0), Point::new(2.0, 1.0, 0.0)];
+
+        let err = Polygon::with_holes("holed", outer, vec![hole], None).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("hole"));
     }
 
     #[test]
