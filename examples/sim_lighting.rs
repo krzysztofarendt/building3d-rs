@@ -45,7 +45,11 @@ fn main() -> Result<()> {
     config.num_rays = 500_000;
     config.max_bounces = 5;
     config.sensor_spacing = Some(0.25);
-    config.sensor_patterns = vec!["floor".to_string(), "wall".to_string(), "ceiling".to_string()];
+    config.sensor_patterns = vec![
+        "floor".to_string(),
+        "wall".to_string(),
+        "ceiling".to_string(),
+    ];
 
     // Point light in lower part of the L-shape (ceiling-mounted)
     config
@@ -129,10 +133,7 @@ fn main() -> Result<()> {
     }
 
     // Draw light sources as bright markers
-    let light_positions: Vec<Point> = vec![
-        Point::new(3.0, 2.0, 2.8),
-        Point::new(2.0, 6.0, 2.8),
-    ];
+    let light_positions: Vec<Point> = vec![Point::new(3.0, 2.0, 2.8), Point::new(2.0, 6.0, 2.8)];
     let light_colors: Vec<rr::Color> = light_positions
         .iter()
         .map(|_| rr::Color(rr::Rgba32::from_unmultiplied_rgba(255, 255, 50, 255)))

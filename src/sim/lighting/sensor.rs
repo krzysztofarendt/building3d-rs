@@ -14,6 +14,7 @@ pub struct Sensor {
 }
 
 /// A grid of sensors on a polygon surface.
+#[derive(Clone)]
 pub struct SensorGrid {
     pub sensors: Vec<Sensor>,
     /// Polygon path this grid belongs to.

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::sensor::SensorGrid;
 use super::sources::Rgb;
 
 /// Result of a lighting simulation.
@@ -10,6 +11,8 @@ pub struct LightingResult {
     pub incident_flux: HashMap<String, Rgb>,
     /// Number of ray hits per polygon.
     pub hit_count: HashMap<String, usize>,
+    /// Per-point sensor grids (populated when sensor_spacing is set).
+    pub sensor_grids: Vec<SensorGrid>,
 }
 
 impl LightingResult {
@@ -18,6 +21,7 @@ impl LightingResult {
             illuminance: HashMap::new(),
             incident_flux: HashMap::new(),
             hit_count: HashMap::new(),
+            sensor_grids: Vec::new(),
         }
     }
 
@@ -32,6 +36,41 @@ impl LightingResult {
         flux[2] += energy[2];
 
         *self.hit_count.entry(path.to_string()).or_insert(0) += 1;
+    }
+
+    /// Records a ray hit on a sensor grid, accumulating energy on the nearest sensor.
+    pub fn record_sensor_hit(
+        &mut self,
+        grid_idx: usize,
+        hit_pos: crate::Point,
+        energy: Rgb,
+        sensor_area: f64,
+    ) {
+        if grid_idx >= self.sensor_grids.len() {
+            return;
+        }
+        let grid = &mut self.sensor_grids[grid_idx];
+        if grid.sensors.is_empty() || sensor_area <= 0.0 {
+            return;
+        }
+        // Find nearest sensor
+        let mut best_i = 0;
+        let mut best_d2 = f64::INFINITY;
+        for (i, s) in grid.sensors.iter().enumerate() {
+            let dx = s.position.x - hit_pos.x;
+            let dy = s.position.y - hit_pos.y;
+            let dz = s.position.z - hit_pos.z;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_i = i;
+            }
+        }
+        let s = &mut grid.sensors[best_i];
+        s.illuminance[0] += energy[0] / sensor_area;
+        s.illuminance[1] += energy[1] / sensor_area;
+        s.illuminance[2] += energy[2] / sensor_area;
+        s.hit_count += 1;
     }
 
     /// Computes irradiance from accumulated flux and polygon areas.
