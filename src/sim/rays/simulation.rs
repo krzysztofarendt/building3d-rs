@@ -412,6 +412,7 @@ mod tests {
         config.num_steps = 10;
         config.num_rays = 5;
         config.source = Point::new(1.0, 1.0, 1.0);
+        config.store_ray_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();
@@ -490,6 +491,7 @@ mod tests {
         config.source = Point::new(1.0, 1.0, 1.0);
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.material_library = Some(lib);
+        config.store_ray_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();

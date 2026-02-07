@@ -65,7 +65,7 @@ impl SimulationConfig {
             material_library: None,
             default_acoustic_material: None,
             enable_air_absorption: false,
-            store_ray_history: true,
+            store_ray_history: false,
         }
     }
 

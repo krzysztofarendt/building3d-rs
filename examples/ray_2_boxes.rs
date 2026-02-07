@@ -17,6 +17,7 @@ fn main() -> Result<()> {
     config.num_rays = 100;
     config.source = Point::new(0.3, 0.3, 0.3);
     config.absorbers = vec![Point::new(0.6, 0.6, 0.6), Point::new(0.1, 0.1, 0.6)];
+    config.store_ray_history = true; // needed for draw_simulation
 
     // Run simulation
     let sim = Simulation::new(&building, config)?;

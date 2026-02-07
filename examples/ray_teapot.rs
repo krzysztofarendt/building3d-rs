@@ -32,6 +32,7 @@ fn main() -> Result<()> {
     config.default_absorption = 0.1;
     config.voxel_size = 0.25;
     config.search_transparent = false; // Too slow for large meshes
+    config.store_ray_history = true; // needed for draw_simulation
 
     // Run simulation
     let t0 = Instant::now();
