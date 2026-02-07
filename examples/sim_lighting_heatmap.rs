@@ -6,6 +6,7 @@ use building3d::sim::lighting::simulation::LightingSimulation;
 use building3d::sim::lighting::sources::DirectionalLight;
 use building3d::sim::materials::MaterialLibrary;
 use building3d::{Building, Point, Polygon, RerunConfig, Solid, Vector, Wall, Zone};
+use rerun as rr;
 
 /// Build a 6x4x3m room with a window opening in the south wall.
 fn build_room_with_window() -> Result<Building> {
@@ -91,7 +92,7 @@ fn main() -> Result<()> {
     // Lighting config with directional light (sunlight from south, angled down)
     let mut config = LightingConfig::new();
     config.material_library = Some(lib);
-    config.num_rays = 200_000;
+    config.num_rays = 500_000;
     config.max_bounces = 5;
 
     // Sunlight entering from the south through the window
@@ -101,15 +102,16 @@ fn main() -> Result<()> {
         [5000.0, 5000.0, 4500.0],
     ));
 
-    // Sensor grid on floor with 0.2m spacing
-    config.sensor_spacing = Some(0.2);
-    config.sensor_patterns = vec!["floor".to_string()];
+    // Sensor grid on all surfaces with 0.25m spacing
+    config.sensor_spacing = Some(0.25);
+    config.sensor_patterns =
+        vec!["floor".to_string(), "wall".to_string(), "ceiling".to_string()];
 
     println!("Running lighting simulation with sensor grid...");
     println!("  Directional lights: {}", config.directional_lights.len());
     println!("  Rays: {}", config.num_rays);
     println!("  Max bounces: {}", config.max_bounces);
-    println!("  Sensor spacing: 0.2 m");
+    println!("  Sensor spacing: 0.25 m");
     println!();
 
     let sim = LightingSimulation::new(&building, config)?;
@@ -156,6 +158,27 @@ fn main() -> Result<()> {
     for grid in &result.sensor_grids {
         draw_sensor_grid(&session, grid, max_sensor_lux)?;
     }
+
+    // Draw directional light as an arrow outside the window
+    // Light enters from south (y=0) going +y and -z
+    let arrow_origin = Point::new(3.0, -1.5, 3.5);
+    let arrow_dir = Vector::new(0.0, 1.0, -0.5);
+    session.log_static(
+        "Building3d/lights/sun",
+        &rr::Arrows3D::from_vectors([[
+            arrow_dir.dx as f32,
+            arrow_dir.dy as f32,
+            arrow_dir.dz as f32,
+        ]])
+        .with_origins([[
+            arrow_origin.x as f32,
+            arrow_origin.y as f32,
+            arrow_origin.z as f32,
+        ]])
+        .with_colors([rr::Color(rr::Rgba32::from_unmultiplied_rgba(
+            255, 220, 50, 255,
+        ))]),
+    )?;
 
     println!("Visualization sent to Rerun (localhost:9876)");
 
