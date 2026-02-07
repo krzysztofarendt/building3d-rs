@@ -1,7 +1,7 @@
 mod config;
 mod simulation;
 
-pub use config::SimulationConfig;
+pub use config::{AcousticMode, SimulationConfig};
 pub use simulation::{Simulation, SimulationResult};
 
 // Re-export VoxelGrid from engine for backward compatibility
