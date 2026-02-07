@@ -121,7 +121,7 @@ impl ImpulseResponse {
     /// Same algorithm as [`to_time_series`](Self::to_time_series) but uses
     /// `self.bands[i][band]` instead of `self.broadband[i]`.
     pub fn band_to_time_series(&self, band: usize, sample_rate: f64) -> Vec<f64> {
-        if self.is_empty() || sample_rate <= 0.0 || band >= NUM_OCTAVE_BANDS {
+        if self.bands.is_empty() || sample_rate <= 0.0 || band >= NUM_OCTAVE_BANDS {
             return Vec::new();
         }
         if self.time_resolution <= 0.0 {
@@ -153,10 +153,7 @@ impl ImpulseResponse {
             }
 
             let energy_density = energy / self.time_resolution;
-            for (sample_idx, out) in output[start_sample..end_sample]
-                .iter_mut()
-                .enumerate()
-            {
+            for (sample_idx, out) in output[start_sample..end_sample].iter_mut().enumerate() {
                 let sample_idx = sample_idx + start_sample;
                 let sample_t0 = sample_idx as f64 * sample_dt;
                 let sample_t1 = sample_t0 + sample_dt;
@@ -269,6 +266,18 @@ mod tests {
         let total_2000: f64 = ts_2000.iter().sum();
         assert!((total_500 - 0.7).abs() < 1e-10);
         assert!((total_2000 - 0.3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_band_to_time_series_with_empty_broadband() {
+        let mut bands = vec![[0.0; NUM_OCTAVE_BANDS]; 10];
+        bands[0][3] = 0.4;
+        let ir = ImpulseResponse::new(0.001, bands, vec![]);
+
+        let ts = ir.band_to_time_series(3, 44100.0);
+        assert!(!ts.is_empty());
+        let total: f64 = ts.iter().sum();
+        assert!((total - 0.4).abs() < 1e-10);
     }
 
     #[test]

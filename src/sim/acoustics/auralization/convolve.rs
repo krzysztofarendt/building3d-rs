@@ -1,5 +1,5 @@
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
 /// FFT overlap-add convolution.
 ///
@@ -29,7 +29,10 @@ pub fn convolve(signal: &[f64], kernel: &[f64]) -> Vec<f64> {
     let mut kernel_fft: Vec<Complex<f64>> = kernel
         .iter()
         .map(|&x| Complex::new(x, 0.0))
-        .chain(std::iter::repeat_n(Complex::new(0.0, 0.0), fft_size - kernel.len()))
+        .chain(std::iter::repeat_n(
+            Complex::new(0.0, 0.0),
+            fft_size - kernel.len(),
+        ))
         .collect();
     fft.process(&mut kernel_fft);
 

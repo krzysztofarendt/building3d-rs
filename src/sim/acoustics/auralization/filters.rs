@@ -39,10 +39,9 @@ impl BiquadState {
 
     /// Process a single sample through the filter.
     pub fn process(&mut self, sample: f64, coeffs: &BiquadCoeffs) -> f64 {
-        let output =
-            coeffs.b0 * sample + coeffs.b1 * self.x1 + coeffs.b2 * self.x2
-                - coeffs.a1 * self.y1
-                - coeffs.a2 * self.y2;
+        let output = coeffs.b0 * sample + coeffs.b1 * self.x1 + coeffs.b2 * self.x2
+            - coeffs.a1 * self.y1
+            - coeffs.a2 * self.y2;
         self.x2 = self.x1;
         self.x1 = sample;
         self.y2 = self.y1;
