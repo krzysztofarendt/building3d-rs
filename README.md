@@ -1,8 +1,8 @@
 # building3d-rs
 
-3D building modeling library in Rust. A rewrite of [building3d](https://github.com/krzysztofarendt/building3d) (Python).
+3D building modeling and simulation library in Rust. A rewrite of [building3d](https://github.com/krzysztofarendt/building3d) (Python).
 
-This crate provides a strict hierarchical composition model and a set of geometry algorithms for building-like solids.
+This crate provides a strict hierarchical composition model, geometry algorithms for building-like solids, and simulation capabilities for acoustics, lighting, and energy.
 
 ## Hierarchy
 
@@ -15,15 +15,22 @@ Each entity has:
 
 ## Features
 
-- Core geometry: `Point`, `Vector`, `Mesh`
+- Core geometry: `Point`, `Vector`, `Mesh`, `PlaneBasis`
 - Polygon operations: triangulation (ear-clipping), area/centroid, plane coefficients, containment, relations, slicing, basic boolean ops
 - Solids: `from_box()`, `from_floor_plan(FloorPlan)`, volume, point-in-solid (ray casting), adjacency detection
 - Building analysis: path-based access (`zone/solid/wall/polygon`), adjacency graph, stitching report
+- Simulation:
+  - **Materials**: unified `MaterialLibrary` with acoustic, optical, and thermal properties; built-in presets (concrete, glass, gypsum, carpet, wood, metal)
+  - **Engine**: shared ray tracing infrastructure with voxel-grid acceleration, pluggable absorption/reflection/propagation models
+  - **Acoustic ray tracing**: scalar or frequency-dependent (6 octave bands), configurable source/absorber positions (`building3d::sim::rays`)
+  - **Acoustics**: spherical receivers, impulse response extraction, room acoustic metrics (RT20/RT30/EDT, C50/C80, D50), source directivity patterns (`building3d::sim::acoustics`)
+  - **Lighting**: forward ray tracing with RGB illuminance, point/directional lights, CIE sky models, solar position, sensor grids, backward tracing (`building3d::sim::lighting`)
+  - **Energy**: steady-state heat balance, layered wall constructions, EPW weather data, internal gains schedules, HVAC models, annual hourly simulation (`building3d::sim::energy`)
 - File I/O:
   - **B3D**: native JSON format preserving hierarchy + UIDs (`building3d::io::b3d`)
   - **STL**: triangulated mesh import/export (`building3d::io::stl`) *(hierarchy is not preserved)*
   - **BIM**: dotbim import/export (`building3d::io::bim`) *(hierarchy is not preserved)*
-- Visualization: Rerun-based drawing helpers (`building3d::draw::rerun`) with customizable `RerunConfig`
+- Visualization: Rerun-based drawing helpers (`building3d::draw`) with customizable `RerunConfig`, including acoustic, lighting, and thermal heatmap visualizations
 
 ## Quick Start
 
@@ -53,6 +60,7 @@ cargo run --example draw_shapes
 cargo run --example floor_plan
 cargo run --example ray_2_boxes
 cargo run --example ray_teapot
+cargo run --example bench_teapot
 ```
 
 ## I/O
