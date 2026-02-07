@@ -78,6 +78,7 @@ fn main() -> Result<()> {
 
     config.num_rays = 5000;
     config.num_steps = 2000;
+    config.store_ray_history = false; // saves ~800 MB RAM
 
     println!("Running frequency-dependent acoustic ray tracing...");
     println!(
@@ -100,8 +101,7 @@ fn main() -> Result<()> {
     let total_hits: f64 = result.hits.iter().map(|h| h[0]).sum();
     println!(
         "Simulation complete: {} steps, {} rays",
-        result.config.num_steps,
-        result.positions[0].len()
+        result.config.num_steps, result.config.num_rays
     );
     println!("Total energy absorbed: {:.4}", total_hits);
     println!();
@@ -182,7 +182,9 @@ fn main() -> Result<()> {
     // Visualize with Rerun
     let draw_config = RerunConfig::new();
     let session = start_session(&draw_config)?;
-    draw_simulation(&session, &result, &building, &draw_config)?;
+    if !result.positions.is_empty() {
+        draw_simulation(&session, &result, &building, &draw_config)?;
+    }
     draw_receivers(&session, &[receiver])?;
     draw_impulse_response(&session, &ir, "receiver")?;
 

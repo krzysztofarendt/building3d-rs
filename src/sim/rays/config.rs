@@ -38,6 +38,12 @@ pub struct SimulationConfig {
 
     // Air absorption
     pub enable_air_absorption: bool,
+
+    // Memory
+    /// If `true`, store per-step ray positions and energies in the result.
+    /// Required for `draw_simulation()` but uses ~800 MB for 5000 rays × 2000 steps.
+    /// Set to `false` when you only need absorber hits (e.g. for acoustic metrics).
+    pub store_ray_history: bool,
 }
 
 impl SimulationConfig {
@@ -59,6 +65,7 @@ impl SimulationConfig {
             material_library: None,
             default_acoustic_material: None,
             enable_air_absorption: false,
+            store_ray_history: true,
         }
     }
 

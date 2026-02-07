@@ -29,9 +29,13 @@ pub fn draw_receivers(session: &rr::RecordingStream, receivers: &[Receiver]) -> 
     Ok(())
 }
 
+/// Minimum dB floor for Schroeder decay visualization.
+const DB_FLOOR: f64 = -60.0;
+
 /// Draws an impulse response decay curve as scalar time series.
 ///
 /// Logs the broadband Schroeder decay curve and per-band energy levels.
+/// Values are clamped to -60 dB floor to keep the chart readable.
 pub fn draw_impulse_response(
     session: &rr::RecordingStream,
     ir: &ImpulseResponse,
@@ -39,37 +43,25 @@ pub fn draw_impulse_response(
 ) -> Result<()> {
     let decay = ir.schroeder_decay_broadband();
 
-    // Log broadband Schroeder decay
-    for (i, &level) in decay.iter().enumerate() {
-        let time_ms = (i as f64 * ir.time_resolution * 1000.0) as i64;
-        session.set_time_sequence("time_ms", time_ms);
-
-        let db = if level > 1e-30 {
-            10.0 * level.log10()
-        } else {
-            -60.0
-        };
-
+    // Log broadband Schroeder decay on the "step" timeline so it appears
+    // alongside the ray animation in Rerun.
+    // Note: schroeder_decay_broadband() already returns values in dB.
+    for (i, &db) in decay.iter().enumerate() {
+        let db = db.max(DB_FLOOR);
+        session.set_time_sequence("step", i as i64);
         session.log(
             format!("{}/ir/{}/schroeder_db", SESSION_NAME, receiver_name),
             &rr::Scalars::new([db]),
         )?;
     }
 
-    // Log per-band energy
+    // Log per-band Schroeder decay (already in dB)
     let band_labels = ["125Hz", "250Hz", "500Hz", "1kHz", "2kHz", "4kHz"];
     for band in 0..NUM_OCTAVE_BANDS.min(ir.bands.len()) {
         let band_decay = ir.schroeder_decay(band);
-        for (i, &level) in band_decay.iter().enumerate() {
-            let time_ms = (i as f64 * ir.time_resolution * 1000.0) as i64;
-            session.set_time_sequence("time_ms", time_ms);
-
-            let db = if level > 1e-30 {
-                10.0 * level.log10()
-            } else {
-                -60.0
-            };
-
+        for (i, &db) in band_decay.iter().enumerate() {
+            let db = db.max(DB_FLOOR);
+            session.set_time_sequence("step", i as i64);
             let label = if band < band_labels.len() {
                 band_labels[band]
             } else {

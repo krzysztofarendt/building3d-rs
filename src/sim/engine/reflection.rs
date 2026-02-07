@@ -22,6 +22,8 @@ pub struct Diffuse;
 impl ReflectionModel for Diffuse {
     fn reflect(&self, incident: Vector, normal: Vector) -> Vector {
         use rand::Rng;
+        let speed = incident.length();
+
         // Flip the hemisphere so the reflected ray stays on the same side of the surface
         // as the incident ray (handles outward-facing normals for interior propagation).
         let hemisphere_normal = if incident.dot(&normal) >= 0.0 {
@@ -40,11 +42,12 @@ impl ReflectionModel for Diffuse {
                 let len = len2.sqrt();
                 let v = Vector::new(x / len, y / len, z / len);
                 // Ensure the reflected direction is in the chosen hemisphere.
-                return if v.dot(&hemisphere_normal) >= 0.0 {
+                let unit = if v.dot(&hemisphere_normal) >= 0.0 {
                     v
                 } else {
                     v * -1.0
                 };
+                return unit * speed;
             }
         }
     }
@@ -134,14 +137,34 @@ mod tests {
     }
 
     #[test]
+    fn test_diffuse_preserves_speed() {
+        let diffuse = Diffuse;
+        let normal = Vector::new(0.0, 0.0, 1.0);
+        let incident = Vector::new(0.0, 0.0, -343.0);
+        let speed = incident.length();
+        for _ in 0..100 {
+            let reflected = diffuse.reflect(incident, normal);
+            let reflected_speed = reflected.length();
+            assert!(
+                (reflected_speed - speed).abs() < 1e-10,
+                "Diffuse reflection should preserve speed: got {reflected_speed}, expected {speed}"
+            );
+        }
+    }
+
+    #[test]
     fn test_hybrid_produces_valid_directions() {
         let hybrid = Hybrid::new(0.5);
         let normal = Vector::new(0.0, 0.0, 1.0);
-        let incident = Vector::new(0.0, 0.0, -1.0);
+        let incident = Vector::new(0.0, 0.0, -343.0);
+        let speed = incident.length();
         for _ in 0..100 {
             let reflected = hybrid.reflect(incident, normal);
-            let len = reflected.length();
-            assert!(len > 0.0, "Reflected vector should have non-zero length");
+            let reflected_speed = reflected.length();
+            assert!(
+                (reflected_speed - speed).abs() < 1e-10,
+                "Hybrid reflection should preserve speed"
+            );
         }
     }
 }
