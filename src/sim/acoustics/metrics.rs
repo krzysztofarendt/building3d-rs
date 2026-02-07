@@ -113,11 +113,16 @@ pub fn d50(ir: &ImpulseResponse, band: usize) -> Option<f64> {
     Some(early / total)
 }
 
-/// Simplified Speech Transmission Index estimation.
+/// Simplified STI-like index (approximate Speech Transmission Index).
+///
+/// This is a simplified approximation, not the full IEC 60268-16 STI:
+/// - Uses 1 modulation frequency (1 Hz) instead of 14 per band
+/// - No noise or masking terms
+/// - 6 octave bands (125-4000 Hz), missing the 8 kHz band
 ///
 /// Based on modulation transfer function derived from the impulse response.
-/// Uses octave bands 125 Hz through 4 kHz with standard weightings.
-pub fn sti(ir: &ImpulseResponse) -> Option<f64> {
+/// Uses octave bands 125 Hz through 4 kHz with male-speech band weights.
+pub fn sti_approximate(ir: &ImpulseResponse) -> Option<f64> {
     // STI band weights (simplified, based on male speech)
     let weights = [0.129, 0.143, 0.114, 0.114, 0.186, 0.171];
 
@@ -166,8 +171,9 @@ pub struct RoomAcousticReport {
     pub c80: [Option<f64>; NUM_OCTAVE_BANDS],
     /// D50 per band (ratio 0-1).
     pub d50: [Option<f64>; NUM_OCTAVE_BANDS],
-    /// Speech Transmission Index (0-1).
-    pub sti: Option<f64>,
+    /// Approximate Speech Transmission Index (0-1).
+    /// See [`sti_approximate`] for limitations.
+    pub sti_approximate: Option<f64>,
     /// Band center frequencies.
     pub frequencies: [f64; NUM_OCTAVE_BANDS],
 }
@@ -180,7 +186,7 @@ impl RoomAcousticReport {
             edt: [None; NUM_OCTAVE_BANDS],
             c80: [None; NUM_OCTAVE_BANDS],
             d50: [None; NUM_OCTAVE_BANDS],
-            sti: sti(ir),
+            sti_approximate: sti_approximate(ir),
             frequencies: OCTAVE_BAND_FREQUENCIES,
         };
 

@@ -114,6 +114,49 @@ impl HvacIdealLoads {
         }
     }
 
+    /// Calculates HVAC power accounting for concurrent envelope losses/gains.
+    ///
+    /// Uses the implicit formulation that solves for Q_hvac such that
+    /// T(t+dt) = T_setpoint:
+    ///
+    /// ```text
+    /// Q_hvac = C*(T_set - T_zone)/dt + (UA + Inf_cond)*(T_set - T_out) - Q_gains
+    /// ```
+    ///
+    /// This correctly accounts for the fact that as the zone temperature
+    /// changes toward the setpoint, envelope losses also change.
+    ///
+    /// Returns (heating_thermal_power_w, cooling_thermal_power_w).
+    pub fn calculate_with_losses(
+        &self,
+        zone_temp: f64,
+        outdoor_temp: f64,
+        total_conductance: f64,
+        gains: f64,
+        thermal_capacity: f64,
+        dt_s: f64,
+    ) -> (f64, f64) {
+        let setpoint = self.active_setpoint(zone_temp);
+        if (setpoint - zone_temp).abs() < 1e-10 {
+            return (0.0, 0.0);
+        }
+
+        if dt_s <= 0.0 || thermal_capacity <= 0.0 {
+            return (0.0, 0.0);
+        }
+
+        // Implicit formula: Q_hvac that achieves T_setpoint at end of timestep
+        let q_hvac = thermal_capacity * (setpoint - zone_temp) / dt_s
+            + total_conductance * (setpoint - outdoor_temp)
+            - gains;
+
+        if q_hvac > 0.0 {
+            (q_hvac, 0.0)
+        } else {
+            (0.0, -q_hvac)
+        }
+    }
+
     /// Returns the active setpoint for a given free-floating temperature.
     pub fn active_setpoint(&self, free_floating_temp: f64) -> f64 {
         if free_floating_temp < self.heating_setpoint {
@@ -137,11 +180,23 @@ impl Default for HvacIdealLoads {
 /// Represents the zone as a single resistance (envelope) and
 /// single capacitance (thermal mass). Used for transient simulation.
 ///
-/// T_zone(t+dt) = T_zone(t) + dt/C * (Q_gains - Q_losses)
+/// The envelope loss term is integrated *implicitly* (backward Euler) to
+/// improve stability and to match the implicit HVAC setpoint formulation in
+/// [`HvacIdealLoads::calculate_with_losses`].
 ///
-/// where:
-///   Q_losses = UA * (T_zone - T_outdoor) + Q_infiltration
-///   C = total thermal mass of zone (J/K)
+/// With constant inputs over the timestep, this solves:
+///
+/// ```text
+/// dT/dt = (Q_gains + Q_hvac - K*(T - T_out)) / C
+/// ```
+///
+/// where `K = UA + infiltration_conductance`.
+///
+/// Backward Euler update:
+///
+/// ```text
+/// T(t+dt) = (T(t) + dt/C * (Q_gains + Q_hvac + K*T_out)) / (1 + dt*K/C)
+/// ```
 #[derive(Debug, Clone)]
 pub struct LumpedThermalModel {
     /// Zone temperature in °C.
@@ -173,6 +228,9 @@ impl LumpedThermalModel {
     ///
     /// Returns the new zone temperature.
     pub fn step(&mut self, outdoor_temp: f64, gains: f64, hvac_power: f64, dt: f64) -> f64 {
+        if dt <= 0.0 {
+            return self.zone_temperature;
+        }
         if self.thermal_capacity <= 0.0 {
             // No thermal mass — instant response (steady-state)
             let total_conductance = self.ua_total + self.infiltration_conductance;
@@ -182,11 +240,17 @@ impl LumpedThermalModel {
             return self.zone_temperature;
         }
 
-        let q_loss = (self.ua_total + self.infiltration_conductance)
-            * (self.zone_temperature - outdoor_temp);
-        let q_net = gains + hvac_power - q_loss;
+        let k = self.ua_total + self.infiltration_conductance;
+        if k <= 0.0 {
+            // No envelope losses -> pure integrator.
+            self.zone_temperature += dt / self.thermal_capacity * (gains + hvac_power);
+            return self.zone_temperature;
+        }
 
-        self.zone_temperature += dt / self.thermal_capacity * q_net;
+        let a = dt * k / self.thermal_capacity;
+        let numerator = self.zone_temperature
+            + (dt / self.thermal_capacity) * (gains + hvac_power + k * outdoor_temp);
+        self.zone_temperature = numerator / (1.0 + a);
         self.zone_temperature
     }
 }
@@ -292,5 +356,75 @@ mod tests {
         assert!((hvac.active_setpoint(15.0) - 18.0).abs() < 1e-10);
         assert!((hvac.active_setpoint(22.0) - 22.0).abs() < 1e-10);
         assert!((hvac.active_setpoint(28.0) - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_calculate_with_losses_heating() {
+        let hvac = HvacIdealLoads::new();
+        // Zone at 15°C, outdoor 0°C, UA=100 W/K, no gains, C=3600 J/K, dt=3600s
+        let (heating, cooling) = hvac.calculate_with_losses(15.0, 0.0, 100.0, 0.0, 3600.0, 3600.0);
+        // Q_hvac = 3600*(20-15)/3600 + 100*(20-0) - 0 = 5 + 2000 = 2005 W
+        assert!(
+            (heating - 2005.0).abs() < 1e-6,
+            "Expected 2005 W heating, got {heating}"
+        );
+        assert!(cooling.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_calculate_with_losses_deadband() {
+        let hvac = HvacIdealLoads::new();
+        let (heating, cooling) = hvac.calculate_with_losses(22.0, 20.0, 100.0, 0.0, 3600.0, 3600.0);
+        assert!(heating.abs() < 1e-10);
+        assert!(cooling.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_calculate_with_losses_cooling() {
+        let hvac = HvacIdealLoads::new();
+        // Zone at 30°C, outdoor 35°C, UA=100 W/K, gains=500 W
+        let (heating, cooling) =
+            hvac.calculate_with_losses(30.0, 35.0, 100.0, 500.0, 3600.0, 3600.0);
+        // Q_hvac = 3600*(26-30)/3600 + 100*(26-35) - 500 = -4 + (-900) - 500 = -1404
+        // So cooling = 1404 W
+        assert!(heating.abs() < 1e-10);
+        assert!(
+            (cooling - 1404.0).abs() < 1e-6,
+            "Expected 1404 W cooling, got {cooling}"
+        );
+    }
+
+    #[test]
+    fn test_calculate_with_losses_matches_lumped_model_step() {
+        let hvac = HvacIdealLoads::new();
+        let dt_s = 3600.0;
+
+        // Heating case: should end exactly at heating setpoint.
+        let mut model = LumpedThermalModel::new(15.0, 100.0, 0.0, 3600.0);
+        let total_conductance = model.ua_total + model.infiltration_conductance;
+        let (heating, cooling) = hvac.calculate_with_losses(
+            model.zone_temperature,
+            0.0,
+            total_conductance,
+            0.0,
+            model.thermal_capacity,
+            dt_s,
+        );
+        model.step(0.0, 0.0, heating - cooling, dt_s);
+        assert!((model.zone_temperature - hvac.heating_setpoint).abs() < 1e-10);
+
+        // Cooling case: should end exactly at cooling setpoint.
+        let mut model = LumpedThermalModel::new(30.0, 100.0, 0.0, 3600.0);
+        let total_conductance = model.ua_total + model.infiltration_conductance;
+        let (heating, cooling) = hvac.calculate_with_losses(
+            model.zone_temperature,
+            35.0,
+            total_conductance,
+            500.0,
+            model.thermal_capacity,
+            dt_s,
+        );
+        model.step(35.0, 500.0, heating - cooling, dt_s);
+        assert!((model.zone_temperature - hvac.cooling_setpoint).abs() < 1e-10);
     }
 }

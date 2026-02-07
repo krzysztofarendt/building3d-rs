@@ -174,8 +174,8 @@ fn main() -> Result<()> {
     }
     println!("{:-<60}", "");
 
-    if let Some(sti_val) = report.sti {
-        println!("STI: {:.3}", sti_val);
+    if let Some(sti_val) = report.sti_approximate {
+        println!("STI (approximate): {:.3}", sti_val);
     }
     println!();
 
