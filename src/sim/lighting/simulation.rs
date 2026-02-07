@@ -4,42 +4,56 @@ use anyhow::Result;
 use rand::Rng;
 
 use crate::sim::engine::FlatScene;
-use crate::sim::engine::reflection::Diffuse;
-use crate::sim::engine::reflection::ReflectionModel;
+use crate::sim::engine::reflection::{Diffuse, ReflectionModel, Specular};
 use crate::{Building, Point, Vector};
 
 use super::config::LightingConfig;
 use super::result::LightingResult;
+use super::sensor::SensorGrid;
 use super::sources::{LightSource, Rgb};
 
 /// Forward ray tracing lighting simulation.
 pub struct LightingSimulation {
     config: LightingConfig,
     scene: FlatScene,
-    reflectance: Vec<Rgb>,
+    diffuse_reflectance: Vec<Rgb>,
+    specular_reflectance: Vec<Rgb>,
+    transmittance: Vec<Rgb>,
     areas: HashMap<String, f64>,
+    /// Maps polygon index → sensor grid index (only for sensor-equipped polygons).
+    sensor_map: HashMap<usize, usize>,
+    /// Sensor grids generated for matching polygons.
+    sensor_grids: Vec<SensorGrid>,
+    /// Area per sensor cell (spacing^2).
+    sensor_area: f64,
 }
 
 impl LightingSimulation {
     pub fn new(building: &Building, config: LightingConfig) -> Result<Self> {
         let scene = FlatScene::new(building, config.voxel_size, false);
 
-        // Resolve reflectance per polygon
-        let reflectance: Vec<Rgb> = scene
-            .paths
-            .iter()
-            .map(|path| {
-                if let Some(optical) = config
-                    .material_library
-                    .as_ref()
-                    .and_then(|lib| lib.lookup(path))
-                    .and_then(|mat| mat.optical.as_ref())
-                {
-                    return optical.diffuse_reflectance;
-                }
-                config.default_reflectance
-            })
-            .collect();
+        // Resolve optical properties per polygon
+        let mut diffuse_reflectance: Vec<Rgb> = Vec::with_capacity(scene.paths.len());
+        let mut specular_reflectance: Vec<Rgb> = Vec::with_capacity(scene.paths.len());
+        let mut transmittance: Vec<Rgb> = Vec::with_capacity(scene.paths.len());
+
+        for path in &scene.paths {
+            let optical = config
+                .material_library
+                .as_ref()
+                .and_then(|lib| lib.lookup(path))
+                .and_then(|mat| mat.optical.as_ref());
+
+            if let Some(opt) = optical {
+                diffuse_reflectance.push(opt.diffuse_reflectance);
+                specular_reflectance.push(opt.specular_reflectance);
+                transmittance.push(opt.transmittance);
+            } else {
+                diffuse_reflectance.push(config.default_reflectance);
+                specular_reflectance.push([0.0; 3]);
+                transmittance.push([0.0; 3]);
+            }
+        }
 
         // Compute polygon areas
         let mut areas = HashMap::new();
@@ -47,17 +61,46 @@ impl LightingSimulation {
             areas.insert(scene.paths[i].clone(), poly.area());
         }
 
+        // Generate sensor grids if configured
+        let mut sensor_map = HashMap::new();
+        let mut sensor_grids = Vec::new();
+        let sensor_area = config.sensor_spacing.map(|s| s * s).unwrap_or(1.0);
+
+        if let Some(spacing) = config.sensor_spacing {
+            for (i, poly) in scene.polygons.iter().enumerate() {
+                let path = &scene.paths[i];
+                let matches = config.sensor_patterns.is_empty()
+                    || config
+                        .sensor_patterns
+                        .iter()
+                        .any(|pat| path.contains(pat.as_str()));
+                if matches {
+                    let grid = SensorGrid::generate(poly, spacing, path);
+                    if !grid.sensors.is_empty() {
+                        sensor_map.insert(i, sensor_grids.len());
+                        sensor_grids.push(grid);
+                    }
+                }
+            }
+        }
+
         Ok(Self {
             config,
             scene,
-            reflectance,
+            diffuse_reflectance,
+            specular_reflectance,
+            transmittance,
             areas,
+            sensor_map,
+            sensor_grids,
+            sensor_area,
         })
     }
 
     /// Runs the forward ray tracing simulation.
     pub fn run(&self) -> LightingResult {
         let mut result = LightingResult::new();
+        result.sensor_grids = self.sensor_grids.clone();
         let mut rng = rand::thread_rng();
 
         // Trace rays from each point light
@@ -118,7 +161,6 @@ impl LightingSimulation {
         let mut pos = origin;
         let mut dir = direction;
         let mut e = energy;
-        let reflection_model = Diffuse;
 
         for _bounce in 0..self.config.max_bounces {
             let total_e = e[0] + e[1] + e[2];
@@ -130,26 +172,70 @@ impl LightingSimulation {
                 // Record hit
                 result.record_hit(&self.scene.paths[idx], e);
 
-                // Reflect with diffuse reflectance
-                let refl = self.reflectance[idx];
-                e = [e[0] * refl[0], e[1] * refl[1], e[2] * refl[2]];
-
-                // Russian roulette for path termination
-                let max_refl = refl[0].max(refl[1]).max(refl[2]);
-                if max_refl < 1e-10 {
-                    break;
+                // Record sensor hit if this polygon has a sensor grid
+                if let Some(&grid_idx) = self.sensor_map.get(&idx) {
+                    let hit_pos = pos + dir * dist;
+                    result.record_sensor_hit(grid_idx, hit_pos, e, self.sensor_area);
                 }
-                let rr: f64 = rng.gen_range(0.0..1.0);
-                if rr > max_refl {
-                    break;
-                }
-                // Compensate for Russian roulette
-                e = [e[0] / max_refl, e[1] / max_refl, e[2] / max_refl];
 
-                // Move to hit point and reflect
+                // Look up per-polygon optical properties
+                let diff = self.diffuse_reflectance[idx];
+                let spec = self.specular_reflectance[idx];
+                let trans = self.transmittance[idx];
+
+                // Compute selection probabilities from max channel values
+                let p_diff = diff[0].max(diff[1]).max(diff[2]);
+                let p_spec = spec[0].max(spec[1]).max(spec[2]);
+                let p_trans = trans[0].max(trans[1]).max(trans[2]);
+                let total = p_diff + p_spec + p_trans;
+
+                if total < 1e-10 {
+                    break; // Fully absorbed
+                }
+
+                // Random roll to pick interaction type
+                let roll: f64 = rng.gen_range(0.0..total);
                 let normal = self.scene.polygons[idx].vn;
                 pos = pos + dir * dist;
-                dir = reflection_model.reflect(dir, normal);
+
+                if roll < p_diff {
+                    // Diffuse reflection
+                    e = [
+                        e[0] * diff[0] / p_diff,
+                        e[1] * diff[1] / p_diff,
+                        e[2] * diff[2] / p_diff,
+                    ];
+                    dir = Diffuse.reflect(dir, normal);
+                } else if roll < p_diff + p_spec {
+                    // Specular reflection
+                    e = [
+                        e[0] * spec[0] / p_spec,
+                        e[1] * spec[1] / p_spec,
+                        e[2] * spec[2] / p_spec,
+                    ];
+                    dir = Specular.reflect(dir, normal);
+                } else {
+                    // Transmission: continue in same direction, offset past surface
+                    e = [
+                        e[0] * trans[0] / p_trans,
+                        e[1] * trans[1] / p_trans,
+                        e[2] * trans[2] / p_trans,
+                    ];
+                    pos = pos + dir * 1e-6;
+                    // dir unchanged
+                }
+
+                // Russian roulette for path termination
+                let max_channel = e[0].max(e[1]).max(e[2]);
+                if max_channel < 1e-10 {
+                    break;
+                }
+                let survival = max_channel.min(1.0);
+                let rr: f64 = rng.gen_range(0.0..1.0);
+                if rr > survival {
+                    break;
+                }
+                e = [e[0] / survival, e[1] / survival, e[2] / survival];
             } else {
                 break; // Ray escapes scene
             }
