@@ -74,6 +74,26 @@ polygons with:
 - Transparent surface detection (internal interfaces between solids in the same zone)
 - Voxel grid for spatial queries
 
+### 1.4 Composable Simulation Pipeline (Bus + Modules)
+
+Multi-physics workflows (lighting ↔ thermal, acoustics-only runs, etc.) are intended to be
+composed from small modules rather than hard-wired into a monolithic “simulation app”.
+
+The shared runtime lives in `src/sim/framework/`:
+- `SimContext`: immutable inputs shared by modules (the `Building` plus `SurfaceIndex`)
+- `Bus`: typed message/value store connecting modules (keyed by concrete Rust type)
+- `Pipeline`: ordered list of `SimModule`s with `init()` and `step()`
+
+Cross-module “contracts” (payload types carried on the `Bus`) live in `src/sim/coupling.rs`.
+Examples:
+- `OutdoorAirTemperatureC` (weather boundary for step-based thermal)
+- `ShortwaveTransmittedWPerZone` (solar shortwave gains per zone)
+- `InternalGainsWPerZone` / `InternalGainsWTotal`
+
+This enables step-based pipelines such as:
+1) a weather/solar producer publishes `OutdoorAirTemperatureC` and `ShortwaveTransmittedWPerZone`
+2) the thermal module consumes those inputs each step (see `sim::energy::module::EnergyModule`)
+
 ---
 
 ## 2. Acoustics
