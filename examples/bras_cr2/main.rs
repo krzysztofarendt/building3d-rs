@@ -454,42 +454,47 @@ fn main() -> Result<()> {
         let viz_num_steps = (viz_max_time / viz_time_step).round() as usize;
 
         println!("\n{}", "=".repeat(60));
-        println!("Visualization run (source LS1)");
+        println!("Visualization run (all sources)");
         println!(
             "  Rays: {}, steps: {}, dt: {:.1e} s, duration: {:.1} s",
             viz_rays, viz_num_steps, viz_time_step, viz_max_time
         );
         println!("{}", "=".repeat(60));
 
-        let (src_name, src_pos) = &sources[0];
-        let mut viz_config = SimulationConfig::new();
-        viz_config.acoustic_mode = AcousticMode::FrequencyDependent;
-        viz_config.material_library = Some(lib.clone());
-        viz_config.enable_air_absorption = true;
-        viz_config.search_transparent = false;
-        viz_config.source = *src_pos;
-        viz_config.absorbers = absorber_positions.clone();
-        viz_config.absorber_radius = absorber_radius;
-        viz_config.num_rays = viz_rays;
-        viz_config.num_steps = viz_num_steps;
-        viz_config.time_step = viz_time_step;
-        viz_config.store_ray_history = true;
-        viz_config.min_alive_fraction = 0.01;
-
-        println!("  Running visualization simulation ({})...", src_name);
-        let viz_sim = Simulation::new(&building, viz_config)?;
-        let viz_result = viz_sim.run();
-        println!(
-            "  Done. {} steps with ray history.",
-            viz_result.positions.len()
-        );
-
         let mut draw_config = RerunConfig::new();
         draw_config.session_name = "BRAS CR2".to_string();
         draw_config.sim_ray_radius = 0.02;
 
         let session = start_session(&draw_config)?;
-        draw_simulation(&session, &viz_result, &building, &draw_config)?;
+
+        for (src_name, src_pos) in sources.iter() {
+            let mut viz_config = SimulationConfig::new();
+            viz_config.acoustic_mode = AcousticMode::FrequencyDependent;
+            viz_config.material_library = Some(lib.clone());
+            viz_config.enable_air_absorption = true;
+            viz_config.search_transparent = false;
+            viz_config.source = *src_pos;
+            viz_config.absorbers = absorber_positions.clone();
+            viz_config.absorber_radius = absorber_radius;
+            viz_config.num_rays = viz_rays;
+            viz_config.num_steps = viz_num_steps;
+            viz_config.time_step = viz_time_step;
+            viz_config.store_ray_history = true;
+            viz_config.min_alive_fraction = 0.01;
+
+            println!("  Running visualization simulation ({})...", src_name);
+            let viz_sim = Simulation::new(&building, viz_config)?;
+            let viz_result = viz_sim.run();
+            println!(
+                "  Done. {} steps with ray history.",
+                viz_result.positions.len()
+            );
+
+            draw_config.entity_prefix = src_name.to_string();
+            draw_simulation(&session, &viz_result, &building, &draw_config)?;
+            println!("  {} sent to Rerun", src_name);
+        }
+
         println!("  Visualization sent to Rerun (localhost:9876)");
     }
 

@@ -667,6 +667,10 @@ thermal metadata into geometry), adopt the following conventions:
 - **Step-based pipelines**: for hour-by-hour composition, use `sim::lighting::shortwave::SolarShortwaveStepModule`
   to publish `OutdoorAirTemperatureC` and `ShortwaveTransmittedWPerZone` each step, then consume them in
   `sim::energy::module::EnergyModule`.
+- **Bus inputs**: step-based thermal simulations consume weather and gains from the `Bus`:
+  - `sim::coupling::OutdoorAirTemperatureC`
+  - `sim::coupling::InternalGainsWPerZone` (preferred) or `sim::coupling::InternalGainsWTotal` (fallback)
+  - `sim::coupling::ShortwaveTransmittedWPerZone`
 - **Separation of concerns**: `sim::lighting::module::LightingModule` publishes `LightingResult`
   only; shortwave coupling payloads are produced explicitly by the chosen producer module.
 - **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
@@ -1094,6 +1098,11 @@ In code, these contracts live in `sim::coupling` as `ShortwaveAbsorbedWPerPolygo
 For multi-zone thermal models, `ShortwaveTransmittedWPerZone` is the most direct input: it
 maps cleanly onto the per-zone gains vector used by the zone-air solver. Per-polygon absorbed
 shortwave is optional (useful for future surface-temperature / radiant models).
+
+In step-based composed simulations, `sim::energy::module::EnergyModule` consumes these payloads
+along with:
+- `sim::coupling::OutdoorAirTemperatureC`
+- `sim::coupling::InternalGainsWPerZone` (or `sim::coupling::InternalGainsWTotal`)
 
 Thermal should support a fallback path (EPW + SHGC) when no lighting/solar module is present,
 but the composed pipeline should designate a single authoritative producer.
