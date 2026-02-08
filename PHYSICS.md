@@ -909,6 +909,67 @@ Deliverable: CI-friendly validation tests that keep the engine honest.
 
 Deliverable: an AI agent can assemble and run case-specific lighting pipelines without code edits.
 
+#### 3.8.10 Concrete next steps (dev: lighting)
+
+This is the recommended **sequence of PR-sized steps** to implement next. Each step should be
+mergeable on its own and keep the lighting engine usable as a composable kernel.
+
+1. **Determinism “hardening” (config + RNG + parallel rules)**
+   - Add an explicit `seed` to all lighting-facing configs (including any annual/daylight-coefficient runs).
+   - Centralize RNG creation in one place and document the rule: same inputs ⇒ same outputs.
+   - If/when parallelism is added: enforce stable chunking and per-chunk RNG streams so results
+     do not change with thread count.
+   - Acceptance: a golden-scene test asserts identical numeric outputs across repeated runs.
+
+2. **Refactor daylight inputs into a “sky + sun” stage**
+   - Create a small API boundary for “daylight inputs”:
+     - sky radiance model (CIE/Perez) returning `W/(sr·m²)` as a function of direction
+     - sun model as a finite disc (angular radius + sampling), not an idealized delta-direction
+   - Wire EPW time-series into this stage (DNI/DHI + timestamp via `WeatherHourIndex` pipelines).
+   - Acceptance: Rerun diagnostics show a sky dome falsecolor + sun direction/disc parameters.
+
+3. **Implement sky patch sets (annual-friendly)**
+   - Add a `SkyPatchSet` (Tregenza first; Reinhart later) with stable patch IDs and directions.
+   - Add a way to compute per-hour patch radiance from Perez (and a separate sun contribution).
+   - Acceptance: patch radiance sums match expected diffuse horizontal irradiance within tolerance.
+
+4. **Reduce variance in sensor results (NEE + MIS)**
+   - Add next-event estimation (explicit sampling of sun + bright sky patches) to the backward tracer.
+   - Add MIS between BSDF sampling and light/patch sampling; keep the estimator unbiased.
+   - Acceptance: workplane illuminance converges faster than uniform-hemisphere sampling at the
+     same ray budget on a canonical daylight scene.
+
+5. **Material model runway (beyond Lambertian-only)**
+   - Add a minimal “specular/glossy” reflection model and a thin-sheet glass transmission model
+     (Fresnel first; absorption later).
+   - Enforce energy conservation per channel (`diffuse + specular + transmit <= 1`).
+   - Acceptance: simple validation scenes reproduce expected behaviors (mirror-like reflection,
+     glass transmission, etc.).
+
+6. **Define “deliverable” outputs (tables first, Rerun second)**
+   - Standardize sensor outputs for:
+     - per-sensor irradiance/illuminance
+     - per-surface irradiance / absorbed shortwave
+     - per-zone transmitted shortwave
+   - Keep radiometric core outputs and convert to photometric at the reporting boundary.
+   - Acceptance: a result struct can be serialized and diffed (for agentic iteration) without Rerun.
+
+7. **Annual daylight via daylight coefficients**
+   - Precompute per-sensor coefficients to sky patches (+ sun positions as needed), cache them,
+     and multiply by time-varying patch radiance to produce DA/sDA/UDI/ASE.
+   - Acceptance: annual metrics run in “interactive” time for small models and scale predictably.
+
+8. **Validation harness (Radiance as the reference)**
+   - Check in a small set of canonical scenes and expected outputs (from Radiance runs performed
+     out-of-tree) and add regression tests comparing against them.
+   - Define tolerance metrics (relative RMSE + percentile errors) and pin seeds/configs.
+   - Acceptance: CI catches numerical drift in daylight and shortwave coupling outputs.
+
+9. **Agentic composition interface (MCP-facing)**
+   - Introduce a serializable “lighting case spec” and keep the MCP tool surface idempotent:
+     validate → run → fetch results → fetch Rerun artifacts (optional).
+   - Acceptance: an agent can build case-specific pipelines without modifying core modules.
+
 ---
 
 ## 4. Energy
