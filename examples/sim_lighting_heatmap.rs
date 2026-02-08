@@ -104,8 +104,11 @@ fn main() -> Result<()> {
 
     // Sensor grid on all surfaces with 0.25m spacing
     config.sensor_spacing = Some(0.25);
-    config.sensor_patterns =
-        vec!["floor".to_string(), "wall".to_string(), "ceiling".to_string()];
+    config.sensor_patterns = vec![
+        "floor".to_string(),
+        "wall".to_string(),
+        "ceiling".to_string(),
+    ];
 
     println!("Running lighting simulation with sensor grid...");
     println!("  Directional lights: {}", config.directional_lights.len());
@@ -146,7 +149,7 @@ fn main() -> Result<()> {
     // Draw per-polygon heatmap (walls/ceiling)
     draw_illuminance_heatmap(&session, &result, &building)?;
 
-    // Draw per-point sensor grids on floor
+    // Draw per-point sensor grids on all surfaces
     // Find max lux across all sensor grids for consistent color scale
     let max_sensor_lux = result
         .sensor_grids

@@ -43,15 +43,13 @@ pub fn read_ac3d(
     solid_name: &str,
     coord_system: Ac3dCoordSystem,
 ) -> Result<(Vec<String>, Building)> {
-    let file =
-        File::open(path).with_context(|| format!("Failed to open AC3D file: {}", path.display()))?;
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open AC3D file: {}", path.display()))?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
     // Verify header
-    let header = lines
-        .next()
-        .ok_or_else(|| anyhow!("Empty AC3D file"))??;
+    let header = lines.next().ok_or_else(|| anyhow!("Empty AC3D file"))??;
     if !header.starts_with("AC3D") {
         return Err(anyhow!("Not an AC3D file: missing AC3D header"));
     }
@@ -109,7 +107,9 @@ pub fn read_ac3d(
                     obj.surfaces.push(surf);
                 }
             }
-        } else if line == "kids 0" && let Some(obj) = current_object.take() {
+        } else if line == "kids 0"
+            && let Some(obj) = current_object.take()
+        {
             objects.push(obj);
         }
     }
@@ -174,9 +174,7 @@ pub fn read_ac3d(
 }
 
 /// Parse a single surface block (SURF, mat, refs lines).
-fn parse_surface(
-    lines: &mut std::io::Lines<BufReader<File>>,
-) -> Result<Ac3dSurface> {
+fn parse_surface(lines: &mut std::io::Lines<BufReader<File>>) -> Result<Ac3dSurface> {
     let mut material_index: usize = 0;
     let mut vertex_indices: Vec<usize> = Vec::new();
 

@@ -80,16 +80,10 @@ impl Simulation {
         let mut energies: Vec<f64> = batch.rays.iter().map(|r| r.energy).collect();
 
         let store_history = self.config.store_ray_history;
-        let mut all_positions: Vec<Vec<Point>> = Vec::with_capacity(if store_history {
-            num_steps
-        } else {
-            0
-        });
-        let mut all_energies: Vec<Vec<f64>> = Vec::with_capacity(if store_history {
-            num_steps
-        } else {
-            0
-        });
+        let mut all_positions: Vec<Vec<Point>> =
+            Vec::with_capacity(if store_history { num_steps } else { 0 });
+        let mut all_energies: Vec<Vec<f64>> =
+            Vec::with_capacity(if store_history { num_steps } else { 0 });
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
 
         let eps = 1e-10;
@@ -235,8 +229,7 @@ impl Simulation {
         let hist_cap = if store_history { num_steps } else { 0 };
         let mut all_positions: Vec<Vec<Point>> = Vec::with_capacity(hist_cap);
         let mut all_energies: Vec<Vec<f64>> = Vec::with_capacity(hist_cap);
-        let mut all_band_energies: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> =
-            Vec::with_capacity(hist_cap);
+        let mut all_band_energies: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(hist_cap);
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
         let mut all_band_hits: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(num_steps);
 

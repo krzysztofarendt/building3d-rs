@@ -51,12 +51,11 @@ pub fn draw_illuminance_heatmap(
                         .unwrap_or(0.0);
 
                     let t = (lux / max_lux).clamp(0.0, 1.0) as f32;
-                    let is_glass = polygon.name.contains("glass");
-                    let (r, g, b, a) = if is_glass {
-                        (0.6, 0.8, 1.0, 0.15)
+                    let (r, g, b) = lux_to_color(t);
+                    let a = if polygon.name.contains("glass") {
+                        0.15
                     } else {
-                        let (r, g, b) = lux_to_color(t);
-                        (r, g, b, 0.8)
+                        0.8
                     };
 
                     let mesh = polygon.copy_mesh();

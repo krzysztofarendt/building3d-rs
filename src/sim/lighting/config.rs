@@ -22,7 +22,8 @@ pub struct LightingConfig {
     pub default_reflectance: Rgb,
     /// Sensor grid spacing in meters (None = no sensor grids).
     pub sensor_spacing: Option<f64>,
-    /// Path patterns for sensor placement (empty = all polygons).
+    /// Substring patterns selecting which polygon paths get sensor grids (e.g. `"floor"`).
+    /// Empty = all polygons.
     pub sensor_patterns: Vec<String>,
 }
 
