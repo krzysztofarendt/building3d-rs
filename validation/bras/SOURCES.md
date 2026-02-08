@@ -51,9 +51,3 @@ When publishing results based on this data, cite both:
 1. The BRAS database (DOI: 10.14279/depositonce-6726.3)
 2. The informed simulations dataset (https://publications.rwth-aachen.de/record/803828)
 
-## Other References
-
-- Treble Technologies validation of BRAS scenes:
-  https://docs.treble.tech/validation/bras
-- COMSOL blog on Konzerthaus Berlin (same hall as CR3):
-  Uses BRAS CR3 scene for validation, but requires COMSOL Acoustics Module.

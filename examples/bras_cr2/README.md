@@ -27,9 +27,7 @@ includes RAVEN project files (`.rpf`), AC3D geometry, and source/receiver
 positions for all BRAS scenes.
 
 This benchmark validates building3d-rs against the **CR2** case (Scene 09), a
-small seminar room. Treble Technologies published a similar validation of their
-commercial solver against the same BRAS CR2 case [5], which served as a useful
-reference for expected accuracy levels with geometric acoustics methods.
+small seminar room.
 
 ![Room geometry](geometry.png)
 
@@ -315,6 +313,3 @@ validation/bras/
 
 4. ISO 3382-1:2009. Acoustics -- Measurement of room acoustic parameters --
    Part 1: Performance spaces.
-
-5. Treble Technologies. BRAS CR2 validation.
-   https://docs.treble.tech/validation/rooms/CR2
