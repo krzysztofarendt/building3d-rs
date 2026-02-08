@@ -11,9 +11,9 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use building3d::draw::rerun::{draw_simulation, start_session};
 use building3d::Point;
 use building3d::RerunConfig;
+use building3d::draw::rerun::{draw_simulation, start_session};
 use building3d::io::{Ac3dCoordSystem, read_ac3d};
 use building3d::sim::acoustics::impulse_response::ImpulseResponse;
 use building3d::sim::acoustics::metrics::{self, RoomAcousticReport};
@@ -21,7 +21,7 @@ use building3d::sim::acoustics::receiver::Receiver;
 use building3d::sim::materials::{
     AcousticMaterial, Material, MaterialLibrary, NUM_OCTAVE_BANDS, OCTAVE_BAND_FREQUENCIES,
 };
-use building3d::sim::rays::{AcousticMode, Simulation, SimulationConfig};
+use building3d::sim::rays::{AcousticMode, ENERGY_EPS, Simulation, SimulationConfig};
 
 /// Third-octave band indices (in the 31-band 20 Hz–20 kHz CSV) for the
 /// 6 octave bands used by building3d (125, 250, 500, 1000, 2000, 4000 Hz).
@@ -151,6 +151,12 @@ fn main() -> Result<()> {
     );
     println!("  Absorber radius: {} m", absorber_radius);
     println!("  Receiver time resolution: {} ms", receiver_dt * 1000.0);
+    println!("  Sources: {}", sources.len());
+    println!("  Octave bands: {}", NUM_OCTAVE_BANDS);
+    println!(
+        "  Early stop: alive_fraction < {:.3} OR ray_energy <= {:.1e}",
+        0.01, ENERGY_EPS
+    );
 
     // Sanity: positions should be inside the room volume.
     for (name, p) in sources.iter().chain(receivers.iter()) {
@@ -190,8 +196,47 @@ fn main() -> Result<()> {
 
         println!("  Running simulation...");
         let sim = Simulation::new(&building, config)?;
-        let result = sim.run();
-        println!("  Done. {} steps computed.", result.hits.len());
+        let progress_every_steps = std::env::var("BRAS_CR2_PROGRESS_EVERY_S")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|every_s| ((every_s / time_step).round() as usize).max(1))
+            .unwrap_or(((0.1 / time_step).round() as usize).max(1));
+
+        let mut last_alive: usize = num_rays;
+        let mut last_energy_frac: f64 = 1.0;
+        let result = sim.run_with_progress(progress_every_steps, |p| {
+            last_alive = p.alive_rays;
+            last_energy_frac = if p.initial_total_energy > 0.0 {
+                p.total_energy / p.initial_total_energy
+            } else {
+                0.0
+            };
+
+            if p.steps_done == 0 {
+                return;
+            }
+
+            let pct = (p.steps_done as f64) / (p.num_steps as f64) * 100.0;
+            let alive_pct = (p.alive_rays as f64) / (p.num_rays as f64) * 100.0;
+            eprintln!(
+                "  Progress: step {}/{} ({:.1}%), t={:.2}s, alive={}/{} ({:.1}%), energy={:.1}%",
+                p.steps_done,
+                p.num_steps,
+                pct,
+                p.sim_time_s,
+                p.alive_rays,
+                p.num_rays,
+                alive_pct,
+                100.0 * last_energy_frac
+            );
+        });
+        println!(
+            "  Done. {} steps computed (alive={}/{}, energy={:.1}%).",
+            result.hits.len(),
+            last_alive,
+            num_rays,
+            100.0 * last_energy_frac
+        );
 
         // Extract metrics for each receiver
         let band_hits = result
@@ -434,7 +479,10 @@ fn main() -> Result<()> {
         println!("  Running visualization simulation ({})...", src_name);
         let viz_sim = Simulation::new(&building, viz_config)?;
         let viz_result = viz_sim.run();
-        println!("  Done. {} steps with ray history.", viz_result.positions.len());
+        println!(
+            "  Done. {} steps with ray history.",
+            viz_result.positions.len()
+        );
 
         let mut draw_config = RerunConfig::new();
         draw_config.session_name = "BRAS CR2".to_string();
