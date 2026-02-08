@@ -6,7 +6,7 @@ use crate::{Building, HasMesh, Mesh};
 use anyhow::Result;
 use rerun as rr;
 
-use super::config::{RerunConfig, Rgba};
+use super::config::{RerunConfig, Rgba, SimRayColormap, SimRayEnergyScale};
 
 /// Converts Point to native format of Rerun
 impl From<Point> for rr::Vec3D {
@@ -40,6 +40,64 @@ fn lerp_color(low: Rgba, high: Rgba, t: f32) -> Rgba {
         low.2 + (high.2 - low.2) * t,
         low.3 + (high.3 - low.3) * t,
     )
+}
+
+fn hsv_to_rgba(h_deg: f32, s: f32, v: f32, a: f32) -> Rgba {
+    let h = (h_deg.rem_euclid(360.0) / 60.0).clamp(0.0, 6.0);
+    let c = v * s;
+    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    (r1 + m, g1 + m, b1 + m, a)
+}
+
+fn energy_to_color_norm(energy: f64, config: &RerunConfig) -> f64 {
+    let e = energy.clamp(0.0, 1.0);
+    match config.sim_ray_energy_scale {
+        SimRayEnergyScale::Linear => e,
+        SimRayEnergyScale::Log => {
+            let min = config
+                .sim_ray_color_energy_min
+                .max(config.sim_ray_energy_threshold)
+                .clamp(1e-300, 1.0);
+            let e = e.clamp(min, 1.0);
+            let denom = 0.0 - min.ln();
+            if denom <= 0.0 {
+                return e;
+            }
+
+            // u: 1.0 at full energy, 0.0 at min energy.
+            let u = ((e.ln() - min.ln()) / denom).clamp(0.0, 1.0);
+            // Curve in "loss" space to make early changes more visible.
+            let gamma = config.sim_ray_color_gamma.clamp(1e-6, 100.0);
+            let loss = (1.0 - u).powf(gamma);
+            (1.0 - loss).clamp(0.0, 1.0)
+        }
+    }
+}
+
+fn ray_color(energy: f64, config: &RerunConfig) -> rr::Color {
+    let t = energy_to_color_norm(energy, config) as f32; // 1.0 = high energy
+    match config.sim_ray_colormap {
+        SimRayColormap::Lerp => {
+            let c = lerp_color(config.sim_ray_color_low, config.sim_ray_color_high, t);
+            color(c)
+        }
+        SimRayColormap::Rainbow => {
+            // Red (high energy) -> ... -> Blue (low energy)
+            let hue = (1.0 - t) * 240.0;
+            // Use the "high" alpha as the common alpha.
+            let a = config.sim_ray_color_high.3;
+            color(hsv_to_rgba(hue, 1.0, 1.0, a))
+        }
+    }
 }
 
 pub fn start_session(config: &RerunConfig) -> Result<rr::RecordingStream> {
@@ -188,9 +246,7 @@ pub fn draw_simulation(
         for (pos, &energy) in positions.iter().zip(energies.iter()) {
             if energy > config.sim_ray_energy_threshold {
                 pts.push(*pos);
-                let e = energy.clamp(0.0, 1.0) as f32;
-                let ray_color = lerp_color(config.sim_ray_color_low, config.sim_ray_color_high, e);
-                colors_vec.push(color(ray_color));
+                colors_vec.push(ray_color(energy, config));
                 radii_vec.push(config.sim_ray_radius);
             }
         }
