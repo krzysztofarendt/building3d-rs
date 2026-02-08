@@ -45,7 +45,7 @@ impl RerunConfig {
             sim_source_color: (0.0, 1.0, 0.0, 1.0),
             sim_source_radius: 0.02,
             sim_ray_color_high: (1.0, 0.0, 0.0, 0.8),
-            sim_ray_color_low: (0.0, 0.0, 0.0, 0.8),
+            sim_ray_color_low: (1.0, 1.0, 1.0, 0.1),
             sim_ray_radius: 0.04,
             sim_ray_energy_threshold: 1e-10,
         }
@@ -69,7 +69,7 @@ mod tests {
         assert_eq!(config.entity_prefix, "Building3d");
         assert_eq!(config.face_color, (1.0, 1.0, 1.0, 0.2));
         assert_eq!(config.sim_ray_color_high, (1.0, 0.0, 0.0, 0.8));
-        assert_eq!(config.sim_ray_color_low, (0.0, 0.0, 0.0, 0.8));
+        assert_eq!(config.sim_ray_color_low, (1.0, 1.0, 1.0, 0.1));
         assert_eq!(config.sim_ray_energy_threshold, 1e-10);
     }
 
