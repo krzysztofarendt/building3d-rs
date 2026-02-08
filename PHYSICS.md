@@ -652,6 +652,20 @@ Prefer returning both:
 1) machine-friendly data (tables), and
 2) a small set of Rerun artifacts (heatmaps, falsecolor, debug rays) for inspection.
 
+#### 3.8.6a Interface guidelines for thermal coupling (keep worktrees aligned)
+
+To keep lighting results usable as inputs to thermal simulation (without hardcoding any
+thermal metadata into geometry), adopt the following conventions:
+
+- **Stable identifiers**: any per-surface output intended for other modules should be keyed
+  by polygon `UID` (with optional `zone/solid/wall/polygon` path strings for reporting).
+- **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
+  photometric units (lux, cd/m²) only at output/reporting boundaries.
+- **Single source of truth for shortwave gains**: in a composed simulation pipeline, do not
+  compute solar gains in two different places. Either:
+  - a lighting/solar module produces absorbed/transmitted shortwave power, or
+  - the thermal module uses EPW + SHGC as a fallback approximation.
+
 #### 3.8.7 Performance roadmap (after correctness)
 
 Once validated, address performance in a way that preserves determinism:
@@ -916,6 +930,96 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
   rather than an anisotropic sky model (e.g. Perez).
 - **No thermal bridging**: U-values are for clear-field construction only.
 - **1D heat conduction**: no lateral heat flow within wall layers.
+
+### 4.9 Next Steps (Thermal Simulation Roadmap)
+
+This section is an **interface document**: it describes the intended model boundaries and
+data contracts so that different worktrees (e.g. lighting-focused vs energy-focused) can
+advance independently without drifting.
+
+The guiding principle is the same as for lighting (Section 3.8): **composable building
+blocks** with **deterministic configs**, where domain-specific semantics are imposed as
+late-stage *overlays* keyed by stable IDs (UIDs), not stored directly on geometry types.
+
+#### 4.9.1 First milestone: correct envelope accounting + multi-zone readiness
+
+1. **Boundary classification overlay**
+   - Classify each polygon as:
+     - exterior (to weather boundary),
+     - interface to same zone (ignore for transmission),
+     - inter-zone partition (coupled to another zone air node),
+     - (later) ground / adiabatic / fixed-temperature boundary.
+   - This must remain an overlay keyed by polygon `UID` (not a `Polygon` field).
+
+2. **Stop double-counting internal partitions**
+   - Exterior transmission should sum only `U*A` for exterior polygons.
+   - Inter-zone partitions should not appear in “to-outdoor” transmission; they become
+     coupling conductances between zone air nodes.
+
+#### 4.9.2 Thermal network core (EnergyPlus-like heat balance kernel)
+
+Move from “ad-hoc formulas” to a reusable **thermal network representation**:
+
+- **Nodes** (initially): one air temperature node per `Zone` (a deliberate simplification).
+- **Components**:
+  - exterior conductances `UA_zone = sum(U*A)` (W/K),
+  - inter-zone conductances `K_zone_a_zone_b` (W/K),
+  - infiltration/ventilation conductance (W/K),
+  - heat sources: internal + solar + HVAC (W).
+
+This network should be able to run in:
+- **steady-state** mode (instantaneous loads), and
+- **transient** mode (implicit timestep update; stable at 1-hour steps).
+
+#### 4.9.3 Pluggable wall/partition models (ISO 13790 → FD → 3D)
+
+Keep the network API stable while swapping internal component models:
+
+1. **Steady U-value** (current baseline): partitions and envelope are pure conductances.
+2. **Low-order RC networks** (recommended next): 2R1C/3R2C per construction for dynamic
+   surface temperatures and thermal mass effects.
+3. **1D finite-difference through layers** (optional): higher fidelity transient conduction.
+4. **3D conduction** (future): couple to tetrahedral meshes / FEM; should still expose
+   the same boundary heat-flow interface to the zone network.
+
+#### 4.9.4 Comfort outputs and radiant exchange (incremental)
+
+Once interior surface temperatures exist (via RC/FD models), add:
+- **MRT / operative temperature** per zone (start with area-weighted approximation),
+- **long-wave radiant exchange** (view-factor-based, later; can reuse ray infrastructure).
+
+#### 4.9.5 HVAC and airflow as replaceable boundary components (Modelica-style boundary)
+
+Treat HVAC and airflow as components connected to the zone air node:
+- keep **ideal loads** as the default actuator,
+- add optional explicit systems (fan-coil, heat pump with part-load curves, ERV/HRV),
+- add optional **airflow coupling** (pressure network) without changing geometry.
+
+#### 4.9.6 Cross-domain coupling contract (lighting ↔ thermal)
+
+To prevent “two ways to compute the same gains” drifting apart:
+
+- In any composed simulation, **exactly one module** should be responsible for producing
+  *shortwave solar absorption*.
+- Downstream thermal modules should consume a common payload keyed by polygon `UID`
+  (with optional path strings only for reporting/debugging).
+
+Suggested payload (conceptual):
+- `ShortwaveAbsorbedWPerPolygon { polygon_uid -> watts }`
+- `ShortwaveTransmittedWPerZone { zone_uid -> watts }` (optional simplification)
+
+Thermal should support a fallback path (EPW + SHGC) when no lighting/solar module is present,
+but the composed pipeline should designate a single authoritative producer.
+
+#### 4.9.7 Determinism requirements (for agentic iteration)
+
+All thermal simulation configs should be:
+- serializable and diffable,
+- reproducible given a seed and a fixed case spec,
+- explicit about units (SI internally).
+
+Where randomness is introduced (e.g. Monte Carlo view factors), it must be seeded and the
+results should be cacheable by a config hash.
 
 ---
 
