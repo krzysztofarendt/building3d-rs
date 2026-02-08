@@ -216,6 +216,9 @@ mod tests {
                 hvac,
                 dt_s: 3600.0,
                 steady_state: true,
+                model_kind: crate::sim::energy::module::EnergyModelKind::AirOnly,
+                material_library: None,
+                default_envelope_capacity_j_per_m2_k: 0.0,
             }))
             .with_module(MultiZoneRecorderModule::new(3600.0));
 
