@@ -664,6 +664,9 @@ thermal metadata into geometry), adopt the following conventions:
 - **Producers**: choose exactly one shortwave producer in a composed pipeline:
   - deterministic EPW-driven producer: `sim::lighting::shortwave::SolarShortwaveModule`, or
   - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
+- **Step-based pipelines**: for hour-by-hour composition, use `sim::lighting::shortwave::SolarShortwaveStepModule`
+  to publish `OutdoorAirTemperatureC` and `ShortwaveTransmittedWPerZone` each step, then consume them in
+  `sim::energy::module::EnergyModule`.
 - **Separation of concerns**: `sim::lighting::module::LightingModule` publishes `LightingResult`
   only; shortwave coupling payloads are produced explicitly by the chosen producer module.
 - **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to

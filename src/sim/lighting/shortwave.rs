@@ -1,9 +1,11 @@
 use anyhow::Result;
 
+use crate::sim::coupling::OutdoorAirTemperatureC;
 use crate::sim::coupling::{ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerZone};
 use crate::sim::energy::solar_bridge::{
     SolarGainConfig, SolarHourParams, compute_solar_gains_per_zone_with_materials,
 };
+use crate::sim::energy::weather::WeatherData;
 use crate::sim::framework::{Bus, SimContext, SimModule};
 use crate::sim::lighting::result::LightingResult;
 use crate::sim::materials::{MaterialLibrary, OpticalMaterial};
@@ -202,6 +204,101 @@ impl SimModule for SolarShortwaveModule {
         self.has_run = true;
         Ok(())
     }
+}
+
+/// Step-based EPW-driven solar shortwave producer for composed pipelines.
+///
+/// Each `step()` publishes:
+/// - [`OutdoorAirTemperatureC`] (from the weather record)
+/// - [`ShortwaveTransmittedWPerZone`] (SHGC-based approximation, per zone)
+/// - [`ShortwaveAbsorbedWPerPolygon`] (currently empty placeholder)
+///
+/// This is intended to pair with `EnergyModule` (`sim::energy::module`) in a pipeline where the
+/// caller advances time by repeatedly calling `Pipeline::step()`.
+#[derive(Clone)]
+pub struct SolarShortwaveStepConfig {
+    pub weather: WeatherData,
+    pub gain_config: SolarGainConfig,
+    pub material_library: Option<MaterialLibrary>,
+    /// Starting weather record index (0-based).
+    pub start_hour_idx: usize,
+}
+
+impl SolarShortwaveStepConfig {
+    pub fn new(weather: WeatherData, gain_config: SolarGainConfig) -> Self {
+        Self {
+            weather,
+            gain_config,
+            material_library: None,
+            start_hour_idx: 0,
+        }
+    }
+}
+
+pub struct SolarShortwaveStepModule {
+    config: SolarShortwaveStepConfig,
+    hour_idx: usize,
+}
+
+impl SolarShortwaveStepModule {
+    pub fn new(config: SolarShortwaveStepConfig) -> Self {
+        let hour_idx = config.start_hour_idx;
+        Self { config, hour_idx }
+    }
+
+    pub fn hour_idx(&self) -> usize {
+        self.hour_idx
+    }
+}
+
+impl SimModule for SolarShortwaveStepModule {
+    fn name(&self) -> &'static str {
+        "solar_shortwave_step"
+    }
+
+    fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if self.hour_idx >= self.config.weather.records.len() {
+            anyhow::bail!(
+                "SolarShortwaveStepModule: hour_idx {} out of range (len={})",
+                self.hour_idx,
+                self.config.weather.records.len()
+            );
+        }
+
+        let record = &self.config.weather.records[self.hour_idx];
+        bus.put(OutdoorAirTemperatureC(record.dry_bulb_temperature));
+
+        let params = SolarHourParams {
+            direct_normal_irradiance: record.direct_normal_radiation,
+            diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+            day_of_year: day_of_year(record.month, record.day),
+            hour: record.hour as f64,
+            latitude: self.config.weather.latitude,
+            longitude: self.config.weather.longitude,
+        };
+
+        let gains_by_zone = compute_solar_gains_per_zone_with_materials(
+            ctx.building,
+            &params,
+            &self.config.gain_config,
+            self.config.material_library.as_ref(),
+        );
+
+        let mut transmitted = ShortwaveTransmittedWPerZone::default();
+        transmitted.watts_by_zone_uid = gains_by_zone;
+
+        bus.put(transmitted);
+        bus.put(ShortwaveAbsorbedWPerPolygon::default());
+
+        self.hour_idx += 1;
+        Ok(())
+    }
+}
+
+fn day_of_year(month: u8, day: u8) -> u16 {
+    const DAYS_BEFORE_MONTH: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let m = (month as usize).saturating_sub(1).min(11);
+    DAYS_BEFORE_MONTH[m] + day as u16
 }
 
 #[cfg(test)]
