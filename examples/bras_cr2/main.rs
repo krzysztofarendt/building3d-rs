@@ -317,6 +317,24 @@ fn main() -> Result<()> {
     println!("\n  Note: T20 column shows RT60 (T30 with T20 fallback) from simulation.");
     println!("  {} source-receiver pairs averaged.", all_reports.len());
 
+    // ── 7. Write results CSV for figure generation ───────────────────
+    let csv_path = Path::new("examples/bras_cr2/results.csv");
+    let mut csv = String::from("metric,freq_hz,simulated,measured\n");
+    for b in 0..NUM_OCTAVE_BANDS {
+        let freq = OCTAVE_BAND_FREQUENCIES[b];
+        let sim_edt = if cnt_edt[b] > 0 { avg_edt[b] / cnt_edt[b] as f64 } else { f64::NAN };
+        let sim_t20 = if cnt_t20[b] > 0 { avg_t20[b] / cnt_t20[b] as f64 } else { f64::NAN };
+        let sim_c80 = if cnt_c80[b] > 0 { avg_c80[b] / cnt_c80[b] as f64 } else { f64::NAN };
+        let sim_d50 = if cnt_d50[b] > 0 { avg_d50[b] / cnt_d50[b] as f64 } else { f64::NAN };
+
+        csv.push_str(&format!("EDT,{},{:.6},{:.6}\n", freq, sim_edt, measured_edt[b]));
+        csv.push_str(&format!("RT60,{},{:.6},{:.6}\n", freq, sim_t20, measured_t20[b]));
+        csv.push_str(&format!("C80,{},{:.6},{:.6}\n", freq, sim_c80, measured_c80[b]));
+        csv.push_str(&format!("D50,{},{:.6},{:.6}\n", freq, sim_d50 * 100.0, measured_d50[b] * 100.0));
+    }
+    std::fs::write(&csv_path, &csv)?;
+    println!("\n  Results written to {}", csv_path.display());
+
     Ok(())
 }
 

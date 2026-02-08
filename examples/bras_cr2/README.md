@@ -118,9 +118,10 @@ the Schroeder backward-integrated energy decay curve.
 Simulated room acoustic parameters averaged across all 10 source-receiver
 pairs (2 sources x 5 receivers), compared against BRAS in-situ measurements.
 
-Results below obtained with 5,000 rays (for faster execution). Increasing to
-50,000 rays reduces statistical noise but does not substantially change the
-averaged metrics.
+Results below obtained with 5,000 rays (for faster execution). Running the
+benchmark writes `results.csv` which can be used to regenerate the charts via
+`python3 examples/bras_cr2/generate_figures.py`. Increasing to 50,000 rays
+reduces statistical noise but does not substantially change the averaged metrics.
 
 ### EDT (Early Decay Time)
 
