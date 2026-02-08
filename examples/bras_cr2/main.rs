@@ -11,8 +11,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use building3d::Point;
-use building3d::RerunConfig;
 use building3d::draw::rerun::{draw_simulation, start_session};
 use building3d::io::{Ac3dCoordSystem, read_ac3d};
 use building3d::sim::acoustics::impulse_response::ImpulseResponse;
@@ -22,6 +20,7 @@ use building3d::sim::materials::{
     AcousticMaterial, Material, MaterialLibrary, NUM_OCTAVE_BANDS, OCTAVE_BAND_FREQUENCIES,
 };
 use building3d::sim::rays::{AcousticMode, ENERGY_EPS, Simulation, SimulationConfig};
+use building3d::{Point, RerunConfig, SimRayColormap, SimRayEnergyScale};
 
 /// Third-octave band indices (in the 31-band 20 Hz–20 kHz CSV) for the
 /// 6 octave bands used by building3d (125, 250, 500, 1000, 2000, 4000 Hz).
@@ -80,6 +79,118 @@ fn t20_per_band(ir: &ImpulseResponse) -> [Option<f64>; NUM_OCTAVE_BANDS] {
     out
 }
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok()
+}
+
+fn env_f64(name: &str) -> Option<f64> {
+    std::env::var(name).ok().and_then(|s| s.parse::<f64>().ok())
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+}
+
+fn run_visualization(
+    building: &building3d::Building,
+    sources: &[(&str, Point)],
+    lib: &MaterialLibrary,
+    absorber_positions: &[Point],
+    absorber_radius: f64,
+) -> Result<()> {
+    let viz_rays = env_usize("BRAS_CR2_VIZ_RAYS").unwrap_or(5_000);
+    let default_viz_dt_s: f64 = 0.001; // 1 ms (coarser for visualization)
+    let viz_time_step: f64 = env_f64("BRAS_CR2_VIZ_DT_S").unwrap_or_else(|| {
+        let div = env_usize("BRAS_CR2_VIZ_DT_DIV").unwrap_or(1).max(1);
+        default_viz_dt_s / (div as f64)
+    });
+    let viz_max_time: f64 = env_f64("BRAS_CR2_VIZ_MAX_TIME_S").unwrap_or(1.0);
+    let viz_num_steps = ((viz_max_time / viz_time_step).round() as usize).max(1);
+    let viz_band = env_usize("BRAS_CR2_VIZ_SINGLE_BAND")
+        .or_else(|| {
+            env_f64("BRAS_CR2_VIZ_SINGLE_OCTAVE_HZ").and_then(|hz| {
+                OCTAVE_BAND_FREQUENCIES
+                    .iter()
+                    .position(|&f| (f - hz).abs() < 1e-9)
+            })
+        })
+        .filter(|&b| b < NUM_OCTAVE_BANDS);
+
+    println!("\n{}", "=".repeat(60));
+    println!("Visualization run (all sources)");
+    if let Some(b) = viz_band {
+        println!(
+            "  Mode: single octave band {} Hz",
+            OCTAVE_BAND_FREQUENCIES[b]
+        );
+    }
+    println!(
+        "  Rays: {}, steps: {}, dt: {:.1e} s, duration: {:.3} s",
+        viz_rays, viz_num_steps, viz_time_step, viz_max_time
+    );
+    println!("{}", "=".repeat(60));
+
+    let mut draw_config = RerunConfig::new();
+    draw_config.session_name = "BRAS CR2".to_string();
+    draw_config.sim_ray_radius = env_f64("BRAS_CR2_VIZ_RAY_RADIUS_M")
+        .unwrap_or(0.01)
+        .max(0.0) as f32;
+    let playback_dt_s = env_f64("BRAS_CR2_VIZ_PLAYBACK_DT_S").or_else(|| {
+        env_f64("BRAS_CR2_VIZ_PLAYBACK_FPS")
+            .filter(|&fps| fps > 0.0)
+            .map(|fps| 1.0 / fps)
+    });
+    draw_config.sim_playback_dt_s = playback_dt_s.unwrap_or(1.0 / 60.0);
+    draw_config.sim_absorber_color = (0.0, 0.4, 1.0, 0.5); // blue receivers/absorbers
+
+    // Make rays visually change color quickly, even for small early energy loss.
+    draw_config.sim_ray_colormap = SimRayColormap::Rainbow;
+    draw_config.sim_ray_energy_scale = SimRayEnergyScale::Log;
+    draw_config.sim_ray_color_energy_min = env_f64("BRAS_CR2_VIZ_COLOR_MIN").unwrap_or(1e-2);
+    draw_config.sim_ray_color_gamma = env_f64("BRAS_CR2_VIZ_COLOR_GAMMA").unwrap_or(0.3);
+
+    // 50% transparent ray points.
+    draw_config.sim_ray_color_high.3 = 0.5;
+    draw_config.sim_ray_color_low.3 = 0.5;
+
+    let session = start_session(&draw_config)?;
+
+    for (src_name, src_pos) in sources.iter() {
+        let mut viz_config = SimulationConfig::new();
+        viz_config.acoustic_mode = AcousticMode::FrequencyDependent;
+        viz_config.material_library = Some(lib.clone());
+        viz_config.enable_air_absorption = true;
+        viz_config.search_transparent = false;
+        viz_config.source = *src_pos;
+        viz_config.absorbers = absorber_positions.to_vec();
+        viz_config.absorber_radius = absorber_radius;
+        viz_config.num_rays = viz_rays;
+        viz_config.num_steps = viz_num_steps;
+        viz_config.time_step = viz_time_step;
+        viz_config.store_ray_history = true;
+        viz_config.store_ray_band_history = false;
+        viz_config.single_band_index = viz_band;
+        viz_config.min_alive_fraction = 0.01;
+
+        println!("  Running visualization simulation ({})...", src_name);
+        let viz_sim = Simulation::new(building, viz_config)?;
+        let viz_result = viz_sim.run();
+        println!(
+            "  Done. {} steps with ray history.",
+            viz_result.positions.len()
+        );
+
+        draw_config.entity_prefix = src_name.to_string();
+        draw_simulation(&session, &viz_result, building, &draw_config)?;
+        println!("  {} sent to Rerun", src_name);
+    }
+
+    println!("  Visualization sent to Rerun (localhost:9876)");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let base = Path::new("validation/bras");
     let ac3d_path = base.join("informed_sim/RavenModels/scene9.ac");
@@ -126,6 +237,7 @@ fn main() -> Result<()> {
     ];
 
     let absorber_positions: Vec<Point> = receivers.iter().map(|(_, p)| *p).collect();
+    let viz_only = env_flag("BRAS_CR2_VIZ_ONLY");
 
     // ── 4. Simulation parameters ──────────────────────────────────────
     let time_step = 2.5e-5; // 25 μs
@@ -157,6 +269,9 @@ fn main() -> Result<()> {
         "  Early stop: alive_fraction < {:.3} OR ray_energy <= {:.1e}",
         0.01, ENERGY_EPS
     );
+    if viz_only {
+        println!("  Mode: visualization-only (skipping metrics run)");
+    }
 
     // Sanity: positions should be inside the room volume.
     for (name, p) in sources.iter().chain(receivers.iter()) {
@@ -166,6 +281,19 @@ fn main() -> Result<()> {
                 p.x, p.y, p.z
             );
         }
+    }
+
+    if viz_only {
+        if env_flag("BRAS_CR2_VISUALIZE") {
+            run_visualization(
+                &building,
+                &sources,
+                &lib,
+                &absorber_positions,
+                absorber_radius,
+            )?;
+        }
+        return Ok(());
     }
 
     // ── 5. Run simulation for each source ─────────────────────────────
@@ -444,58 +572,14 @@ fn main() -> Result<()> {
     println!("\n  Results written to {}", csv_path.display());
 
     // ── 8. Rerun visualization (opt-in) ──────────────────────────────
-    if std::env::var("BRAS_CR2_VISUALIZE").is_ok() {
-        let viz_rays = std::env::var("BRAS_CR2_VIZ_RAYS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(500);
-        let viz_time_step: f64 = 0.001; // 1 ms (coarser for visualization)
-        let viz_max_time: f64 = 1.0; // 1 second of simulation
-        let viz_num_steps = (viz_max_time / viz_time_step).round() as usize;
-
-        println!("\n{}", "=".repeat(60));
-        println!("Visualization run (all sources)");
-        println!(
-            "  Rays: {}, steps: {}, dt: {:.1e} s, duration: {:.1} s",
-            viz_rays, viz_num_steps, viz_time_step, viz_max_time
-        );
-        println!("{}", "=".repeat(60));
-
-        let mut draw_config = RerunConfig::new();
-        draw_config.session_name = "BRAS CR2".to_string();
-        draw_config.sim_ray_radius = 0.02;
-
-        let session = start_session(&draw_config)?;
-
-        for (src_name, src_pos) in sources.iter() {
-            let mut viz_config = SimulationConfig::new();
-            viz_config.acoustic_mode = AcousticMode::FrequencyDependent;
-            viz_config.material_library = Some(lib.clone());
-            viz_config.enable_air_absorption = true;
-            viz_config.search_transparent = false;
-            viz_config.source = *src_pos;
-            viz_config.absorbers = absorber_positions.clone();
-            viz_config.absorber_radius = absorber_radius;
-            viz_config.num_rays = viz_rays;
-            viz_config.num_steps = viz_num_steps;
-            viz_config.time_step = viz_time_step;
-            viz_config.store_ray_history = true;
-            viz_config.min_alive_fraction = 0.01;
-
-            println!("  Running visualization simulation ({})...", src_name);
-            let viz_sim = Simulation::new(&building, viz_config)?;
-            let viz_result = viz_sim.run();
-            println!(
-                "  Done. {} steps with ray history.",
-                viz_result.positions.len()
-            );
-
-            draw_config.entity_prefix = src_name.to_string();
-            draw_simulation(&session, &viz_result, &building, &draw_config)?;
-            println!("  {} sent to Rerun", src_name);
-        }
-
-        println!("  Visualization sent to Rerun (localhost:9876)");
+    if env_flag("BRAS_CR2_VISUALIZE") {
+        run_visualization(
+            &building,
+            &sources,
+            &lib,
+            &absorber_positions,
+            absorber_radius,
+        )?;
     }
 
     Ok(())
