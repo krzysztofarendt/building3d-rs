@@ -12,6 +12,25 @@ use std::collections::HashMap;
 
 use crate::UID;
 
+/// Outdoor air (dry-bulb) temperature [°C].
+///
+/// This is a minimal weather input for step-based thermal simulations.
+#[derive(Debug, Clone, Copy)]
+pub struct OutdoorAirTemperatureC(pub f64);
+
+/// Internal heat gains per zone (people + equipment + lighting), keyed by zone `UID` [W].
+#[derive(Debug, Clone, Default)]
+pub struct InternalGainsWPerZone {
+    pub watts_by_zone_uid: HashMap<UID, f64>,
+}
+
+/// Total internal heat gains for the whole building [W].
+///
+/// When only a building-wide number is available, thermal simulations may distribute
+/// this across zones by volume as a fallback.
+#[derive(Debug, Clone, Copy)]
+pub struct InternalGainsWTotal(pub f64);
+
 /// Shortwave radiant power absorbed at polygon surfaces, keyed by polygon `UID` [W].
 ///
 /// Note: "shortwave" usually means solar radiation. If a lighting simulation includes
