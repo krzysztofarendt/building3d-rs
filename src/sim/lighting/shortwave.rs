@@ -746,7 +746,11 @@ mod tests {
 
         let transmitted = bus.get::<ShortwaveTransmittedWPerZone>().unwrap();
         let zone_uid = ctx.building.zones().first().unwrap().uid.clone();
-        let g = transmitted.watts_by_zone_uid.get(&zone_uid).cloned().unwrap_or(0.0);
+        let g = transmitted
+            .watts_by_zone_uid
+            .get(&zone_uid)
+            .cloned()
+            .unwrap_or(0.0);
         assert!(g > 0.0);
         Ok(())
     }
