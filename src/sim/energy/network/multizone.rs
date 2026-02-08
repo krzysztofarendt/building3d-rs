@@ -54,6 +54,7 @@ impl MultiZoneAirModel {
         building: &Building,
         network: &ThermalNetwork,
         infiltration_ach: f64,
+        thermal_capacity_j_per_m3_k: f64,
         initial_temp_c: f64,
     ) -> Self {
         // Stable zone ordering: building.zones() is name-sorted by convention.
@@ -71,9 +72,10 @@ impl MultiZoneAirModel {
 
         let temperatures_c = vec![initial_temp_c; n];
 
-        // Tuning factor: 50 kJ/(m³·K) for medium-weight construction.
-        let thermal_capacity_j_per_k: Vec<f64> =
-            zone_volumes_m3.iter().map(|v| v * 50_000.0).collect();
+        let thermal_capacity_j_per_k: Vec<f64> = zone_volumes_m3
+            .iter()
+            .map(|v| v * thermal_capacity_j_per_m3_k.max(0.0))
+            .collect();
 
         let exterior_conductance_w_per_k: Vec<f64> = zone_uids
             .iter()
@@ -350,7 +352,13 @@ mod tests {
         config.indoor_temperature = 20.0;
 
         let network = ThermalNetwork::build(&building, &config, &index, &boundaries);
-        let mut model = MultiZoneAirModel::new(&building, &network, config.infiltration_ach, 20.0);
+        let mut model = MultiZoneAirModel::new(
+            &building,
+            &network,
+            config.infiltration_ach,
+            config.thermal_capacity_j_per_m3_k,
+            20.0,
+        );
 
         // Disable HVAC by using an enormous deadband.
         let hvac = HvacIdealLoads::with_setpoints(-1e9, 1e9);
@@ -380,7 +388,13 @@ mod tests {
         config.indoor_temperature = 20.0;
 
         let network = ThermalNetwork::build(&building, &config, &index, &boundaries);
-        let mut model = MultiZoneAirModel::new(&building, &network, config.infiltration_ach, 20.0);
+        let mut model = MultiZoneAirModel::new(
+            &building,
+            &network,
+            config.infiltration_ach,
+            config.thermal_capacity_j_per_m3_k,
+            20.0,
+        );
 
         let hvac = HvacIdealLoads::with_setpoints(-1e9, 1e9);
         let gains = vec![1000.0, 0.0];

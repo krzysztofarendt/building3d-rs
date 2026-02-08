@@ -7,7 +7,9 @@ use super::config::ThermalConfig;
 use super::hvac::{HvacIdealLoads, LumpedThermalModel};
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
-use super::solar_bridge::{SolarGainConfig, SolarHourParams, compute_solar_gains};
+use super::solar_bridge::{
+    SolarGainConfig, SolarHourParams, compute_solar_gains, compute_solar_gains_per_zone,
+};
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance_with_boundaries;
 use crate::UID;
@@ -206,7 +208,7 @@ pub fn run_transient_simulation(
     // Typical range: ~30 kJ/(m^3*K) (lightweight) to ~80 kJ/(m^3*K) (heavyweight).
     // For more accurate results, derive from actual construction layer properties.
     let volume: f64 = building.zones().iter().map(|z| z.volume()).sum();
-    let thermal_capacity = volume * 50000.0; // J/K
+    let thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
 
     let mut model = LumpedThermalModel::new(
         base_config.indoor_temperature,
@@ -309,6 +311,7 @@ pub fn run_multizone_transient_simulation(
         building,
         &network,
         base_config.infiltration_ach,
+        base_config.thermal_capacity_j_per_m3_k,
         base_config.indoor_temperature,
     );
 
@@ -335,7 +338,7 @@ pub fn run_multizone_transient_simulation(
 
     for (hour_idx, record) in weather.records.iter().enumerate() {
         let gains_internal = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
-        let gains_solar = match solar_config {
+        let solar_by_zone = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
                     direct_normal_irradiance: record.direct_normal_radiation,
@@ -345,16 +348,19 @@ pub fn run_multizone_transient_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains(building, &params, sc)
+                compute_solar_gains_per_zone(building, &params, sc)
             }
-            None => 0.0,
+            None => std::collections::HashMap::new(),
         };
-        let gains_total = gains_internal + gains_solar;
-
         let mut gains_by_zone = vec![0.0; n_zones];
         if total_volume > 1e-14 {
             for i in 0..n_zones {
-                gains_by_zone[i] = gains_total * (zone_volumes_m3[i] / total_volume);
+                let internal_i = gains_internal * (zone_volumes_m3[i] / total_volume);
+                let solar_i = solar_by_zone
+                    .get(&model.zone_uids()[i])
+                    .cloned()
+                    .unwrap_or(0.0);
+                gains_by_zone[i] = internal_i + solar_i;
             }
         }
 

@@ -96,20 +96,7 @@ impl ThermalNetwork {
             let u1 = config.resolve_u_value(path1);
             let u2 = config.resolve_u_value(path2);
 
-            // The modeling intent for inter-zone partitions is ambiguous (two polygons
-            // may represent the same physical construction from both sides).
-            // For now, use the mean U-value and the geometric overlap area.
-            let u_eq = if u1.is_finite() && u2.is_finite() {
-                0.5 * (u1 + u2)
-            } else if u1.is_finite() {
-                u1
-            } else if u2.is_finite() {
-                u2
-            } else {
-                continue;
-            };
-
-            let k = u_eq * overlap_area;
+            let k = config.interzone_conductance_w_per_k(u1, u2, overlap_area);
             if k <= 0.0 {
                 continue;
             }
