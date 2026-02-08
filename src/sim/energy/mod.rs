@@ -1,3 +1,4 @@
+pub mod boundary;
 pub mod config;
 pub mod construction;
 pub mod hvac;

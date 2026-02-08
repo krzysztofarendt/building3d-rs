@@ -1,10 +1,16 @@
 use crate::Building;
 
+use crate::sim::index::SurfaceIndex;
+
+use super::boundary::ThermalBoundaries;
 use super::config::ThermalConfig;
 use super::hvac::{HvacIdealLoads, LumpedThermalModel};
 use super::schedule::InternalGainsProfile;
 use super::solar_bridge::{SolarGainConfig, SolarHourParams, compute_solar_gains};
 use super::weather::WeatherData;
+use super::zone::calculate_heat_balance_with_boundaries;
+
+#[cfg(test)]
 use super::zone::calculate_heat_balance;
 
 /// Result of an annual energy simulation.
@@ -52,6 +58,9 @@ pub fn run_annual_simulation(
     gains_profile: Option<&InternalGainsProfile>,
     solar_config: Option<&SolarGainConfig>,
 ) -> AnnualResult {
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
     let mut hourly_cooling = Vec::with_capacity(num_hours);
@@ -88,7 +97,7 @@ pub fn run_annual_simulation(
             None => 0.0,
         };
 
-        let result = calculate_heat_balance(building, &config);
+        let result = calculate_heat_balance_with_boundaries(building, &config, &boundaries);
 
         hourly_heating.push(result.heating_demand);
         hourly_cooling.push(result.cooling_demand);
@@ -132,12 +141,15 @@ pub fn run_transient_simulation(
     gains_profile: Option<&InternalGainsProfile>,
     solar_config: Option<&SolarGainConfig>,
 ) -> AnnualResult {
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
     let mut hourly_cooling = Vec::with_capacity(num_hours);
 
     // Compute building-level UA and thermal capacity
-    let steady = calculate_heat_balance(building, base_config);
+    let steady = calculate_heat_balance_with_boundaries(building, base_config, &boundaries);
     let dt = base_config.indoor_temperature - base_config.outdoor_temperature;
     let ua_total = if dt.abs() > 1e-10 {
         steady.transmission_loss / dt
@@ -148,6 +160,9 @@ pub fn run_transient_simulation(
             for solid in zone.solids() {
                 for wall in solid.walls() {
                     for polygon in wall.polygons() {
+                        if !boundaries.is_exterior(&polygon.uid) {
+                            continue;
+                        }
                         let path = format!(
                             "{}/{}/{}/{}",
                             zone.name, solid.name, wall.name, polygon.name

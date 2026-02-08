@@ -175,8 +175,7 @@ impl Simulation {
                                     if next_dist > reflection_dist {
                                         current_target = None;
                                     } else {
-                                        search_pos =
-                                            search_pos + new_vel_norm * (next_dist * 0.5);
+                                        search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
                                     }
                                 }
                             }
@@ -362,8 +361,7 @@ impl Simulation {
                                     if next_dist > reflection_dist {
                                         current_target = None;
                                     } else {
-                                        search_pos =
-                                            search_pos + new_vel_norm * (next_dist * 0.5);
+                                        search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
                                     }
                                 }
                             }
@@ -728,13 +726,11 @@ mod tests {
         let building = Building::new("b", vec![zone]).unwrap();
 
         let mut lib = MaterialLibrary::new();
-        lib.add(
-            Material::new("walls").with_acoustic(AcousticMaterial::new(
-                "walls",
-                [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
-                [0.1; 6],
-            )),
-        );
+        lib.add(Material::new("walls").with_acoustic(AcousticMaterial::new(
+            "walls",
+            [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
+            [0.1; 6],
+        )));
         lib.assign("/", "walls");
 
         let mut config = SimulationConfig::new();

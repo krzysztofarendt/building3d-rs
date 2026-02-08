@@ -322,12 +322,16 @@ mod tests {
 
         for band in 0..NUM_OCTAVE_BANDS {
             let computed = rt60(&ir, band);
-            assert!(computed.is_some(), "RT60 should be computable for band {band}");
+            assert!(
+                computed.is_some(),
+                "RT60 should be computable for band {band}"
+            );
             let rt = computed.unwrap();
             let error = (rt - target_rt60).abs() / target_rt60;
             assert!(
                 error < 0.05,
-                "RT60 band {band}: expected {target_rt60:.3}s, got {rt:.3}s (error={:.1}%)", error * 100.0
+                "RT60 band {band}: expected {target_rt60:.3}s, got {rt:.3}s (error={:.1}%)",
+                error * 100.0
             );
         }
     }

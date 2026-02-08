@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::Point;
 use super::sensor::SensorGrid;
 use super::sources::Rgb;
+use crate::Point;
 
 /// Result of a lighting simulation.
 pub struct LightingResult {
@@ -52,7 +52,13 @@ impl LightingResult {
     }
 
     /// Records a ray hit on a sensor grid, distributing energy to the nearest sensor.
-    pub fn record_sensor_hit(&mut self, grid_idx: usize, hit_pos: Point, energy: Rgb, sensor_area: f64) {
+    pub fn record_sensor_hit(
+        &mut self,
+        grid_idx: usize,
+        hit_pos: Point,
+        energy: Rgb,
+        sensor_area: f64,
+    ) {
         if let Some(grid) = self.sensor_grids.get_mut(grid_idx) {
             // Find nearest sensor
             let mut best_idx = None;
