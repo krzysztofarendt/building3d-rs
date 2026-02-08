@@ -252,7 +252,11 @@ pub fn draw_simulation(
         .zip(result.energies.iter())
         .enumerate()
     {
-        session.set_time_sequence("step", step as i64);
+        if config.sim_playback_dt_s > 0.0 {
+            session.set_duration_secs("step", (step as f64) * config.sim_playback_dt_s.max(0.0));
+        } else {
+            session.set_time_sequence("step", step as i64);
+        }
 
         // Collect alive rays (energy > threshold)
         let mut pts: Vec<Point> = Vec::new();

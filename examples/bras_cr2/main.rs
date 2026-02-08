@@ -137,6 +137,12 @@ fn run_visualization(
     draw_config.sim_ray_radius = env_f64("BRAS_CR2_VIZ_RAY_RADIUS_M")
         .unwrap_or(0.01)
         .max(0.0) as f32;
+    let playback_dt_s = env_f64("BRAS_CR2_VIZ_PLAYBACK_DT_S").or_else(|| {
+        env_f64("BRAS_CR2_VIZ_PLAYBACK_FPS")
+            .filter(|&fps| fps > 0.0)
+            .map(|fps| 1.0 / fps)
+    });
+    draw_config.sim_playback_dt_s = playback_dt_s.unwrap_or(1.0 / 60.0);
     draw_config.sim_absorber_color = (0.0, 0.4, 1.0, 0.5); // blue receivers/absorbers
 
     // Make rays visually change color quickly, even for small early energy loss.

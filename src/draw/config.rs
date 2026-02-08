@@ -48,6 +48,13 @@ pub struct RerunConfig {
     pub sim_ray_color_gamma: f64,
     pub sim_ray_radius: f32,
     pub sim_ray_energy_threshold: f64,
+    /// If > 0, logs ray frames on a duration timeline with this fixed per-frame spacing (seconds).
+    ///
+    /// This is purely a visualization/playback control for the Rerun viewer: it does not affect
+    /// the physics timestep used by the simulation.
+    ///
+    /// If set to 0, logs frames on a sequence timeline (one integer step per frame).
+    pub sim_playback_dt_s: f64,
 }
 
 impl RerunConfig {
@@ -74,6 +81,7 @@ impl RerunConfig {
             sim_ray_color_gamma: 0.5,
             sim_ray_radius: 0.04,
             sim_ray_energy_threshold: 1e-10,
+            sim_playback_dt_s: 0.0,
         }
     }
 }
