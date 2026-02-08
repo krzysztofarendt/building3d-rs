@@ -398,4 +398,158 @@ mod tests {
 
         assert!(result.hit_count.is_empty(), "No lights means no hits");
     }
+
+    // ── Physics verification tests ──────────────────────────────────────
+
+    #[test]
+    fn test_energy_conservation_first_bounce() {
+        // With fully absorbing walls (reflectance=0) and one bounce,
+        // all rays hit exactly one surface. In a closed box, total collected
+        // flux should be consistent across two runs with the same setup.
+        //
+        // The PointLight emits intensity in W/sr; ray energy = intensity/N_rays.
+        // Total collected = source_flux / (4*pi) for an omnidirectional source.
+        let s0 = Solid::from_box(4.0, 4.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let source_flux = 1000.0;
+        let expected = source_flux / (4.0 * std::f64::consts::PI);
+        let mut config = LightingConfig::new();
+        config.num_rays = 200_000;
+        config.max_bounces = 1;
+        config.default_reflectance = [0.0, 0.0, 0.0]; // fully absorbing
+        config
+            .point_lights
+            .push(PointLight::white(Point::new(2.0, 2.0, 1.5), source_flux));
+
+        let sim = LightingSimulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        let total_collected: f64 = result
+            .incident_flux
+            .values()
+            .map(|f| f[0] + f[1] + f[2])
+            .sum();
+
+        // Total should be close to source_flux/(4*pi) ≈ 79.6 W.
+        // Allow 5% tolerance for ray sampling variance.
+        let ratio = total_collected / expected;
+        assert!(
+            ratio > 0.95 && ratio < 1.05,
+            "Total collected flux should approximate source_flux/(4*pi). \
+             ratio={ratio:.3} (collected={total_collected:.1}, expected={expected:.1})"
+        );
+    }
+
+    #[test]
+    fn test_more_bounces_more_total_flux() {
+        // With reflective walls, more bounces should lead to more total
+        // flux being deposited across surfaces (energy gets redistributed).
+        let s0 = Solid::from_box(3.0, 3.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let source_flux = 1000.0;
+
+        let run_with_bounces = |max_bounces: usize| -> f64 {
+            let mut config = LightingConfig::new();
+            config.num_rays = 100_000;
+            config.max_bounces = max_bounces;
+            config.default_reflectance = [0.5, 0.5, 0.5];
+            config
+                .point_lights
+                .push(PointLight::white(Point::new(1.5, 1.5, 1.5), source_flux));
+
+            let sim = LightingSimulation::new(&building, config).unwrap();
+            let result = sim.run();
+            result
+                .incident_flux
+                .values()
+                .map(|f| f[0] + f[1] + f[2])
+                .sum()
+        };
+
+        let flux_1 = run_with_bounces(1);
+        let flux_5 = run_with_bounces(5);
+
+        assert!(
+            flux_5 > flux_1,
+            "More bounces should deposit more total flux: 5-bounce={flux_5:.1}, 1-bounce={flux_1:.1}"
+        );
+    }
+
+    #[test]
+    fn test_double_source_power_doubles_illuminance() {
+        // Illuminance should scale linearly with source power.
+        let s0 = Solid::from_box(3.0, 3.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let run_with_flux = |flux: f64| -> f64 {
+            let mut config = LightingConfig::new();
+            config.num_rays = 200_000;
+            config.max_bounces = 1;
+            config.default_reflectance = [0.0, 0.0, 0.0];
+            config
+                .point_lights
+                .push(PointLight::white(Point::new(1.5, 1.5, 1.5), flux));
+
+            let sim = LightingSimulation::new(&building, config).unwrap();
+            let result = sim.run();
+            result
+                .incident_flux
+                .values()
+                .map(|f| f[0] + f[1] + f[2])
+                .sum()
+        };
+
+        let flux_500 = run_with_flux(500.0);
+        let flux_1000 = run_with_flux(1000.0);
+
+        let ratio = flux_1000 / flux_500;
+        assert!(
+            (ratio - 2.0).abs() < 0.2,
+            "Doubling source power should double collected flux. \
+             ratio={ratio:.3} (1000W={flux_1000:.1}, 500W={flux_500:.1})"
+        );
+    }
+
+    #[test]
+    fn test_reflective_walls_increase_total_flux() {
+        // Reflective walls should increase total deposited flux compared
+        // to fully absorbing walls (energy bounces and gets recorded multiple times).
+        let s0 = Solid::from_box(3.0, 3.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let source_flux = 1000.0;
+
+        let run_with_reflectance = |refl: f64| -> f64 {
+            let mut config = LightingConfig::new();
+            config.num_rays = 100_000;
+            config.max_bounces = 10;
+            config.default_reflectance = [refl, refl, refl];
+            config
+                .point_lights
+                .push(PointLight::white(Point::new(1.5, 1.5, 1.5), source_flux));
+
+            let sim = LightingSimulation::new(&building, config).unwrap();
+            let result = sim.run();
+            result
+                .incident_flux
+                .values()
+                .map(|f| f[0] + f[1] + f[2])
+                .sum()
+        };
+
+        let flux_absorbing = run_with_reflectance(0.0);
+        let flux_reflective = run_with_reflectance(0.8);
+
+        assert!(
+            flux_reflective > flux_absorbing * 1.5,
+            "Reflective walls should deposit significantly more total flux. \
+             reflective={flux_reflective:.1}, absorbing={flux_absorbing:.1}"
+        );
+    }
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::Point;
 use super::sensor::SensorGrid;
 use super::sources::Rgb;
 
@@ -11,7 +12,7 @@ pub struct LightingResult {
     pub incident_flux: HashMap<String, Rgb>,
     /// Number of ray hits per polygon.
     pub hit_count: HashMap<String, usize>,
-    /// Per-point sensor grids (populated when sensor_spacing is set).
+    /// Sensor grids with recorded illuminance data.
     pub sensor_grids: Vec<SensorGrid>,
 }
 
@@ -38,41 +39,6 @@ impl LightingResult {
         *self.hit_count.entry(path.to_string()).or_insert(0) += 1;
     }
 
-    /// Records a ray hit on a sensor grid, accumulating energy on the nearest sensor.
-    pub fn record_sensor_hit(
-        &mut self,
-        grid_idx: usize,
-        hit_pos: crate::Point,
-        energy: Rgb,
-        sensor_area: f64,
-    ) {
-        if grid_idx >= self.sensor_grids.len() {
-            return;
-        }
-        let grid = &mut self.sensor_grids[grid_idx];
-        if grid.sensors.is_empty() || sensor_area <= 0.0 {
-            return;
-        }
-        // Find nearest sensor
-        let mut best_i = 0;
-        let mut best_d2 = f64::INFINITY;
-        for (i, s) in grid.sensors.iter().enumerate() {
-            let dx = s.position.x - hit_pos.x;
-            let dy = s.position.y - hit_pos.y;
-            let dz = s.position.z - hit_pos.z;
-            let d2 = dx * dx + dy * dy + dz * dz;
-            if d2 < best_d2 {
-                best_d2 = d2;
-                best_i = i;
-            }
-        }
-        let s = &mut grid.sensors[best_i];
-        s.illuminance[0] += energy[0] / sensor_area;
-        s.illuminance[1] += energy[1] / sensor_area;
-        s.illuminance[2] += energy[2] / sensor_area;
-        s.hit_count += 1;
-    }
-
     /// Computes irradiance from accumulated flux and polygon areas.
     pub fn compute_illuminance(&mut self, areas: &HashMap<String, f64>) {
         for (path, flux) in &self.incident_flux {
@@ -81,6 +47,31 @@ impl LightingResult {
                     path.clone(),
                     [flux[0] / area, flux[1] / area, flux[2] / area],
                 );
+            }
+        }
+    }
+
+    /// Records a ray hit on a sensor grid, distributing energy to the nearest sensor.
+    pub fn record_sensor_hit(&mut self, grid_idx: usize, hit_pos: Point, energy: Rgb, sensor_area: f64) {
+        if let Some(grid) = self.sensor_grids.get_mut(grid_idx) {
+            // Find nearest sensor
+            let mut best_idx = None;
+            let mut best_dist2 = f64::INFINITY;
+            for (i, sensor) in grid.sensors.iter().enumerate() {
+                let d = hit_pos - sensor.position;
+                let dist2 = d.dx * d.dx + d.dy * d.dy + d.dz * d.dz;
+                if dist2 < best_dist2 {
+                    best_dist2 = dist2;
+                    best_idx = Some(i);
+                }
+            }
+            if let Some(idx) = best_idx {
+                let sensor = &mut grid.sensors[idx];
+                // Convert flux to irradiance: E = flux / area
+                sensor.illuminance[0] += energy[0] / sensor_area;
+                sensor.illuminance[1] += energy[1] / sensor_area;
+                sensor.illuminance[2] += energy[2] / sensor_area;
+                sensor.hit_count += 1;
             }
         }
     }
