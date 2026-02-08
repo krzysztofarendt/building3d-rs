@@ -10,7 +10,7 @@ from the BRAS (Benchmark for Room Acoustical Simulation) database.
 | Property           | Value                                      |
 |--------------------|--------------------------------------------|
 | Room type          | Seminar room (roughly rectangular)         |
-| Dimensions         | ~8.4 m x 6.7 m x 3.0 m                    |
+| Dimensions         | ~8.4 m x 6.7 m x 3.0 m                     |
 | Volume             | 146.1 m^3 (from 3D model)                  |
 | Surface area       | 202.5 m^2                                  |
 | Temperature        | 19.5 C                                     |
@@ -41,12 +41,12 @@ estimates (31 third-octave bands, subsampled to 6 octave bands).
 ### Absorption coefficients
 
 | Material | Area (m^2) | 125 Hz | 250 Hz | 500 Hz | 1000 Hz | 2000 Hz | 4000 Hz |
-|----------|-----------|--------|--------|--------|---------|---------|---------|
-| concrete | 56.94     | 0.085  | 0.075  | 0.056  | 0.059   | 0.059   | 0.044   |
-| windows  |  9.75     | 0.175  | 0.073  | 0.049  | 0.057   | 0.133   | 0.055   |
-| ceiling  | 51.62     | 0.083  | 0.104  | 0.048  | 0.049   | 0.047   | 0.062   |
-| plaster  | 34.93     | 0.033  | 0.050  | 0.039  | 0.044   | 0.048   | 0.036   |
-| floor    | 49.29     | 0.071  | 0.091  | 0.070  | 0.065   | 0.062   | 0.043   |
+|----------|------------|--------|--------|--------|---------|---------|---------|
+| concrete | 56.94      | 0.085  | 0.075  | 0.056  | 0.059   | 0.059   | 0.044   |
+| windows  |  9.75      | 0.175  | 0.073  | 0.049  | 0.057   | 0.133   | 0.055   |
+| ceiling  | 51.62      | 0.083  | 0.104  | 0.048  | 0.049   | 0.047   | 0.062   |
+| plaster  | 34.93      | 0.033  | 0.050  | 0.039  | 0.044   | 0.048   | 0.036   |
+| floor    | 49.29      | 0.071  | 0.091  | 0.070  | 0.065   | 0.062   | 0.043   |
 
 ### Scattering coefficients
 
@@ -66,7 +66,7 @@ CSV files at runtime.
 | Receiver radius          | 0.8 m (spherical absorbers)            |
 | Receiver time resolution | 2 ms (histogram bin width)             |
 | Reflection model         | Hybrid (specular + diffuse scattering) |
-| Air absorption           | ISO 9613-1 (20 C, 50% RH)             |
+| Air absorption           | ISO 9613-1 (20 C, 50% RH)              |
 | Early termination        | < 1% rays alive                        |
 
 ### Comparison with RAVEN reference settings
@@ -80,6 +80,34 @@ CSV files at runtime.
 | Image sources      | none              | order 2                     |
 | Band resolution    | octave            | third-octave                |
 | Air absorption     | ISO 9613-1        | ISO 9613-1 (T=19.5, RH=41.7)|
+
+## Room Acoustic Metrics
+
+All metrics are derived from the room impulse response (IR) between a source
+and receiver, following ISO 3382-1. They are computed per octave band from
+the Schroeder backward-integrated energy decay curve.
+
+- **EDT (Early Decay Time)**: A line is fit to the Schroeder decay curve over
+  the first 10 dB of decay (0 to -10 dB), then extrapolated to 60 dB. EDT
+  correlates with the *perceived* reverberance of a room because human hearing
+  is most sensitive to the early part of the decay.
+
+- **RT60 (Reverberation Time)**: The time for sound energy to decay by 60 dB.
+  Because measuring a full 60 dB decay requires very high signal-to-noise
+  ratios, RT60 is usually estimated from a smaller range: T20 fits the decay
+  from -5 to -25 dB and extrapolates to 60 dB; T30 uses -5 to -35 dB. RT60
+  is the most widely used metric for characterizing room acoustics.
+
+- **C80 (Clarity)**: The ratio of early sound energy (first 80 ms) to late
+  energy (after 80 ms), expressed in decibels:
+  C80 = 10 * log10(E_0-80ms / E_80ms-inf). Positive values indicate good
+  clarity (important for music perception). Typical concert halls range from
+  -2 to +4 dB.
+
+- **D50 (Definition)**: The fraction of sound energy arriving within the first
+  50 ms relative to total energy: D50 = E_0-50ms / E_total. Higher values
+  indicate better speech intelligibility. Values above 50% are considered good
+  for speech; rooms used for music typically have lower D50.
 
 ## Results
 
@@ -139,11 +167,11 @@ Simulated values use T30 with T20 fallback (Schroeder backward integration).
 ### Summary
 
 | Metric | Frequency range | Typical error         |
-|--------|----------------|-----------------------|
-| EDT    | 125--4000 Hz   | +3% to +13%          |
-| RT60   | 125--4000 Hz   | +6% to +15%          |
-| C80    | 125--4000 Hz   | -0.1 to -1.1 dB      |
-| D50    | 125--4000 Hz   | -6.0 to +4.5 pp      |
+|--------|-----------------|-----------------------|
+| EDT    | 125--4000 Hz    | +3% to +13%           |
+| RT60   | 125--4000 Hz    | +6% to +15%           |
+| C80    | 125--4000 Hz    | -0.1 to -1.1 dB       |
+| D50    | 125--4000 Hz    | -6.0 to +4.5 pp       |
 
 EDT and RT60 show a systematic positive bias of 3--15%, meaning the simulation
 slightly overestimates reverberation. This is consistent with the absence of
@@ -173,9 +201,13 @@ sources. Reduce `num_rays` to 5,000 for a quick test (~2 minutes per source).
 
 ## Known Limitations
 
-- **No image sources**: building3d-rs uses stochastic ray tracing only, without
-  deterministic image source contributions. This reduces accuracy for early
-  reflections and increases variance at low ray counts.
+- **No image sources**: building3d-rs uses stochastic ray tracing only. The
+  image source method mirrors the sound source across wall surfaces to find
+  exact specular reflection paths deterministically. Professional tools like
+  RAVEN combine image sources (for the first 2--3 reflection orders) with ray
+  tracing (for late reverberation). Without image sources, early reflections
+  are noisier and slightly less accurate, which contributes to the C80/D50
+  bias observed in the results.
 - **Octave-band resolution**: The simulation uses 6 octave bands (125--4000 Hz)
   while BRAS measurements are in third-octave bands. The measured values shown
   above are the octave-band equivalents.
