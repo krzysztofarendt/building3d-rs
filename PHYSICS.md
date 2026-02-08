@@ -512,6 +512,187 @@ DF = E_interior / E_exterior
 - **Solar time only**: longitude is not used for equation-of-time correction.
 - **No atmospheric scattering**: sky models provide direct luminance, no volumetric effects.
 
+### 3.8 Next Steps (Lighting Engine Roadmap)
+
+This project’s long-term goal is to be a **composable simulation core** (acoustics, heat,
+light) with **no hard dependency on a specific GUI**. Visualization is handled via Rerun,
+and the user-facing interface is expected to be **natural language through an AI agent**
+communicating with a small, deterministic MCP tool API.
+
+For the lighting engine specifically, the next steps should be organized around two
+principles:
+
+1. **Correctness first, then performance**: establish a validation harness against a
+   trusted reference (Radiance-like workflows) before accelerating or adding features.
+2. **Composable building blocks**: keep the lighting engine assembled from small pieces
+   (scene, materials/BSDF, sky/sun, sampler, integrator, outputs) so an AI agent can
+   “compose” a simulation for a specific use-case.
+
+#### 3.8.1 Decide the “first product” (deliverables)
+
+Avoid trying to land everything at once. Pick one of these as the first-class output and
+design the integrator around it:
+
+- **Daylight metrics mode (recommended first)**: sensor-based irradiance/illuminance on
+  workplanes + annual metrics (DF, DA/sDA/UDI/ASE) driven by sky + sun time series.
+- **View/image mode**: luminance/HDR rendering from a camera, for visual evaluation and
+  glare analysis.
+
+Both can share almost all infrastructure, but the sampling strategy, outputs, and “what is
+considered correct” differ enough that one should lead.
+
+#### 3.8.2 Create a reference-backed validation harness (Radiance as oracle)
+
+Before changing integrators, create a repeatable way to compare against Radiance-style
+results. The goal is not a byte-identical match; it is to detect regressions and reduce
+unknown bias.
+
+Step-by-step:
+
+1. **Canonical scenes** (small set, hand-auditable):
+   - empty box + point light (already partially validated via inverse-square test)
+   - box + window + overcast sky (daylight factor sanity)
+   - box + window + sun (hard shadows and direct component)
+   - simple “L-room” (multiple bounces and occlusion)
+   - glass pane variants (clear vs diffuse) once transmissive materials exist
+2. **Scene export** from `FlatScene`:
+   - geometry: triangulated polygons (consistent winding and normals)
+   - materials: map `MaterialLibrary` optical properties to a minimal Radiance material set
+   - sky/sun: export CIE sky as an environment source; export sun as a directional source
+3. **Golden outputs**:
+   - store reference sensor values (and/or images) in `validation/` with configuration
+     metadata (ray counts, bounces, random seed, sky parameters)
+4. **Tolerance policy**:
+   - define acceptable error bands per deliverable (e.g., relative error on mean sensor
+     illuminance, percentile error across sensors, and “shadow edge” checks for sun cases)
+5. **Regression tests**:
+   - add non-flaky tests that run fast locally (small ray counts) and a slower “validation”
+     suite for CI/manual runs (large ray counts).
+
+This harness becomes the backbone of future refactors (sampling, BVH, glazing, MIS).
+
+#### 3.8.3 Make the lighting pipeline explicitly modular (composability)
+
+The code already has `LightingSimulation` (forward) and `BackwardTracer`. To move toward a
+Radiance-like model while remaining composable, restructure conceptually into:
+
+- **Scene**: intersection, normals, area, and material lookup (currently `FlatScene`)
+- **Emitter model**: point/directional/area lights + sky + sun (treat sky/sun as emitters)
+- **Surface model (BSDF)**: mapping from `OpticalMaterial` → reflect/transmit sampling
+- **Sampler**: deterministic random/low-discrepancy sequences (reproducible per run)
+- **Integrator**: a small set of algorithms (direct-only, path tracing, bidirectional later)
+- **Measurements**: sensors and/or camera film; post-processing to metrics
+
+Key constraint for agentic use: each component should have a clear config struct that can
+be serialized, diffed, and re-run deterministically.
+
+#### 3.8.4 Implement a Radiance-style backward integrator (incremental milestones)
+
+Radiance’s strength in building daylighting comes from **backward sampling from sensors**
+(and images), plus aggressive variance reduction. Implement this as a staged sequence:
+
+1. **Direct-only backward estimator (sky + sun)**:
+   - keep the current hemisphere sampling, but add explicit evaluation of the chosen sky
+     and sun models
+   - add a “separate sun” option (sun as delta light) so the estimator handles sharp shadows
+2. **Next-event estimation (NEE)**:
+   - for each bounce, sample direct contribution from explicit emitters:
+     - sun direction (delta) if visible
+     - one or more sky patches / environment samples with proper pdf
+   - keep the existing path continuation for indirect light
+3. **Multiple bounces with energy conservation**:
+   - ensure diffuse bounce sampling is cosine-weighted (Lambertian BSDF)
+   - keep Russian roulette, but tie termination probability to path throughput
+4. **Multiple importance sampling (MIS)**:
+   - combine BSDF sampling and light sampling (especially important for sun/bright sky)
+   - implement power heuristic weights
+5. **Specular/glossy reflection and transmissive glazing**:
+   - specular reflection: deterministic reflection direction
+   - refraction through glazing: direction change + transmittance/absorption model
+   - “thin glass” approximation as a first step (no thickness), then optionally thickness
+6. **BSDF hooks**:
+   - keep a trait boundary so a future measured/window-system BSDF can plug in without
+     changing the integrator’s core logic.
+
+At each milestone, add/extend one canonical validation scene so correctness stays anchored.
+
+#### 3.8.5 Sky, sun, and climate integration (annual workflows)
+
+For building simulation, the biggest value is often **annual daylight availability** and
+coupling to thermal loads. A practical progression:
+
+1. **Keep CIE skies for unit tests** (stable and parameter-light).
+2. **Add a weather-driven sky/sun pipeline**:
+   - reuse EPW parsing from `src/sim/energy/weather.rs` to get per-hour DNI/DHI/GHI
+   - compute sun position per timestamp (already present in `src/sim/lighting/solar.rs`)
+   - generate an environment distribution (sky patches) driven by DHI and sun from DNI
+3. **Introduce luminous efficacy boundaries**:
+   - clearly separate *radiometric* engine units from *photometric* reporting (lux)
+   - convert only at outputs, with documented assumptions and user-overridable constants
+4. **Thermal coupling**:
+   - use lighting results as a potential source for solar gains, but prefer a single
+     authoritative pipeline (avoid “two ways to compute the same gains” drifting apart)
+   - if a lighting→thermal bridge remains, document it as an approximation with limits.
+
+#### 3.8.6 Outputs, metrics, and post-processing (what the engine returns)
+
+To keep the core composable, treat “metrics” as a layer on top of a small set of primary
+outputs:
+
+- **Primary outputs**:
+  - per-sensor irradiance/illuminance (direct + indirect separated if possible)
+  - per-surface irradiance maps (for visualization and debugging)
+  - optional path statistics: bounce counts, visibility ratios, variance estimates
+- **Derived daylight metrics** (computed from time series + thresholds):
+  - daylight factor (single sky condition)
+  - DA/sDA, UDI, ASE (annual)
+  - glare metrics (later; typically needs view/camera mode and luminance distributions)
+
+Prefer returning both:
+1) machine-friendly data (tables), and
+2) a small set of Rerun artifacts (heatmaps, falsecolor, debug rays) for inspection.
+
+#### 3.8.7 Performance roadmap (after correctness)
+
+Once validated, address performance in a way that preserves determinism:
+
+1. **Better acceleration**:
+   - keep `VoxelGrid` for “broadphase,” but add a BVH for triangle intersections (narrowphase)
+   - consider per-solid/per-zone BVHs to align with the hierarchy and allow incremental updates
+2. **Sampling efficiency**:
+   - importance sample the sky (bright patches) and the sun
+   - stratified / low-discrepancy sequences per sensor pixel (reduces noise at same ray count)
+3. **Parallelism**:
+   - parallelize over sensors (and/or paths) with stable chunking to keep reproducibility
+4. **Caching** (optional, but important for agentic iteration):
+   - cache `FlatScene` and derived structures (BVH, patch distributions) keyed by config hash
+
+#### 3.8.8 MCP + agentic “simulation composition” interface
+
+The lighting engine should be controllable via a small MCP tool surface that an AI agent can
+call safely and deterministically.
+
+Recommended design steps:
+
+1. **Define a “case spec”** (serializable struct) containing:
+   - building/model reference (or procedural instructions to generate one)
+   - material assignments (via `MaterialLibrary` patterns and/or explicit overrides)
+   - sky/sun/weather configuration (including timestamp series for annual mode)
+   - sensor definition (workplane height, grids, polygon attachments)
+   - integrator selection (direct-only vs path tracing), ray counts, bounces, seeds, budgets
+2. **Expose idempotent MCP tools**:
+   - create/update/delete model entities and materials
+   - run lighting simulation as an asynchronous job with explicit resource limits
+   - fetch results (tables + references to generated Rerun logs/artifacts)
+3. **Make every run explainable**:
+   - return the full resolved configuration (after defaults) and a minimal “diff” from
+     the previous run so an agent can justify changes in natural language
+4. **Keep the core GUI-free**:
+   - never return “UI actions” from the engine; return data + optional Rerun recordings only.
+
+This mirrors the composability goal: the agent composes the *case spec*, the core runs it,
+and Rerun is just one output consumer.
+
 ---
 
 ## 4. Energy
