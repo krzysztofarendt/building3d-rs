@@ -11,7 +11,9 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use building3d::draw::rerun::{draw_simulation, start_session};
 use building3d::Point;
+use building3d::RerunConfig;
 use building3d::io::{Ac3dCoordSystem, read_ac3d};
 use building3d::sim::acoustics::impulse_response::ImpulseResponse;
 use building3d::sim::acoustics::metrics::{self, RoomAcousticReport};
@@ -395,6 +397,53 @@ fn main() -> Result<()> {
     }
     std::fs::write(&csv_path, &csv)?;
     println!("\n  Results written to {}", csv_path.display());
+
+    // ── 8. Rerun visualization (opt-in) ──────────────────────────────
+    if std::env::var("BRAS_CR2_VISUALIZE").is_ok() {
+        let viz_rays = std::env::var("BRAS_CR2_VIZ_RAYS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(500);
+        let viz_time_step: f64 = 0.001; // 1 ms (coarser for visualization)
+        let viz_max_time: f64 = 1.0; // 1 second of simulation
+        let viz_num_steps = (viz_max_time / viz_time_step).round() as usize;
+
+        println!("\n{}", "=".repeat(60));
+        println!("Visualization run (source LS1)");
+        println!(
+            "  Rays: {}, steps: {}, dt: {:.1e} s, duration: {:.1} s",
+            viz_rays, viz_num_steps, viz_time_step, viz_max_time
+        );
+        println!("{}", "=".repeat(60));
+
+        let (src_name, src_pos) = &sources[0];
+        let mut viz_config = SimulationConfig::new();
+        viz_config.acoustic_mode = AcousticMode::FrequencyDependent;
+        viz_config.material_library = Some(lib.clone());
+        viz_config.enable_air_absorption = true;
+        viz_config.search_transparent = false;
+        viz_config.source = *src_pos;
+        viz_config.absorbers = absorber_positions.clone();
+        viz_config.absorber_radius = absorber_radius;
+        viz_config.num_rays = viz_rays;
+        viz_config.num_steps = viz_num_steps;
+        viz_config.time_step = viz_time_step;
+        viz_config.store_ray_history = true;
+        viz_config.min_alive_fraction = 0.01;
+
+        println!("  Running visualization simulation ({})...", src_name);
+        let viz_sim = Simulation::new(&building, viz_config)?;
+        let viz_result = viz_sim.run();
+        println!("  Done. {} steps with ray history.", viz_result.positions.len());
+
+        let mut draw_config = RerunConfig::new();
+        draw_config.session_name = "BRAS CR2".to_string();
+        draw_config.sim_ray_radius = 0.02;
+
+        let session = start_session(&draw_config)?;
+        draw_simulation(&session, &viz_result, &building, &draw_config)?;
+        println!("  Visualization sent to Rerun (localhost:9876)");
+    }
 
     Ok(())
 }
