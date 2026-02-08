@@ -221,7 +221,7 @@ fn main() -> Result<()> {
                 pair_name,
                 receiver.total_energy()
             );
-            print_report(&report);
+            print_report(&report, &t20);
 
             all_pairs.push(PairMetrics { report, t20 });
         }
@@ -399,20 +399,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_report(report: &RoomAcousticReport) {
+fn print_report(report: &RoomAcousticReport, t20: &[Option<f64>; NUM_OCTAVE_BANDS]) {
     println!(
         "    {:>8} {:>8} {:>8} {:>9} {:>7}",
-        "Freq", "EDT(s)", "RT60(s)", "C80(dB)", "D50"
+        "Freq", "EDT(s)", "T20(s)", "C80(dB)", "D50"
     );
     for b in 0..NUM_OCTAVE_BANDS {
         let freq = report.frequencies[b];
         let edt_s = report.edt[b].map_or("--".to_string(), |v| format!("{:.3}", v));
-        let rt60_s = report.rt60[b].map_or("--".to_string(), |v| format!("{:.3}", v));
+        let t20_s = t20[b].map_or("--".to_string(), |v| format!("{:.3}", v));
         let c80_s = report.c80[b].map_or("--".to_string(), |v| format!("{:.2}", v));
         let d50_s = report.d50[b].map_or("--".to_string(), |v| format!("{:.1}%", v * 100.0));
         println!(
             "    {:>6.0} Hz {:>8} {:>8} {:>9} {:>7}",
-            freq, edt_s, rt60_s, c80_s, d50_s
+            freq, edt_s, t20_s, c80_s, d50_s
         );
     }
 }
