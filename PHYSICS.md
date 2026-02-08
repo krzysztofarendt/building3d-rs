@@ -689,6 +689,9 @@ Step-by-step implementation sketch (dev branch):
    - transmitted-to-zone shortwave (`ShortwaveTransmittedWPerZone`), and optionally
    - per-polygon absorbed shortwave (`ShortwaveAbsorbedWPerPolygon`) for future envelope
      surface temperature models.
+   For now, absorbed shortwave on *opaque* exterior surfaces is approximated using a scalar
+   absorptance (from `MaterialLibrary` optical properties when present; otherwise a fixed
+   default).
 6. Validate correctness with two fast, non-flaky tests:
    - “no occluder” ⇒ visibility ≈ 1 for a sun-facing window,
    - “with occluder” ⇒ visibility ≈ 0 when a blocking polygon is placed between the sun

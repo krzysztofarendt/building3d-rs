@@ -20,6 +20,30 @@ use crate::{Point, Vector};
 
 use super::sources::Rgb;
 
+const DEFAULT_OPAQUE_ABSORPTANCE: f64 = 0.7;
+
+fn opaque_absorptance_for_path(path: &str, material_library: Option<&MaterialLibrary>) -> f64 {
+    let Some(lib) = material_library else {
+        return DEFAULT_OPAQUE_ABSORPTANCE;
+    };
+    let Some(mat) = lib.lookup(path) else {
+        return DEFAULT_OPAQUE_ABSORPTANCE;
+    };
+    let Some(opt) = mat.optical.as_ref() else {
+        return DEFAULT_OPAQUE_ABSORPTANCE;
+    };
+
+    // Convert RGB optical props into a scalar absorptance estimate.
+    let mut a = 0.0;
+    for c in 0..3 {
+        let absorb =
+            (1.0 - opt.diffuse_reflectance[c] - opt.specular_reflectance[c] - opt.transmittance[c])
+                .clamp(0.0, 1.0);
+        a += absorb;
+    }
+    (a / 3.0).clamp(0.0, 1.0)
+}
+
 /// Produces UID-keyed shortwave coupling payloads from an existing `LightingResult`.
 ///
 /// This keeps "single source of truth" explicit: a composed pipeline can run
@@ -203,8 +227,63 @@ impl SimModule for SolarShortwaveModule {
         let mut transmitted = ShortwaveTransmittedWPerZone::default();
         transmitted.watts_by_zone_uid = gains_by_zone;
 
-        // For now, this module does not attempt to apportion absorbed shortwave to surfaces.
-        let absorbed = ShortwaveAbsorbedWPerPolygon::default();
+        // Approximate absorbed shortwave on exterior opaque surfaces.
+        let mut absorbed = ShortwaveAbsorbedWPerPolygon::default();
+        let boundaries = ThermalBoundaries::classify(ctx.building, ctx.surface_index);
+        let params = self.config.solar_params;
+        let solar_pos = SolarPosition::calculate(
+            params.latitude,
+            params.longitude,
+            params.day_of_year,
+            params.hour,
+        );
+        let sun_dir = solar_pos.to_direction();
+        let sun_above = solar_pos.is_above_horizon();
+
+        for surface in &ctx.surface_index.surfaces {
+            if !boundaries.is_exterior(&surface.polygon_uid) {
+                continue;
+            }
+            if self
+                .config
+                .gain_config
+                .resolve_shgc_with_materials(&surface.path, self.config.material_library.as_ref())
+                .is_some()
+            {
+                continue; // glazing handled via transmitted-to-zone
+            }
+
+            let Some(poly) = ctx.building.get_polygon(&surface.path) else {
+                continue;
+            };
+            let area = surface.area_m2;
+            if area <= 0.0 {
+                continue;
+            }
+
+            let normal = poly.vn;
+            let mut incident = 0.0;
+            let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+            incident += params.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+
+            if sun_above && params.direct_normal_irradiance > 0.0 {
+                let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                incident += params.direct_normal_irradiance.max(0.0) * cos_incidence;
+            }
+
+            if incident <= 0.0 {
+                continue;
+            }
+
+            let absorptance =
+                opaque_absorptance_for_path(&surface.path, self.config.material_library.as_ref());
+            let q_abs = incident * area * absorptance;
+            if q_abs > 0.0 {
+                absorbed
+                    .watts_by_polygon_uid
+                    .insert(surface.polygon_uid.clone(), q_abs);
+            }
+        }
 
         bus.put(transmitted);
         bus.put(absorbed);
@@ -227,11 +306,15 @@ pub struct SolarEpwConfig {
 
 pub struct SolarEpwModule {
     config: SolarEpwConfig,
+    boundaries: Option<ThermalBoundaries>,
 }
 
 impl SolarEpwModule {
     pub fn new(config: SolarEpwConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            boundaries: None,
+        }
     }
 }
 
@@ -240,7 +323,18 @@ impl SimModule for SolarEpwModule {
         "solar_epw_shortwave"
     }
 
+    fn init(&mut self, ctx: &SimContext, _bus: &mut Bus) -> Result<()> {
+        if self.boundaries.is_none() {
+            self.boundaries = Some(ThermalBoundaries::classify(ctx.building, ctx.surface_index));
+        }
+        Ok(())
+    }
+
     fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if self.boundaries.is_none() {
+            self.boundaries = Some(ThermalBoundaries::classify(ctx.building, ctx.surface_index));
+        }
+
         let Some(hour_index) = bus.get::<WeatherHourIndex>().map(|i| i.0) else {
             anyhow::bail!("SolarEpwModule requires WeatherHourIndex on the Bus");
         };
@@ -270,8 +364,62 @@ impl SimModule for SolarEpwModule {
         let mut transmitted = ShortwaveTransmittedWPerZone::default();
         transmitted.watts_by_zone_uid = gains_by_zone;
 
-        // For now, this module does not attempt to apportion absorbed shortwave to surfaces.
-        let absorbed = ShortwaveAbsorbedWPerPolygon::default();
+        // Approximate absorbed shortwave on exterior opaque surfaces.
+        let mut absorbed = ShortwaveAbsorbedWPerPolygon::default();
+        let boundaries = self.boundaries.as_ref().expect("set above");
+        let solar_pos = SolarPosition::calculate(
+            self.config.weather.latitude,
+            self.config.weather.longitude,
+            params.day_of_year,
+            params.hour,
+        );
+        let sun_dir = solar_pos.to_direction();
+        let sun_above = solar_pos.is_above_horizon();
+
+        for surface in &ctx.surface_index.surfaces {
+            if !boundaries.is_exterior(&surface.polygon_uid) {
+                continue;
+            }
+            if self
+                .config
+                .gain_config
+                .resolve_shgc_with_materials(&surface.path, self.config.material_library.as_ref())
+                .is_some()
+            {
+                continue;
+            }
+
+            let Some(poly) = ctx.building.get_polygon(&surface.path) else {
+                continue;
+            };
+            let area = surface.area_m2;
+            if area <= 0.0 {
+                continue;
+            }
+
+            let normal = poly.vn;
+            let mut incident = 0.0;
+            let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+            incident += params.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+
+            if sun_above && params.direct_normal_irradiance > 0.0 {
+                let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                incident += params.direct_normal_irradiance.max(0.0) * cos_incidence;
+            }
+
+            if incident <= 0.0 {
+                continue;
+            }
+
+            let absorptance =
+                opaque_absorptance_for_path(&surface.path, self.config.material_library.as_ref());
+            let q_abs = incident * area * absorptance;
+            if q_abs > 0.0 {
+                absorbed
+                    .watts_by_polygon_uid
+                    .insert(surface.polygon_uid.clone(), q_abs);
+            }
+        }
 
         bus.put(transmitted);
         bus.put(absorbed);
@@ -382,6 +530,7 @@ impl SimModule for SolarEpwShadedModule {
         let dhi = record.diffuse_horizontal_radiation.max(0.0);
 
         let mut gains_by_zone: HashMap<crate::UID, f64> = HashMap::new();
+        let mut absorbed = ShortwaveAbsorbedWPerPolygon::default();
 
         for surface in &ctx.surface_index.surfaces {
             // Exclude interface polygons (coplanar facing pairs) from exterior shortwave.
@@ -389,13 +538,11 @@ impl SimModule for SolarEpwShadedModule {
                 continue;
             }
 
-            let Some(shgc) = self
+            let shgc = self
                 .config
                 .gain_config
                 .resolve_shgc_with_materials(&surface.path, self.config.material_library.as_ref())
-            else {
-                continue;
-            };
+                .map(|v| v.clamp(0.0, 1.0));
 
             let Some(&poly_idx) = self.polygon_idx_by_uid.get(&surface.polygon_uid) else {
                 continue;
@@ -411,19 +558,40 @@ impl SimModule for SolarEpwShadedModule {
 
             // Diffuse component: isotropic sky view factor (matches `compute_solar_gains_*`).
             let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-            q += dhi * sky_view * area * shgc;
+            let diffuse_irr = dhi * sky_view;
+            q += diffuse_irr;
 
             // Direct component: DNI * cos(incidence) * visibility * area * SHGC.
+            let mut direct_irr = 0.0;
             if sun_above && dni > 0.0 {
                 let cos_incidence = sun_dir.dot(&normal).max(0.0);
                 if cos_incidence > 0.0 {
                     let vis = visibility_fraction(scene, poly_idx, sun_dir);
-                    q += dni * cos_incidence * vis * area * shgc;
+                    direct_irr = dni * cos_incidence * vis;
                 }
             }
+            q += direct_irr;
 
-            if q != 0.0 {
-                *gains_by_zone.entry(surface.zone_uid.clone()).or_insert(0.0) += q;
+            if q <= 0.0 {
+                continue;
+            }
+
+            if let Some(shgc) = shgc {
+                let q_trans = q * area * shgc;
+                if q_trans != 0.0 {
+                    *gains_by_zone.entry(surface.zone_uid.clone()).or_insert(0.0) += q_trans;
+                }
+            } else {
+                let absorptance = opaque_absorptance_for_path(
+                    &surface.path,
+                    self.config.material_library.as_ref(),
+                );
+                let q_abs = q * area * absorptance;
+                if q_abs > 0.0 {
+                    absorbed
+                        .watts_by_polygon_uid
+                        .insert(surface.polygon_uid.clone(), q_abs);
+                }
             }
         }
 
@@ -431,8 +599,7 @@ impl SimModule for SolarEpwShadedModule {
         transmitted.watts_by_zone_uid = gains_by_zone;
         bus.put(transmitted);
 
-        // Future: apportion absorbed shortwave to surfaces for envelope models.
-        bus.put(ShortwaveAbsorbedWPerPolygon::default());
+        bus.put(absorbed);
         Ok(())
     }
 }
@@ -469,12 +636,17 @@ impl SolarShortwaveStepConfig {
 pub struct SolarShortwaveStepModule {
     config: SolarShortwaveStepConfig,
     hour_idx: usize,
+    boundaries: Option<ThermalBoundaries>,
 }
 
 impl SolarShortwaveStepModule {
     pub fn new(config: SolarShortwaveStepConfig) -> Self {
         let hour_idx = config.start_hour_idx;
-        Self { config, hour_idx }
+        Self {
+            config,
+            hour_idx,
+            boundaries: None,
+        }
     }
 
     pub fn hour_idx(&self) -> usize {
@@ -487,7 +659,18 @@ impl SimModule for SolarShortwaveStepModule {
         "solar_shortwave_step"
     }
 
+    fn init(&mut self, ctx: &SimContext, _bus: &mut Bus) -> Result<()> {
+        if self.boundaries.is_none() {
+            self.boundaries = Some(ThermalBoundaries::classify(ctx.building, ctx.surface_index));
+        }
+        Ok(())
+    }
+
     fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if self.boundaries.is_none() {
+            self.boundaries = Some(ThermalBoundaries::classify(ctx.building, ctx.surface_index));
+        }
+
         if self.hour_idx >= self.config.weather.records.len() {
             anyhow::bail!(
                 "SolarShortwaveStepModule: hour_idx {} out of range (len={})",
@@ -518,8 +701,62 @@ impl SimModule for SolarShortwaveStepModule {
         let mut transmitted = ShortwaveTransmittedWPerZone::default();
         transmitted.watts_by_zone_uid = gains_by_zone;
 
+        // Approximate absorbed shortwave on exterior opaque surfaces (unshaded).
+        let mut absorbed = ShortwaveAbsorbedWPerPolygon::default();
+        let boundaries = self.boundaries.as_ref().expect("set above");
+        let solar_pos = SolarPosition::calculate(
+            self.config.weather.latitude,
+            self.config.weather.longitude,
+            params.day_of_year,
+            params.hour,
+        );
+        let sun_dir = solar_pos.to_direction();
+        let sun_above = solar_pos.is_above_horizon();
+        for surface in &ctx.surface_index.surfaces {
+            if !boundaries.is_exterior(&surface.polygon_uid) {
+                continue;
+            }
+            if self
+                .config
+                .gain_config
+                .resolve_shgc_with_materials(&surface.path, self.config.material_library.as_ref())
+                .is_some()
+            {
+                continue;
+            }
+
+            let Some(poly) = ctx.building.get_polygon(&surface.path) else {
+                continue;
+            };
+            let area = surface.area_m2;
+            if area <= 0.0 {
+                continue;
+            }
+
+            let normal = poly.vn;
+            let mut incident = 0.0;
+            let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+            incident += params.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+            if sun_above && params.direct_normal_irradiance > 0.0 {
+                let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                incident += params.direct_normal_irradiance.max(0.0) * cos_incidence;
+            }
+            if incident <= 0.0 {
+                continue;
+            }
+
+            let absorptance =
+                opaque_absorptance_for_path(&surface.path, self.config.material_library.as_ref());
+            let q_abs = incident * area * absorptance;
+            if q_abs > 0.0 {
+                absorbed
+                    .watts_by_polygon_uid
+                    .insert(surface.polygon_uid.clone(), q_abs);
+            }
+        }
+
         bus.put(transmitted);
-        bus.put(ShortwaveAbsorbedWPerPolygon::default());
+        bus.put(absorbed);
 
         self.hour_idx += 1;
         Ok(())
@@ -646,6 +883,7 @@ impl SimModule for SolarShortwaveShadedStepModule {
         let dhi = record.diffuse_horizontal_radiation.max(0.0);
 
         let mut gains_by_zone: HashMap<crate::UID, f64> = HashMap::new();
+        let mut absorbed = ShortwaveAbsorbedWPerPolygon::default();
 
         for surface in &ctx.surface_index.surfaces {
             // Exclude interface polygons (coplanar facing pairs) from exterior shortwave.
@@ -653,13 +891,11 @@ impl SimModule for SolarShortwaveShadedStepModule {
                 continue;
             }
 
-            let Some(shgc) = self
+            let shgc = self
                 .config
                 .gain_config
                 .resolve_shgc_with_materials(&surface.path, self.config.material_library.as_ref())
-            else {
-                continue;
-            };
+                .map(|v| v.clamp(0.0, 1.0));
 
             let Some(&poly_idx) = self.polygon_idx_by_uid.get(&surface.polygon_uid) else {
                 continue;
@@ -676,19 +912,40 @@ impl SimModule for SolarShortwaveShadedStepModule {
 
             // Diffuse component: isotropic sky view factor (matches `compute_solar_gains_*`).
             let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-            q += dhi * sky_view * area * shgc;
+            let diffuse_irr = dhi * sky_view;
+            q += diffuse_irr;
 
             // Direct component: DNI * cos(incidence) * visibility * area * SHGC.
+            let mut direct_irr = 0.0;
             if sun_above && dni > 0.0 {
                 let cos_incidence = sun_dir.dot(&normal).max(0.0);
                 if cos_incidence > 0.0 {
                     let vis = visibility_fraction(scene, poly_idx, sun_dir);
-                    q += dni * cos_incidence * vis * area * shgc;
+                    direct_irr = dni * cos_incidence * vis;
                 }
             }
+            q += direct_irr;
 
-            if q != 0.0 {
-                *gains_by_zone.entry(surface.zone_uid.clone()).or_insert(0.0) += q;
+            if q <= 0.0 {
+                continue;
+            }
+
+            if let Some(shgc) = shgc {
+                let q_trans = q * area * shgc;
+                if q_trans != 0.0 {
+                    *gains_by_zone.entry(surface.zone_uid.clone()).or_insert(0.0) += q_trans;
+                }
+            } else {
+                let absorptance = opaque_absorptance_for_path(
+                    &surface.path,
+                    self.config.material_library.as_ref(),
+                );
+                let q_abs = q * area * absorptance;
+                if q_abs > 0.0 {
+                    absorbed
+                        .watts_by_polygon_uid
+                        .insert(surface.polygon_uid.clone(), q_abs);
+                }
             }
         }
 
@@ -696,8 +953,7 @@ impl SimModule for SolarShortwaveShadedStepModule {
         transmitted.watts_by_zone_uid = gains_by_zone;
         bus.put(transmitted);
 
-        // Future: apportion absorbed shortwave to surfaces for envelope models.
-        bus.put(ShortwaveAbsorbedWPerPolygon::default());
+        bus.put(absorbed);
 
         self.hour_idx += 1;
         Ok(())
@@ -1199,6 +1455,71 @@ mod tests {
         assert!(
             q_shaded < q_clear * 0.1,
             "q_shaded={q_shaded} q_clear={q_clear}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_solar_epw_shaded_module_produces_opaque_absorbed_per_polygon() -> Result<()> {
+        // A single exterior opaque surface should receive absorbed shortwave.
+        fn weather_one_hour(dni: f64, dhi: f64) -> WeatherData {
+            WeatherData {
+                location: "x".to_string(),
+                latitude: 0.0,
+                longitude: 0.0,
+                timezone: 0.0,
+                elevation: 0.0,
+                records: vec![HourlyRecord {
+                    month: 3,
+                    day: 21,
+                    hour: 12,
+                    dry_bulb_temperature: 20.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: dni + dhi,
+                    direct_normal_radiation: dni,
+                    diffuse_horizontal_radiation: dhi,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                }],
+            }
+        }
+
+        // Opaque roof polygon (not glazing by name).
+        let roof = Polygon::new(
+            "roof",
+            vec![
+                Point::new(0.0, 0.0, 1.0),
+                Point::new(1.0, 0.0, 1.0),
+                Point::new(1.0, 1.0, 1.0),
+                Point::new(0.0, 1.0, 1.0),
+            ],
+            Some(Vector::new(0.0, 0.0, 1.0)),
+        )?;
+        let wall = Wall::new("opaque", vec![roof])?;
+        let solid = Solid::new("room", vec![wall])?;
+        let zone = Zone::new("zone", vec![solid])?;
+        let building = Building::new("b", vec![zone])?;
+
+        let index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &index);
+        let weather = Arc::new(weather_one_hour(0.0, 200.0));
+
+        let mut bus = Bus::new();
+        bus.put(WeatherHourIndex(0));
+
+        let mut module = SolarEpwShadedModule::new(SolarEpwShadedConfig {
+            weather,
+            gain_config: SolarGainConfig::new(),
+            material_library: None,
+            voxel_size: 0.25,
+        });
+        module.init(&ctx, &mut bus)?;
+        module.step(&ctx, &mut bus)?;
+
+        let absorbed = bus.get::<ShortwaveAbsorbedWPerPolygon>().unwrap();
+        assert!(
+            !absorbed.watts_by_polygon_uid.is_empty(),
+            "expected absorbed shortwave on opaque exterior surface"
         );
         Ok(())
     }
