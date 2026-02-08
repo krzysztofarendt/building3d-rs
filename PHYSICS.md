@@ -730,13 +730,19 @@ thermal metadata into geometry), adopt the following conventions:
   `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
 - **Producers**: choose exactly one shortwave producer in a composed pipeline:
   - deterministic single-hour producer (fixed `SolarHourParams`): `sim::lighting::shortwave::SolarShortwaveModule`
-  - EPW time-series producer (consumes `sim::coupling::WeatherHourIndex`): `sim::lighting::shortwave::SolarEpwModule`
-  - EPW time-series shaded producer (consumes `sim::coupling::WeatherHourIndex`): `sim::lighting::shortwave::SolarEpwShadedModule`
+  - EPW time-series producer (consumes `sim::coupling::WeatherHourIndex`):
+    - explicit EPW in config: `sim::lighting::shortwave::SolarEpwModule`
+    - weather shared via `Bus` (`Arc<WeatherData>`): `sim::lighting::shortwave::SolarEpwBusModule`
+  - EPW time-series shaded producer (consumes `sim::coupling::WeatherHourIndex`):
+    - explicit EPW in config: `sim::lighting::shortwave::SolarEpwShadedModule`
+    - weather shared via `Bus` (`Arc<WeatherData>`): `sim::lighting::shortwave::SolarEpwShadedBusModule`
   - EPW step module (self-contained, publishes `OutdoorAirTemperatureC`): `sim::lighting::shortwave::SolarShortwaveStepModule`
   - EPW shaded step module (self-contained, hard-shadow direct sun): `sim::lighting::shortwave::SolarShortwaveShadedStepModule`
   - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
 - **Weather time base**: time-series pipelines should publish `sim::coupling::WeatherHourIndex`
   and `sim::coupling::OutdoorAirTemperatureC` each step (see `sim::energy::weather_module::WeatherModule`).
+- **Weather dataset sharing**: `WeatherModule` publishes `Arc<WeatherData>` on the `Bus` during `init()`.
+  Prefer the bus-driven solar modules in composed pipelines so EPW dataset wiring is standardized.
 - **Shading milestone**: as the first geometry-aware step, prefer a direct-sun occlusion producer
   (`sim::lighting::shortwave::SolarEpwShadedModule` for `WeatherHourIndex` pipelines, or
   `sim::lighting::shortwave::SolarShortwaveShadedStepModule` as a self-contained convenience).
@@ -795,6 +801,113 @@ Recommended design steps:
 
 This mirrors the composability goal: the agent composes the *case spec*, the core runs it,
 and Rerun is just one output consumer.
+
+#### 3.8.9 Radiance-inspired implementation plan (dev: lighting)
+
+This is the **step-by-step** plan for moving the lighting engine towards “Radiance-grade”
+capabilities while preserving core constraints:
+
+- no GUI in-core (Rerun is an output consumer),
+- deterministic, composable modules,
+- a small MCP tool surface so agentic workflows can build *case-specific* engines,
+- explicit coupling contracts to thermal (`Shortwave*` payloads).
+
+The goal is not to replicate Radiance internals; it is to replicate the *capabilities* and
+validation culture (clear units, reproducible runs, reference comparisons).
+
+##### Step 0 — Lock down units, contracts, and determinism
+
+1. **Units contract** (core): keep the integrator strictly radiometric (`W`, `W/m²`, `W/(sr·m²)`),
+   and convert to photometric units only at output boundaries (lux, cd/m²).
+2. **Deterministic sampling**: every simulation config carries an explicit seed (and RNG choice);
+   parallelism must preserve determinism (stable chunking + per-chunk RNG streams).
+3. **Shortwave single source of truth**: a composed pipeline must have exactly one producer of
+   `ShortwaveTransmittedWPerZone` and `ShortwaveAbsorbedWPerPolygon`.
+
+Deliverable: a small “golden scene” example whose numeric outputs are stable and regression-tested.
+
+##### Step 1 — Make sky + sun first-class (weather-driven)
+
+1. **Weather → sky radiance**: define a `SkyRadianceModel` (radiance as `W/(sr·m²)`) driven by EPW
+   inputs (DHI/DNI + timestamp) with at least CIE overcast + Perez all-weather.
+2. **Sun disc**: treat direct sun as a finite angular source (disc/cone sampling), not only an
+   ideal directional light; this enables penumbra and reduces estimator bias for sharp edges.
+3. **Time base standardization**: prefer `WeatherHourIndex` pipelines with shared `Arc<WeatherData>`
+   on the `Bus` (annual-friendly), then add higher-resolution timestamps later.
+
+Deliverable: a “sky diagnostic” output (falsecolor dome + sun vector) viewable in Rerun.
+
+##### Step 2 — Upgrade optical materials to model families (Radiance-like primitives)
+
+1. **Material families** (incremental):
+   - opaque Lambertian diffuse (baseline)
+   - glossy/specular reflection (Phong first; microfacet GGX as follow-up)
+   - clear glass transmission with Fresnel + absorption (thin-sheet approximation first)
+   - “black” absorber (for validation)
+2. **Energy conservation**: enforce per channel: `rho_diffuse + rho_specular + tau <= 1`.
+3. **BSDF runway**: define a boundary for tabulated BSDFs (complex fenestration, shades) without
+   forcing integrator rewrites.
+
+Deliverable: material definitions that can express “plastic/glass/mirror/BSDF” capabilities.
+
+##### Step 3 — Improve estimators (daylight accuracy at low ray counts)
+
+1. **Next-event estimation**: explicit sampling of sun and bright sky patches for direct lighting.
+2. **MIS**: combine BSDF sampling and light sampling to reduce variance deterministically.
+3. **Transparent surfaces**: consistent intersection/shading rules (avoid double-counting and
+   “transparent but still blocks” inconsistencies).
+
+Deliverable: stable workplane illuminance with interactive runtimes.
+
+##### Step 4 — Outputs and coupling: from rays to deliverables
+
+1. **Sensor primitives**: workplane grids, polygon-attached grids, and later camera/view sensors
+   for luminance/glare.
+2. **Outputs**:
+   - per-sensor irradiance/illuminance tables
+   - per-surface irradiance (and absorbed shortwave)
+   - per-zone transmitted shortwave
+3. **Coupling boundary**: keep `LightingResult` separate from `Shortwave*` payloads; produce
+   coupling explicitly with a dedicated module (as in 3.8.6a).
+
+Deliverable: machine-readable tables + small Rerun artifacts (heatmaps + debug rays).
+
+##### Step 5 — Annual daylight via factorization (Radiance-style)
+
+Avoid brute-forcing 8760 full path traces.
+
+1. **Sky patch sets**: discretize the sky dome (Tregenza/Reinhart) and standardize on patch IDs.
+2. **Daylight coefficients**: precompute per-sensor response to each patch; multiply by time-varying
+   patch luminance for annual metrics (DA/sDA/UDI/ASE).
+3. **Three-phase runway**: later, split “window layer / BSDF layer / room layer” for complex glazing.
+
+Deliverable: annual daylight metrics with runtimes suitable for agentic iteration.
+
+##### Step 6 — Shading beyond hard shadows
+
+1. **Diffuse occlusion / sky visibility**: replace the isotropic `0.5*(1+nz)` heuristic with sampled
+   or patch-based sky visibility (deterministic budget per surface/sensor).
+2. **Penumbra**: sun disc sampling → soft shadows.
+3. **Translucent/porous shades**: add angular transmittance/scattering models (BSDF or parametric).
+
+Deliverable: shading that improves both daylight and thermal shortwave coupling.
+
+##### Step 7 — Validation harness (Radiance as reference, not a dependency)
+
+1. **Reference scenes**: small canonical scenes (box + window + sky/sun) with Radiance outputs.
+2. **Comparators**: define error metrics (relative RMSE, percentiles) for illuminance/irradiance.
+3. **Regression discipline**: pin seeds, configs, patch sets; run as CI tests to catch drift.
+
+Deliverable: CI-friendly validation tests that keep the engine honest.
+
+##### Step 8 — MCP tool surface for agentic composition (minimal + safe)
+
+1. **Case spec**: a serializable “lighting case” schema (building ref, materials, weather, sensors,
+   integrator, budgets, requested outputs).
+2. **Idempotent tools**: `validate_case`, `run_lighting`, `fetch_results`, `fetch_rerun_log`.
+3. **Resource governance**: explicit ray/time/memory limits; bounded outputs for safe agent use.
+
+Deliverable: an AI agent can assemble and run case-specific lighting pipelines without code edits.
 
 ---
 

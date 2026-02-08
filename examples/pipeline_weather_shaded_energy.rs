@@ -11,7 +11,7 @@ use building3d::sim::energy::weather_module::{WeatherModule, WeatherModuleConfig
 use building3d::sim::framework::{Bus, Pipeline, SimContext};
 use building3d::sim::index::SurfaceIndex;
 use building3d::sim::lighting::shortwave::{
-    SolarEpwConfig, SolarEpwModule, SolarEpwShadedConfig, SolarEpwShadedModule,
+    SolarEpwBusConfig, SolarEpwBusModule, SolarEpwShadedBusConfig, SolarEpwShadedBusModule,
 };
 use building3d::sim::materials::MaterialLibrary;
 use building3d::{Building, Solid, Zone};
@@ -69,8 +69,7 @@ fn main() -> Result<()> {
         .with_module(InternalGainsModule::new(InternalGainsModuleConfig::new(
             gains_profile.clone(),
         )))
-        .with_module(SolarEpwModule::new(SolarEpwConfig {
-            weather: weather.clone(),
+        .with_module(SolarEpwBusModule::new(SolarEpwBusConfig {
             gain_config: building3d::sim::energy::solar_bridge::SolarGainConfig::new(),
             material_library: materials.clone(),
         }))
@@ -91,8 +90,7 @@ fn main() -> Result<()> {
         .with_module(InternalGainsModule::new(InternalGainsModuleConfig::new(
             gains_profile,
         )))
-        .with_module(SolarEpwShadedModule::new(SolarEpwShadedConfig {
-            weather,
+        .with_module(SolarEpwShadedBusModule::new(SolarEpwShadedBusConfig {
             gain_config: building3d::sim::energy::solar_bridge::SolarGainConfig::new(),
             material_library: materials,
             voxel_size: 0.25,

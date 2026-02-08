@@ -427,6 +427,78 @@ impl SimModule for SolarEpwModule {
     }
 }
 
+/// EPW-driven (time-series) solar shortwave producer that reads `Arc<WeatherData>` from the `Bus`.
+///
+/// This is a convenience wrapper for composed pipelines that already include `energy::WeatherModule`.
+/// It avoids duplicating EPW dataset plumbing across module configs.
+#[derive(Clone)]
+pub struct SolarEpwBusConfig {
+    pub gain_config: SolarGainConfig,
+    pub material_library: Option<MaterialLibrary>,
+}
+
+impl SolarEpwBusConfig {
+    pub fn new(gain_config: SolarGainConfig) -> Self {
+        Self {
+            gain_config,
+            material_library: None,
+        }
+    }
+}
+
+pub struct SolarEpwBusModule {
+    config: SolarEpwBusConfig,
+    inner: Option<SolarEpwModule>,
+}
+
+impl SolarEpwBusModule {
+    pub fn new(config: SolarEpwBusConfig) -> Self {
+        Self { config, inner: None }
+    }
+
+    fn ensure_initialized(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if self.inner.is_some() {
+            return Ok(());
+        }
+
+        let Some(weather) = bus.get::<Arc<WeatherData>>().cloned() else {
+            anyhow::bail!(
+                "SolarEpwBusModule requires Arc<WeatherData> on the Bus (published by WeatherModule::init)"
+            );
+        };
+
+        let mut inner = SolarEpwModule::new(SolarEpwConfig {
+            weather,
+            gain_config: self.config.gain_config.clone(),
+            material_library: self.config.material_library.clone(),
+        });
+        inner.init(ctx, bus)?;
+        self.inner = Some(inner);
+        Ok(())
+    }
+}
+
+impl SimModule for SolarEpwBusModule {
+    fn name(&self) -> &'static str {
+        "solar_epw_shortwave_bus"
+    }
+
+    fn init(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if bus.get::<Arc<WeatherData>>().is_some() {
+            self.ensure_initialized(ctx, bus)?;
+        }
+        Ok(())
+    }
+
+    fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        self.ensure_initialized(ctx, bus)?;
+        self.inner
+            .as_mut()
+            .expect("initialized above")
+            .step(ctx, bus)
+    }
+}
+
 /// EPW-driven (time-series) solar shortwave producer with direct-sun occlusion.
 ///
 /// This is the `WeatherHourIndex`-based counterpart of [`SolarShortwaveShadedStepModule`].
@@ -601,6 +673,80 @@ impl SimModule for SolarEpwShadedModule {
 
         bus.put(absorbed);
         Ok(())
+    }
+}
+
+/// Shaded EPW-driven (time-series) shortwave producer that reads `Arc<WeatherData>` from the `Bus`.
+///
+/// Convenience wrapper for composed pipelines that already include `energy::WeatherModule`.
+#[derive(Clone)]
+pub struct SolarEpwShadedBusConfig {
+    pub gain_config: SolarGainConfig,
+    pub material_library: Option<MaterialLibrary>,
+    pub voxel_size: f64,
+}
+
+impl SolarEpwShadedBusConfig {
+    pub fn new(gain_config: SolarGainConfig) -> Self {
+        Self {
+            gain_config,
+            material_library: None,
+            voxel_size: 0.5,
+        }
+    }
+}
+
+pub struct SolarEpwShadedBusModule {
+    config: SolarEpwShadedBusConfig,
+    inner: Option<SolarEpwShadedModule>,
+}
+
+impl SolarEpwShadedBusModule {
+    pub fn new(config: SolarEpwShadedBusConfig) -> Self {
+        Self { config, inner: None }
+    }
+
+    fn ensure_initialized(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if self.inner.is_some() {
+            return Ok(());
+        }
+
+        let Some(weather) = bus.get::<Arc<WeatherData>>().cloned() else {
+            anyhow::bail!(
+                "SolarEpwShadedBusModule requires Arc<WeatherData> on the Bus (published by WeatherModule::init)"
+            );
+        };
+
+        let mut inner = SolarEpwShadedModule::new(SolarEpwShadedConfig {
+            weather,
+            gain_config: self.config.gain_config.clone(),
+            material_library: self.config.material_library.clone(),
+            voxel_size: self.config.voxel_size,
+        });
+        inner.init(ctx, bus)?;
+        self.inner = Some(inner);
+        Ok(())
+    }
+}
+
+impl SimModule for SolarEpwShadedBusModule {
+    fn name(&self) -> &'static str {
+        "solar_epw_shaded_shortwave_bus"
+    }
+
+    fn init(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        if bus.get::<Arc<WeatherData>>().is_some() {
+            self.ensure_initialized(ctx, bus)?;
+        }
+        Ok(())
+    }
+
+    fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        self.ensure_initialized(ctx, bus)?;
+        self.inner
+            .as_mut()
+            .expect("initialized above")
+            .step(ctx, bus)
     }
 }
 
@@ -1156,6 +1302,101 @@ mod tests {
             gain_config: SolarGainConfig::new(),
             material_library: None,
         });
+        module.step(&ctx, &mut bus)?;
+
+        let transmitted = bus.get::<ShortwaveTransmittedWPerZone>().unwrap();
+        let zone_uid = ctx.building.zones().first().unwrap().uid.clone();
+        let g = transmitted
+            .watts_by_zone_uid
+            .get(&zone_uid)
+            .cloned()
+            .unwrap_or(0.0);
+        assert!(g > 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_solar_epw_bus_module_consumes_weather_from_bus() -> Result<()> {
+        let poly = Polygon::new(
+            "glass",
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+            None,
+        )?;
+        let wall = Wall::new("window", vec![poly])?;
+        let solid = Solid::new("room", vec![wall])?;
+        let zone = Zone::new("z", vec![solid])?;
+        let building = Building::new("b", vec![zone])?;
+
+        let index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &index);
+
+        let mut weather = WeatherData::synthetic("X", 52.0, 13.0, 10.0, 0.0);
+        weather.records[0].diffuse_horizontal_radiation = 100.0;
+        weather.records[0].direct_normal_radiation = 0.0;
+        let weather = Arc::new(weather);
+
+        let mut bus = Bus::new();
+        bus.put(weather);
+        bus.put(WeatherHourIndex(0));
+
+        let mut module = SolarEpwBusModule::new(SolarEpwBusConfig::new(SolarGainConfig::new()));
+        module.init(&ctx, &mut bus)?;
+        module.step(&ctx, &mut bus)?;
+
+        let transmitted = bus.get::<ShortwaveTransmittedWPerZone>().unwrap();
+        let zone_uid = ctx.building.zones().first().unwrap().uid.clone();
+        let g = transmitted
+            .watts_by_zone_uid
+            .get(&zone_uid)
+            .cloned()
+            .unwrap_or(0.0);
+        assert!(g > 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_solar_epw_shaded_bus_module_consumes_weather_from_bus() -> Result<()> {
+        let win = Polygon::new(
+            "glass",
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 1.0),
+                Point::new(0.0, 0.0, 1.0),
+            ],
+            Some(Vector::new(1.0, 0.0, 0.0)),
+        )?;
+        let wall = Wall::new("window", vec![win])?;
+        let solid = Solid::new("room", vec![wall])?;
+        let zone = Zone::new("z", vec![solid])?;
+        let building = Building::new("b", vec![zone])?;
+
+        let index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &index);
+
+        let mut weather = WeatherData::synthetic("X", 0.0, 0.0, 10.0, 0.0);
+        weather.records[0].month = 3;
+        weather.records[0].day = 21;
+        weather.records[0].hour = 7;
+        weather.records[0].direct_normal_radiation = 1000.0;
+        weather.records[0].diffuse_horizontal_radiation = 0.0;
+        let weather = Arc::new(weather);
+
+        let mut bus = Bus::new();
+        bus.put(weather);
+        bus.put(WeatherHourIndex(0));
+
+        let mut module = SolarEpwShadedBusModule::new(SolarEpwShadedBusConfig {
+            gain_config: SolarGainConfig::new(),
+            material_library: None,
+            voxel_size: 0.25,
+        });
+        module.init(&ctx, &mut bus)?;
         module.step(&ctx, &mut bus)?;
 
         let transmitted = bus.get::<ShortwaveTransmittedWPerZone>().unwrap();
