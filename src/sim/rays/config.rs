@@ -35,6 +35,10 @@ pub struct SimulationConfig {
     pub acoustic_mode: AcousticMode,
     pub material_library: Option<MaterialLibrary>,
     pub default_acoustic_material: Option<AcousticMaterial>,
+    /// If set (0..NUM_OCTAVE_BANDS), simulate a single octave band only.
+    ///
+    /// Intended mainly for visualization/debugging to reduce compute.
+    pub single_band_index: Option<usize>,
 
     // Air absorption
     pub enable_air_absorption: bool,
@@ -76,6 +80,7 @@ impl SimulationConfig {
             acoustic_mode: AcousticMode::Scalar,
             material_library: None,
             default_acoustic_material: None,
+            single_band_index: None,
             enable_air_absorption: false,
             min_alive_fraction: 0.0,
             store_ray_history: false,

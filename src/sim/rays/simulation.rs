@@ -339,6 +339,10 @@ impl Simulation {
         self,
         mut reporter: R,
     ) -> SimulationResult {
+        if let Some(band) = self.config.single_band_index {
+            return self.run_frequency_single_band_with_progress(reporter, band);
+        }
+
         let num_rays = self.config.num_rays;
         let num_steps = self.config.num_steps;
         let num_absorbers = self.config.absorbers.len();
@@ -602,6 +606,256 @@ impl Simulation {
             config: self.config,
         }
     }
+
+    fn run_frequency_single_band_with_progress<R: ProgressReporter>(
+        self,
+        mut reporter: R,
+        band: usize,
+    ) -> SimulationResult {
+        let num_rays = self.config.num_rays;
+        let num_steps = self.config.num_steps;
+        let num_absorbers = self.config.absorbers.len();
+        let dt = self.config.time_step;
+        let speed = self.config.ray_speed;
+        let absorber_r2 = self.config.absorber_radius * self.config.absorber_radius;
+
+        let band = band.min(NUM_OCTAVE_BANDS.saturating_sub(1));
+
+        let band_absorption = self
+            .config
+            .resolve_band_absorption(&self.scene.paths)
+            .into_iter()
+            .map(|a| a[band])
+            .collect::<Vec<f64>>();
+        let band_scattering = self
+            .config
+            .resolve_scattering(&self.scene.paths)
+            .into_iter()
+            .map(|s| s[band])
+            .collect::<Vec<f64>>();
+
+        // Air absorption (optional)
+        let air_factor = if self.config.enable_air_absorption {
+            let air = AirAbsorption::standard();
+            let step_distance = speed * dt;
+            air.apply_distance(step_distance)[band]
+        } else {
+            1.0
+        };
+
+        let propagation_model = FixedTimeStep;
+        let reflection_dist = propagation_model.reflection_distance(speed, dt);
+
+        let batch = RayBatch::new(self.config.source, speed, num_rays);
+        let mut positions: Vec<Point> = batch.rays.iter().map(|r| r.position).collect();
+        let mut velocities: Vec<Vector> = batch.rays.iter().map(|r| r.velocity).collect();
+        let mut energies: Vec<f64> = vec![1.0; num_rays];
+
+        let store_history = self.config.store_ray_history;
+        let store_band_history = store_history && self.config.store_ray_band_history;
+        let hist_cap = if store_history { num_steps } else { 0 };
+        let mut all_positions: Vec<Vec<Point>> = Vec::with_capacity(hist_cap);
+        let mut all_energies: Vec<Vec<f64>> = Vec::with_capacity(hist_cap);
+        let mut all_band_energies: Option<Vec<Vec<[f64; NUM_OCTAVE_BANDS]>>> =
+            store_band_history.then(|| Vec::with_capacity(hist_cap));
+        let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
+        let mut all_band_hits: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(num_steps);
+
+        let eps = ENERGY_EPS;
+        let bbox_margin = 1e-6;
+        let min_alive_fraction = self.config.min_alive_fraction;
+
+        // Track whether each ray was inside each absorber on the previous step
+        let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
+
+        let initial_total_energy: f64 = num_rays as f64;
+        let report_every = reporter.every_steps();
+        if report_every > 0 {
+            reporter.report(&SimulationProgress {
+                steps_done: 0,
+                num_steps,
+                dt_s: dt,
+                sim_time_s: 0.0,
+                num_rays,
+                alive_rays: num_rays,
+                total_energy: initial_total_energy,
+                initial_total_energy,
+            });
+        }
+
+        for _step in 0..num_steps {
+            let mut step_hits = vec![0.0; num_absorbers];
+            let mut step_band_hits = vec![[0.0; NUM_OCTAVE_BANDS]; num_absorbers];
+
+            // Check absorbers
+            for ray in 0..num_rays {
+                let e = energies[ray];
+                if e <= eps {
+                    continue;
+                }
+                for (ai, absorber) in self.config.absorbers.iter().enumerate() {
+                    let dx = positions[ray].x - absorber.x;
+                    let dy = positions[ray].y - absorber.y;
+                    let dz = positions[ray].z - absorber.z;
+                    let dist2 = dx * dx + dy * dy + dz * dz;
+                    if dist2 <= absorber_r2 {
+                        if !was_inside[ray][ai] {
+                            step_hits[ai] += e;
+                            step_band_hits[ai][band] += e;
+                            was_inside[ray][ai] = true;
+                        }
+                    } else {
+                        was_inside[ray][ai] = false;
+                    }
+                }
+            }
+
+            // Propagate rays (parallel)
+            positions
+                .par_iter_mut()
+                .zip(velocities.par_iter_mut())
+                .zip(energies.par_iter_mut())
+                .for_each(|((pos, vel), energy)| {
+                    if *energy <= eps {
+                        return;
+                    }
+
+                    let orig_pos = *pos;
+                    if !self.scene.is_in_bounds(orig_pos, bbox_margin) {
+                        *energy = 0.0;
+                        return;
+                    }
+
+                    let vel_norm = match vel.normalize() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            *energy = 0.0;
+                            return;
+                        }
+                    };
+
+                    if let Some((target_idx, target_dist)) =
+                        self.scene.find_target_surface(orig_pos, vel_norm)
+                    {
+                        if target_dist <= reflection_dist {
+                            let mut current_target = Some((target_idx, target_dist));
+                            let mut search_pos = orig_pos;
+
+                            while let Some((tidx, _tdist)) = current_target {
+                                if *energy <= eps {
+                                    break;
+                                }
+
+                                let alpha = band_absorption.get(tidx).copied().unwrap_or(0.0);
+                                *energy *= 1.0 - alpha;
+                                if *energy <= eps {
+                                    *energy = 0.0;
+                                    break;
+                                }
+
+                                let scattering = band_scattering.get(tidx).copied().unwrap_or(0.0);
+                                let reflection_model = Hybrid::new(scattering);
+
+                                let normal = self.scene.polygons[tidx].vn;
+                                *vel = reflection_model.reflect(*vel, normal);
+
+                                let new_vel_norm = match vel.normalize() {
+                                    Ok(v) => v,
+                                    Err(_) => break,
+                                };
+
+                                current_target =
+                                    self.scene.find_target_surface(search_pos, new_vel_norm);
+
+                                if let Some((_, next_dist)) = current_target {
+                                    if next_dist > reflection_dist {
+                                        current_target = None;
+                                    } else {
+                                        search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
+                                    }
+                                }
+                            }
+
+                            if *energy > eps {
+                                *energy *= air_factor;
+                                *pos = propagation_model.advance(orig_pos, *vel, dt);
+                            }
+                        } else {
+                            *energy *= air_factor;
+                            *pos = propagation_model.advance(orig_pos, *vel, dt);
+                        }
+                    } else {
+                        *energy *= air_factor;
+                        *pos = propagation_model.advance(orig_pos, *vel, dt);
+                    }
+                });
+
+            if store_history {
+                all_positions.push(positions.clone());
+                all_energies.push(energies.clone());
+                if let Some(ref mut v) = all_band_energies {
+                    let bands: Vec<[f64; NUM_OCTAVE_BANDS]> = energies
+                        .iter()
+                        .map(|&e| {
+                            let mut arr = [0.0; NUM_OCTAVE_BANDS];
+                            arr[band] = e;
+                            arr
+                        })
+                        .collect();
+                    v.push(bands);
+                }
+            }
+
+            all_hits.push(step_hits);
+            all_band_hits.push(step_band_hits);
+
+            let steps_done = all_hits.len();
+            let should_report =
+                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let needs_stats = should_report || min_alive_fraction > 0.0;
+
+            if needs_stats {
+                let mut alive: usize = 0;
+                let mut total_energy: f64 = 0.0;
+                for &e in energies.iter() {
+                    if e > eps {
+                        alive += 1;
+                    }
+                    total_energy += e;
+                }
+
+                let alive_fraction = (alive as f64) / (num_rays as f64);
+                let would_terminate =
+                    min_alive_fraction > 0.0 && alive_fraction < min_alive_fraction;
+
+                if (should_report || would_terminate) && report_every > 0 {
+                    reporter.report(&SimulationProgress {
+                        steps_done,
+                        num_steps,
+                        dt_s: dt,
+                        sim_time_s: steps_done as f64 * dt,
+                        num_rays,
+                        alive_rays: alive,
+                        total_energy,
+                        initial_total_energy,
+                    });
+                }
+
+                if would_terminate {
+                    break;
+                }
+            }
+        }
+
+        SimulationResult {
+            positions: all_positions,
+            energies: all_energies,
+            band_energies: all_band_energies,
+            hits: all_hits,
+            band_hits: Some(all_band_hits),
+            config: self.config,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -767,6 +1021,28 @@ mod tests {
         assert!(result.band_energies.is_none());
         assert_eq!(result.positions.len(), 5);
         assert_eq!(result.energies.len(), 5);
+    }
+
+    #[test]
+    fn test_frequency_dependent_single_band_runs() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10;
+        config.num_rays = 20;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.single_band_index = Some(3);
+        config.store_ray_history = true;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        assert_eq!(result.positions.len(), 10);
+        assert_eq!(result.energies.len(), 10);
+        assert!(result.band_hits.is_some());
     }
 
     #[test]
