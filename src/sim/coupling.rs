@@ -12,6 +12,13 @@ use std::collections::HashMap;
 
 use crate::UID;
 
+/// Index of the current weather timestep (hour-of-year) in the active weather dataset.
+///
+/// This is typically an EPW record index (0..8759), but may differ if the dataset has
+/// leap-year hours (8784) or if a shorter custom series is used.
+#[derive(Debug, Clone, Copy)]
+pub struct WeatherHourIndex(pub usize);
+
 /// Outdoor air (dry-bulb) temperature [°C].
 ///
 /// This is a minimal weather input for step-based thermal simulations.

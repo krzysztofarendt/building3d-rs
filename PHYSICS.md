@@ -662,8 +662,11 @@ thermal metadata into geometry), adopt the following conventions:
 - **Payload types (code)**: `sim::coupling::ShortwaveAbsorbedWPerPolygon` and
   `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
 - **Producers**: choose exactly one shortwave producer in a composed pipeline:
-  - deterministic EPW-driven producer: `sim::lighting::shortwave::SolarShortwaveModule`, or
+  - deterministic single-hour producer (fixed `SolarHourParams`): `sim::lighting::shortwave::SolarShortwaveModule`
+  - EPW time-series producer (consumes `sim::coupling::WeatherHourIndex`): `sim::lighting::shortwave::SolarEpwModule`, or
   - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
+- **Weather time base**: time-series pipelines should publish `sim::coupling::WeatherHourIndex`
+  and `sim::coupling::OutdoorAirTemperatureC` each step (see `sim::energy::weather_module::WeatherModule`).
 - **Separation of concerns**: `sim::lighting::module::LightingModule` publishes `LightingResult`
   only; shortwave coupling payloads are produced explicitly by the chosen producer module.
 - **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
