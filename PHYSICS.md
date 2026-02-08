@@ -955,6 +955,12 @@ temperature nodes yet), an optional aggregated envelope node `T_env,i` can be ad
 - Air node: `T_air,i`
 - Envelope node: `T_env,i`
 
+Heat sources are split between nodes:
+- `Q_air,i`: internal gains + shortwave transmitted into the zone air (e.g. `InternalGains*` +
+  `ShortwaveTransmittedWPerZone`)
+- `Q_env,i`: shortwave absorbed at exterior surfaces (e.g. `ShortwaveAbsorbedWPerPolygon` restricted
+  to exterior polygons via the boundary overlay)
+
 Exterior conductance for zone `i` (from the envelope classification overlay):
 ```
 K_env,i = Σ(U*A)_exterior,i   [W/K]

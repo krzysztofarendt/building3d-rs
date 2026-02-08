@@ -172,18 +172,24 @@ impl MultiZoneEnvelopeRcModel {
     /// Advances the model by one timestep.
     ///
     /// - `outdoor_temp_c`: boundary temperature for exterior + infiltration conductances
-    /// - `gains_w`: per-zone gains (W), same ordering as `zone_uids()`
+    /// - `air_gains_w`: per-zone gains applied to the *air* node (W), same ordering as `zone_uids()`
+    /// - `envelope_gains_w`: per-zone gains applied to the *envelope* node (W), same ordering as `zone_uids()`
     /// - `hvac`: ideal-loads controller (setpoints)
     /// - `dt_s`: timestep in seconds
     pub fn step(
         &mut self,
         outdoor_temp_c: f64,
-        gains_w: &[f64],
+        air_gains_w: &[f64],
+        envelope_gains_w: &[f64],
         hvac: &HvacIdealLoads,
         dt_s: f64,
     ) -> Result<MultiZoneStepResult> {
         let n = self.zone_uids.len();
-        anyhow::ensure!(gains_w.len() == n, "gains length mismatch");
+        anyhow::ensure!(air_gains_w.len() == n, "air gains length mismatch");
+        anyhow::ensure!(
+            envelope_gains_w.len() == n,
+            "envelope gains length mismatch"
+        );
         anyhow::ensure!(dt_s > 0.0, "dt must be positive");
 
         // Unknown ordering: [air_0..air_{n-1}, env_0..env_{n-1}]
@@ -205,7 +211,7 @@ impl MultiZoneEnvelopeRcModel {
 
             diag[idx_air] = c_over_dt + k_inf + k_air_env + self.sum_interzone_k[i];
             rhs_base[idx_air] =
-                c_over_dt * self.air_temperatures_c[i] + k_inf * outdoor_temp_c + gains_w[i];
+                c_over_dt * self.air_temperatures_c[i] + k_inf * outdoor_temp_c + air_gains_w[i];
 
             // Air ↔ envelope coupling.
             if k_air_env > 0.0 {
@@ -232,7 +238,9 @@ impl MultiZoneEnvelopeRcModel {
             let idx_air = i;
 
             diag[idx_env] = c_over_dt + k_air_env + k_env_out;
-            rhs_base[idx_env] = c_over_dt * self.env_temperatures_c[i] + k_env_out * outdoor_temp_c;
+            rhs_base[idx_env] = c_over_dt * self.env_temperatures_c[i]
+                + k_env_out * outdoor_temp_c
+                + envelope_gains_w[i];
 
             if k_air_env > 0.0 {
                 neighbors[idx_env].push((idx_air, k_air_env));
@@ -281,7 +289,7 @@ impl MultiZoneEnvelopeRcModel {
                 let t_free = if denom > 1e-14 {
                     (c_over_dt * self.air_temperatures_c[i]
                         + k_inf * outdoor_temp_c
-                        + gains_w[i]
+                        + air_gains_w[i]
                         + neighbor_term)
                         / denom
                 } else {
@@ -335,7 +343,7 @@ impl MultiZoneEnvelopeRcModel {
                     let q_hvac = c_over_dt * (final_temps[idx_air] - self.air_temperatures_c[i])
                         + k_inf * (final_temps[idx_air] - outdoor_temp_c)
                         + coupling
-                        - gains_w[i];
+                        - air_gains_w[i];
 
                     if q_hvac > 0.0 {
                         zone_heating_w[i] = q_hvac;
@@ -443,8 +451,9 @@ mod tests {
         );
 
         // Outdoor temp drops; gains zero.
-        let gains = vec![0.0];
-        let r0 = rc.step(0.0, &gains, &hvac, 3600.0).unwrap();
+        let air_gains = vec![0.0];
+        let env_gains = vec![0.0];
+        let r0 = rc.step(0.0, &air_gains, &env_gains, &hvac, 3600.0).unwrap();
         let t_air_after_1 = r0.zone_temperatures_c[0];
 
         // With large envelope capacity, air shouldn't instantly hit the steady-state value.
@@ -452,7 +461,7 @@ mod tests {
 
         // Run several steps; should approach outdoor.
         for _ in 0..48 {
-            rc.step(0.0, &gains, &hvac, 3600.0).unwrap();
+            rc.step(0.0, &air_gains, &env_gains, &hvac, 3600.0).unwrap();
         }
         assert!(rc.air_temperatures_c()[0] < 5.0);
     }
@@ -480,11 +489,13 @@ mod tests {
             cfg.indoor_temperature,
         );
         let hvac = HvacIdealLoads::new();
-        let gains = vec![0.0];
+        let air_gains = vec![0.0];
+        let env_gains = vec![0.0];
         model
             .step(
                 weather.records[0].dry_bulb_temperature,
-                &gains,
+                &air_gains,
+                &env_gains,
                 &hvac,
                 3600.0,
             )

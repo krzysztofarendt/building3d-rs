@@ -77,6 +77,7 @@ pub struct EnergyModule {
     total_volume_m3: f64,
     zone_uids: Vec<crate::UID>,
     polygon_uid_to_zone_idx: std::collections::HashMap<crate::UID, usize>,
+    boundaries: Option<ThermalBoundaries>,
 }
 
 enum EnergyModel {
@@ -94,12 +95,14 @@ impl EnergyModule {
             total_volume_m3: 0.0,
             zone_uids: vec![],
             polygon_uid_to_zone_idx: std::collections::HashMap::new(),
+            boundaries: None,
         }
     }
 
-    fn gains_by_zone(&self, bus: &Bus) -> Vec<f64> {
+    fn gains_by_zone_split(&self, bus: &Bus) -> (Vec<f64>, Vec<f64>) {
         let n = self.zone_uids.len();
-        let mut gains = vec![0.0; n];
+        let mut air_gains = vec![0.0; n];
+        let mut env_gains = vec![0.0; n];
 
         let internal_by_zone = bus
             .get::<InternalGainsWPerZone>()
@@ -111,19 +114,7 @@ impl EnergyModule {
             .get::<ShortwaveTransmittedWPerZone>()
             .map(|g| &g.watts_by_zone_uid);
 
-        // If we also have per-polygon absorbed shortwave, aggregate it per zone.
-        let mut absorbed_by_zone = vec![0.0; n];
-        if let Some(abs) = bus.get::<ShortwaveAbsorbedWPerPolygon>() {
-            for (polygon_uid, w) in &abs.watts_by_polygon_uid {
-                if *w == 0.0 {
-                    continue;
-                }
-                if let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(polygon_uid) {
-                    absorbed_by_zone[zone_idx] += *w;
-                }
-            }
-        }
-
+        // Apply internal + transmitted shortwave to the air node.
         for i in 0..n {
             let uid = &self.zone_uids[i];
 
@@ -139,10 +130,33 @@ impl EnergyModule {
                 .and_then(|map| map.get(uid).cloned())
                 .unwrap_or(0.0);
 
-            gains[i] = internal_i + solar_i + absorbed_by_zone[i];
+            air_gains[i] += internal_i + solar_i;
         }
 
-        gains
+        // Per-polygon absorbed shortwave: split between envelope (exterior) and air (non-exterior).
+        let is_exterior = |uid: &crate::UID| {
+            self.boundaries
+                .as_ref()
+                .map(|b| b.is_exterior(uid))
+                .unwrap_or(false)
+        };
+
+        if let Some(abs) = bus.get::<ShortwaveAbsorbedWPerPolygon>() {
+            for (polygon_uid, w) in &abs.watts_by_polygon_uid {
+                if *w == 0.0 {
+                    continue;
+                }
+                if let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(polygon_uid) {
+                    if is_exterior(polygon_uid) {
+                        env_gains[zone_idx] += *w;
+                    } else {
+                        air_gains[zone_idx] += *w;
+                    }
+                }
+            }
+        }
+
+        (air_gains, env_gains)
     }
 }
 
@@ -153,6 +167,7 @@ impl SimModule for EnergyModule {
 
     fn init(&mut self, ctx: &SimContext, _bus: &mut Bus) -> Result<()> {
         let boundaries = ThermalBoundaries::classify(ctx.building, ctx.surface_index);
+        self.boundaries = Some(boundaries.clone());
         let network = ThermalNetwork::build(
             ctx.building,
             &self.config.thermal,
@@ -224,7 +239,7 @@ impl SimModule for EnergyModule {
             .map(|t| t.0)
             .unwrap_or(self.config.thermal.outdoor_temperature);
 
-        let gains = self.gains_by_zone(bus);
+        let (air_gains, env_gains) = self.gains_by_zone_split(bus);
 
         let Some(model) = self.model.as_mut() else {
             anyhow::bail!("EnergyModule not initialized");
@@ -232,11 +247,19 @@ impl SimModule for EnergyModule {
 
         let result = match model {
             EnergyModel::Air(m) => {
+                let mut gains = air_gains;
+                for (i, v) in env_gains.into_iter().enumerate() {
+                    gains[i] += v;
+                }
                 m.step(outdoor_temp_c, &gains, &self.config.hvac, self.config.dt_s)?
             }
-            EnergyModel::EnvelopeRc(m) => {
-                m.step(outdoor_temp_c, &gains, &self.config.hvac, self.config.dt_s)?
-            }
+            EnergyModel::EnvelopeRc(m) => m.step(
+                outdoor_temp_c,
+                &air_gains,
+                &env_gains,
+                &self.config.hvac,
+                self.config.dt_s,
+            )?,
         };
         bus.put(result.clone());
 
