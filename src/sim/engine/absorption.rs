@@ -74,10 +74,10 @@ pub struct AirAbsorption {
 impl AirAbsorption {
     /// Creates an air absorption model for standard conditions (20°C, 50% RH).
     pub fn standard() -> Self {
-        // Approximate attenuation coefficients in dB/m at 20°C, 50% RH
-        // from ISO 9613-1 for octave bands 125-4000 Hz
+        // Pure-tone attenuation coefficients in dB/m at 20°C, 50% RH, 101.325 kPa
+        // computed from ISO 9613-1:1993 for octave band center frequencies 125-4000 Hz
         Self {
-            attenuation_per_meter: [0.0003, 0.0011, 0.0027, 0.0067, 0.024, 0.084],
+            attenuation_per_meter: [0.000440, 0.001310, 0.002728, 0.004665, 0.009887, 0.029666],
         }
     }
 

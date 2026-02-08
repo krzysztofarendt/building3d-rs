@@ -1076,6 +1076,7 @@ dependencies = [
  "hound",
  "ndarray",
  "rand 0.8.5",
+ "rayon",
  "rerun",
  "rustfft",
  "serde",

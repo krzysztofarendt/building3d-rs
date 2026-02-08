@@ -150,6 +150,7 @@ fn main() -> Result<()> {
         config.num_steps = num_steps;
         config.time_step = time_step;
         config.store_ray_history = false;
+        config.min_alive_fraction = 0.01; // Stop when <1% of rays are alive
 
         println!("  Running simulation...");
         let sim = Simulation::new(&building, config)?;
