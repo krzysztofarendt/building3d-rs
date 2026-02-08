@@ -732,8 +732,8 @@ thermal metadata into geometry), adopt the following conventions:
 - **Weather time base**: time-series pipelines should publish `sim::coupling::WeatherHourIndex`
   and `sim::coupling::OutdoorAirTemperatureC` each step (see `sim::energy::weather_module::WeatherModule`).
 - **Shading milestone**: as the first geometry-aware step, prefer a direct-sun occlusion producer
-  (e.g. `sim::lighting::shortwave::SolarShortwaveShadedStepModule` today; a `WeatherHourIndex`-driven
-  shaded producer is the next compatibility step).
+  (`sim::lighting::shortwave::SolarEpwShadedModule` for `WeatherHourIndex` pipelines, or
+  `sim::lighting::shortwave::SolarShortwaveShadedStepModule` as a self-contained convenience).
 - **Bus inputs**: step-based thermal simulations consume weather and gains from the `Bus`:
   - `sim::coupling::OutdoorAirTemperatureC`
   - `sim::coupling::InternalGainsWPerZone` (preferred) or `sim::coupling::InternalGainsWTotal` (fallback)
