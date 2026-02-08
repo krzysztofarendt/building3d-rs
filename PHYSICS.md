@@ -661,6 +661,11 @@ thermal metadata into geometry), adopt the following conventions:
   by polygon `UID` (with optional `zone/solid/wall/polygon` path strings for reporting).
 - **Payload types (code)**: `sim::coupling::ShortwaveAbsorbedWPerPolygon` and
   `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
+- **Producers**: choose exactly one shortwave producer in a composed pipeline:
+  - deterministic EPW-driven producer: `sim::lighting::shortwave::SolarShortwaveModule`, or
+  - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
+- **Separation of concerns**: `sim::lighting::module::LightingModule` publishes `LightingResult`
+  only; shortwave coupling payloads are produced explicitly by the chosen producer module.
 - **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
   photometric units (lux, cd/m²) only at output/reporting boundaries.
 - **Single source of truth for shortwave gains**: in a composed simulation pipeline, do not
@@ -804,6 +809,9 @@ Then:
 K_ij = U_eq * A_overlap
 ```
 
+In code this policy is controlled by `ThermalConfig::interzone_u_value_policy`
+(`sim::energy::config::InterZoneUValuePolicy`).
+
 ### 4.3 Transient Thermal Model (1R1C Lumped Model)
 
 A single-node resistor-capacitor model captures thermal mass effects:
@@ -857,6 +865,12 @@ C_i/dt * (T_i^{n+1} - T_i^n)
 
 In “ideal loads” mode, some zones may be clamped to heating/cooling setpoints, turning those
 temperatures into fixed boundary conditions for the solve.
+
+Implementation notes (code):
+- Multi-zone model: `MultiZoneAirModel` (`src/sim/energy/network/multizone.rs`)
+- Annual runners: `run_multizone_transient_simulation()` and `run_multizone_steady_simulation()`
+  (`src/sim/energy/simulation.rs`)
+- Per-zone default solar: `compute_solar_gains_per_zone()` (`src/sim/energy/solar_bridge.rs`)
 
 ### 4.4 HVAC Ideal Loads
 
@@ -1073,6 +1087,10 @@ Suggested payload (conceptual):
 
 In code, these contracts live in `sim::coupling` as `ShortwaveAbsorbedWPerPolygon` and
 `ShortwaveTransmittedWPerZone`.
+
+For multi-zone thermal models, `ShortwaveTransmittedWPerZone` is the most direct input: it
+maps cleanly onto the per-zone gains vector used by the zone-air solver. Per-polygon absorbed
+shortwave is optional (useful for future surface-temperature / radiant models).
 
 Thermal should support a fallback path (EPW + SHGC) when no lighting/solar module is present,
 but the composed pipeline should designate a single authoritative producer.
