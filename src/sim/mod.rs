@@ -1,4 +1,5 @@
 pub mod acoustics;
+pub mod coupling;
 pub mod energy;
 pub mod engine;
 pub mod framework;

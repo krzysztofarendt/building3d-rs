@@ -19,7 +19,8 @@ pub struct LightingSimulation {
     diffuse_reflectance: Vec<Rgb>,
     specular_reflectance: Vec<Rgb>,
     transmittance: Vec<Rgb>,
-    areas: HashMap<String, f64>,
+    polygon_uids: Vec<crate::UID>,
+    areas_m2: Vec<f64>,
     /// Maps polygon index → sensor grid index (only for sensor-equipped polygons).
     sensor_map: HashMap<usize, usize>,
     /// Sensor grids generated for matching polygons.
@@ -55,11 +56,8 @@ impl LightingSimulation {
             }
         }
 
-        // Compute polygon areas
-        let mut areas = HashMap::new();
-        for (i, poly) in scene.polygons.iter().enumerate() {
-            areas.insert(scene.paths[i].clone(), poly.area());
-        }
+        let polygon_uids: Vec<crate::UID> = scene.polygons.iter().map(|p| p.uid.clone()).collect();
+        let areas_m2: Vec<f64> = scene.polygons.iter().map(|p| p.area()).collect();
 
         // Generate sensor grids if configured
         let mut sensor_map = HashMap::new();
@@ -90,7 +88,8 @@ impl LightingSimulation {
             diffuse_reflectance,
             specular_reflectance,
             transmittance,
-            areas,
+            polygon_uids,
+            areas_m2,
             sensor_map,
             sensor_grids,
             sensor_area,
@@ -146,7 +145,7 @@ impl LightingSimulation {
             }
         }
 
-        result.compute_illuminance(&self.areas);
+        result.finalize(&self.polygon_uids, &self.areas_m2);
         result
     }
 
@@ -170,7 +169,7 @@ impl LightingSimulation {
 
             if let Some((idx, dist)) = self.scene.find_target_surface_global(pos, dir) {
                 // Record hit
-                result.record_hit(&self.scene.paths[idx], e);
+                result.record_hit_index(idx, e);
 
                 // Record sensor hit if this polygon has a sensor grid
                 if let Some(&grid_idx) = self.sensor_map.get(&idx) {
@@ -302,6 +301,7 @@ fn random_point_on_bbox_face(scene: &FlatScene, direction: Vector, rng: &mut imp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::index::SurfaceIndex;
     use crate::sim::lighting::sources::PointLight;
     use crate::{Solid, Zone};
 
@@ -361,7 +361,9 @@ mod tests {
         let mut floor_flux = 0.0;
         let mut ceiling_flux = 0.0;
 
-        for (path, flux) in &result.incident_flux {
+        let index = SurfaceIndex::new(&building);
+        for (polygon_uid, flux) in &result.incident_flux {
+            let path = index.path_by_polygon_uid(polygon_uid).unwrap_or("");
             let total = flux[0] + flux[1] + flux[2];
             if path.contains("floor") {
                 floor_flux += total;

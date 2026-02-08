@@ -659,6 +659,8 @@ thermal metadata into geometry), adopt the following conventions:
 
 - **Stable identifiers**: any per-surface output intended for other modules should be keyed
   by polygon `UID` (with optional `zone/solid/wall/polygon` path strings for reporting).
+- **Payload types (code)**: `sim::coupling::ShortwaveAbsorbedWPerPolygon` and
+  `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
 - **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
   photometric units (lux, cd/m²) only at output/reporting boundaries.
 - **Single source of truth for shortwave gains**: in a composed simulation pipeline, do not
@@ -1007,6 +1009,9 @@ To prevent “two ways to compute the same gains” drifting apart:
 Suggested payload (conceptual):
 - `ShortwaveAbsorbedWPerPolygon { polygon_uid -> watts }`
 - `ShortwaveTransmittedWPerZone { zone_uid -> watts }` (optional simplification)
+
+In code, these contracts live in `sim::coupling` as `ShortwaveAbsorbedWPerPolygon` and
+`ShortwaveTransmittedWPerZone`.
 
 Thermal should support a fallback path (EPW + SHGC) when no lighting/solar module is present,
 but the composed pipeline should designate a single authoritative producer.

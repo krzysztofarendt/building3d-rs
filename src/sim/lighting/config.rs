@@ -3,6 +3,7 @@ use crate::sim::materials::MaterialLibrary;
 use super::sources::{DirectionalLight, PointLight, Rgb};
 
 /// Configuration for a lighting simulation.
+#[derive(Clone)]
 pub struct LightingConfig {
     /// Point light sources.
     pub point_lights: Vec<PointLight>,

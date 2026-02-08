@@ -16,6 +16,7 @@ pub trait LightSource {
 }
 
 /// An omnidirectional point light source.
+#[derive(Clone)]
 pub struct PointLight {
     pub position: Point,
     /// RGB radiant intensity (W/sr per channel).
@@ -58,6 +59,7 @@ impl LightSource for PointLight {
 }
 
 /// A rectangular area light source.
+#[derive(Clone)]
 pub struct AreaLight {
     /// Center position.
     pub position: Point,
@@ -114,6 +116,7 @@ impl LightSource for AreaLight {
 }
 
 /// A directional (parallel) light source, such as sunlight.
+#[derive(Clone)]
 pub struct DirectionalLight {
     /// Direction the light travels (from source toward scene).
     pub direction: Vector,
