@@ -163,7 +163,7 @@ impl SolarGainConfig {
     /// 1. Exact match in `shgc` map
     /// 2. Material library `is_glazing` flag (if `material_library` provided)
     /// 3. Substring pattern match (fallback)
-    fn resolve_shgc_with_materials(
+    pub(crate) fn resolve_shgc_with_materials(
         &self,
         path: &str,
         material_library: Option<&MaterialLibrary>,
