@@ -753,6 +753,8 @@ For each zone at each hour:
 Q_transmission = sum(U_i * A_i) * (T_indoor - T_outdoor)     [W]
 ```
 
+Where the sum is taken over **exterior** envelope surfaces only (see 4.2.1).
+
 **Infiltration loss**:
 ```
 Q_infiltration = rho * c_p * V * ACH / 3600 * (T_indoor - T_outdoor)     [W]
@@ -770,6 +772,36 @@ Q_net = Q_transmission + Q_infiltration - Q_internal_gains - Q_solar_gains
 
 Heating demand = max(0, Q_net)
 Cooling demand = max(0, -Q_net)
+```
+
+#### 4.2.1 Envelope classification and multi-zone coupling (steady-state)
+
+Polygons are classified using a facing-graph overlay (keyed by polygon `UID`) into:
+- **exterior** (faces “nothing”),
+- **same-zone interface** (internal partitions between solids in the same zone; excluded from envelope),
+- **inter-zone interface** (partition between two zones; becomes a coupling term).
+
+This classification is imposed *at simulation time* and is not stored on geometry types.
+
+For two zones `i` and `j` with an inter-zone partition conductance `K_ij` (W/K):
+```
+Q_ij = K_ij * (T_i - T_j)   [W]
+```
+
+Zone-level steady-state balance with coupling:
+```
+0 = -K_out,i*(T_i - T_out) - sum_j K_ij*(T_i - T_j) + Q_gains,i + Q_hvac,i
+```
+
+The conductance `K_ij` is computed from geometric overlap area and an explicit policy for
+combining the two assigned U-values (one per facing polygon). Two common policies:
+
+- **Mean** (default): `U_eq = (U1 + U2)/2`
+- **Series**: `U_eq = 1 / (1/U1 + 1/U2)`
+
+Then:
+```
+K_ij = U_eq * A_overlap
 ```
 
 ### 4.3 Transient Thermal Model (1R1C Lumped Model)
@@ -793,11 +825,10 @@ The factor 50 kJ/(m^3*K) represents a medium-weight construction estimate.
 > range from ~30 kJ/(m^3*K) (lightweight) to ~80 kJ/(m^3*K) (heavyweight). Should be
 > documented as such and ideally derived from actual construction layers.
 
-**Temperature evolution** (explicit Euler):
+**Temperature evolution** (backward Euler / implicit):
 ```
-Q_losses = (UA_total + Infiltration_cond) * (T_zone - T_outdoor)
-Q_net = Q_gains + Q_hvac - Q_losses
-T_zone(t + dt) = T_zone(t) + (dt / C) * Q_net
+K = UA_total + Infiltration_cond
+T_zone(t + dt) = (T_zone(t) + dt/C * (Q_gains + Q_hvac + K*T_outdoor)) / (1 + dt*K/C)
 ```
 
 with dt = 3600 s (1-hour time step).
@@ -806,6 +837,26 @@ with dt = 3600 s (1-hour time step).
 ```
 T_zone = T_outdoor + (Q_gains + Q_hvac) / (UA_total + Infiltration_cond)
 ```
+
+#### 4.3.1 Multi-zone transient air-node model (network solve)
+
+For `N` zones, represent each zone air temperature as a state `T_i`. Let:
+- `C_i` be zone thermal capacity (J/K), typically `C_i = V_i * C_vol`,
+- `K_out,i = UA_i + K_inf,i` (W/K),
+- `K_ij` be inter-zone conductance (W/K),
+- `Q_gains,i` be total gains in zone `i` (W),
+- `Q_hvac,i` be HVAC heat input to zone `i` (W, positive heating, negative cooling).
+
+Backward Euler discretization yields a linear system each timestep:
+```
+C_i/dt * (T_i^{n+1} - T_i^n)
+  = -K_out,i * (T_i^{n+1} - T_out)
+    - sum_j K_ij * (T_i^{n+1} - T_j^{n+1})
+    + Q_gains,i + Q_hvac,i
+```
+
+In “ideal loads” mode, some zones may be clamped to heating/cooling setpoints, turning those
+temperatures into fixed boundary conditions for the solve.
 
 ### 4.4 HVAC Ideal Loads
 
@@ -861,6 +912,12 @@ When the sun is below the horizon, only the diffuse component contributes.
 
 Glazing surfaces are identified by pattern matching on path names ("window", "glazing",
 "glass") or by explicit per-surface SHGC entries in `SolarGainConfig`.
+
+For multi-zone simulations, the same calculation can be aggregated **per zone** by summing
+glazing gains within each zone:
+```
+Q_solar,zone = sum_{glazing in zone} Q_solar_window
+```
 
 A legacy `SolarBridgeConfig` and `lighting_to_solar_gains()` function remain available
 for converting lighting simulation results to thermal gains via luminous efficacy, but
@@ -920,7 +977,7 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
 ### 4.8 Key Assumptions (Energy)
 
 - **Steady-state or simple transient**: no detailed finite-element thermal modeling or
-  multi-zone air flow.
+  pressure-based multi-zone air flow. Multi-zone heat coupling through partitions is supported.
 - **Single-node thermal mass**: entire zone lumped into one capacitance; no temperature
   gradients within the zone.
 - **Fixed air properties**: density 1.2 kg/m^3, c_p = 1005 J/(kg*K); no humidity or
@@ -968,6 +1025,10 @@ Move from “ad-hoc formulas” to a reusable **thermal network representation**
   - inter-zone conductances `K_zone_a_zone_b` (W/K),
   - infiltration/ventilation conductance (W/K),
   - heat sources: internal + solar + HVAC (W).
+
+Inter-zone conductances require an explicit policy for combining two facing U-values. This
+must be configurable so different modeling interpretations can be used without changing
+geometry or solver code (see 4.2.1).
 
 This network should be able to run in:
 - **steady-state** mode (instantaneous loads), and
