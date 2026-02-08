@@ -46,7 +46,7 @@ pub fn draw_illuminance_heatmap(
 
                     let lux = result
                         .illuminance
-                        .get(&path)
+                        .get(&polygon.uid)
                         .map(|ill| (ill[0] + ill[1] + ill[2]) / 3.0)
                         .unwrap_or(0.0);
 

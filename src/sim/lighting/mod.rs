@@ -1,5 +1,6 @@
 pub mod backward;
 pub mod config;
+pub mod module;
 pub mod result;
 pub mod sensor;
 pub mod simulation;
