@@ -1,6 +1,8 @@
 use crate::HasName;
 use crate::Point;
 use crate::geom::triangles::TriangleIndex;
+use crate::sim::materials::NUM_OCTAVE_BANDS;
+use crate::sim::rays::AcousticMode;
 use crate::sim::rays::SimulationResult;
 use crate::{Building, HasMesh, Mesh};
 use anyhow::Result;
@@ -96,6 +98,19 @@ fn ray_color(energy: f64, config: &RerunConfig) -> rr::Color {
             // Use the "high" alpha as the common alpha.
             let a = config.sim_ray_color_high.3;
             color(hsv_to_rgba(hue, 1.0, 1.0, a))
+        }
+    }
+}
+
+fn energy_full_scale(result: &SimulationResult) -> f64 {
+    match result.config.acoustic_mode {
+        AcousticMode::Scalar => 1.0,
+        AcousticMode::FrequencyDependent => {
+            if result.config.single_band_index.is_some() {
+                1.0
+            } else {
+                NUM_OCTAVE_BANDS as f64
+            }
         }
     }
 }
@@ -230,6 +245,7 @@ pub fn draw_simulation(
     )?;
 
     // Animate ray positions over time steps
+    let energy_scale = energy_full_scale(result).max(1e-300);
     for (step, (positions, energies)) in result
         .positions
         .iter()
@@ -246,7 +262,7 @@ pub fn draw_simulation(
         for (pos, &energy) in positions.iter().zip(energies.iter()) {
             if energy > config.sim_ray_energy_threshold {
                 pts.push(*pos);
-                colors_vec.push(ray_color(energy, config));
+                colors_vec.push(ray_color(energy / energy_scale, config));
                 radii_vec.push(config.sim_ray_radius);
             }
         }
