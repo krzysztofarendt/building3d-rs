@@ -12,6 +12,29 @@ use crate::{Building, Point, Vector};
 
 use super::config::{AcousticMode, SimulationConfig};
 
+/// Per-ray energy below this value is treated as "dead".
+pub const ENERGY_EPS: f64 = 1e-10;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SimulationProgress {
+    /// Number of completed steps (0..=num_steps).
+    pub steps_done: usize,
+    /// Target number of steps from the configuration (may stop early).
+    pub num_steps: usize,
+    /// Simulation time step (seconds).
+    pub dt_s: f64,
+    /// Simulated time elapsed (seconds).
+    pub sim_time_s: f64,
+    /// Total number of rays.
+    pub num_rays: usize,
+    /// Rays with energy > `ENERGY_EPS`.
+    pub alive_rays: usize,
+    /// Total scalar energy remaining (frequency-dependent mode sums bands).
+    pub total_energy: f64,
+    /// Total scalar energy at start (for fractions).
+    pub initial_total_energy: f64,
+}
+
 /// Result of a ray tracing simulation.
 pub struct SimulationResult {
     /// Ray positions per time step: positions[step][ray]
@@ -35,6 +58,35 @@ pub struct Simulation {
     scene: FlatScene,
 }
 
+trait ProgressReporter {
+    fn every_steps(&self) -> usize;
+    fn report(&mut self, progress: &SimulationProgress);
+}
+
+struct NoProgress;
+impl ProgressReporter for NoProgress {
+    fn every_steps(&self) -> usize {
+        0
+    }
+    fn report(&mut self, _progress: &SimulationProgress) {}
+}
+
+struct FnProgress<F> {
+    every_steps: usize,
+    f: F,
+}
+impl<F> ProgressReporter for FnProgress<F>
+where
+    F: FnMut(&SimulationProgress),
+{
+    fn every_steps(&self) -> usize {
+        self.every_steps
+    }
+    fn report(&mut self, progress: &SimulationProgress) {
+        (self.f)(progress);
+    }
+}
+
 impl Simulation {
     pub fn new(building: &Building, config: SimulationConfig) -> Result<Self> {
         let scene = FlatScene::new(building, config.voxel_size, config.search_transparent);
@@ -43,12 +95,35 @@ impl Simulation {
 
     pub fn run(self) -> SimulationResult {
         match self.config.acoustic_mode {
-            AcousticMode::Scalar => self.run_scalar(),
-            AcousticMode::FrequencyDependent => self.run_frequency_dependent(),
+            AcousticMode::Scalar => self.run_scalar_with_progress(NoProgress),
+            AcousticMode::FrequencyDependent => {
+                self.run_frequency_dependent_with_progress(NoProgress)
+            }
         }
     }
 
-    fn run_scalar(self) -> SimulationResult {
+    /// Runs the simulation while periodically reporting progress.
+    ///
+    /// - `every_steps=0` disables progress reporting.
+    /// - The reporter is called once at start (`steps_done=0`) and then every `every_steps`,
+    ///   plus once at the end (or early-termination step).
+    pub fn run_with_progress<F>(self, every_steps: usize, report: F) -> SimulationResult
+    where
+        F: FnMut(&SimulationProgress),
+    {
+        let reporter = FnProgress {
+            every_steps,
+            f: report,
+        };
+        match self.config.acoustic_mode {
+            AcousticMode::Scalar => self.run_scalar_with_progress(reporter),
+            AcousticMode::FrequencyDependent => {
+                self.run_frequency_dependent_with_progress(reporter)
+            }
+        }
+    }
+
+    fn run_scalar_with_progress<R: ProgressReporter>(self, mut reporter: R) -> SimulationResult {
         let num_rays = self.config.num_rays;
         let num_steps = self.config.num_steps;
         let num_absorbers = self.config.absorbers.len();
@@ -87,12 +162,27 @@ impl Simulation {
             Vec::with_capacity(if store_history { num_steps } else { 0 });
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
 
-        let eps = 1e-10;
+        let eps = ENERGY_EPS;
         let bbox_margin = 1e-6;
         let min_alive_fraction = self.config.min_alive_fraction;
 
         // Track whether each ray was inside each absorber on the previous step
         let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
+
+        let initial_total_energy: f64 = num_rays as f64; // energies start at 1.0
+        let report_every = reporter.every_steps();
+        if report_every > 0 {
+            reporter.report(&SimulationProgress {
+                steps_done: 0,
+                num_steps,
+                dt_s: dt,
+                sim_time_s: 0.0,
+                num_rays,
+                alive_rays: num_rays,
+                total_energy: initial_total_energy,
+                initial_total_energy,
+            });
+        }
 
         for _step in 0..num_steps {
             let mut step_hits = vec![0.0; num_absorbers];
@@ -197,10 +287,39 @@ impl Simulation {
             }
             all_hits.push(step_hits);
 
-            // Early termination if too few rays are alive
-            if min_alive_fraction > 0.0 {
-                let alive = energies.iter().filter(|&&e| e > eps).count();
-                if (alive as f64) / (num_rays as f64) < min_alive_fraction {
+            let steps_done = all_hits.len();
+            let should_report =
+                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let needs_stats = should_report || min_alive_fraction > 0.0;
+
+            if needs_stats {
+                let mut alive: usize = 0;
+                let mut total_energy: f64 = 0.0;
+                for &e in energies.iter() {
+                    if e > eps {
+                        alive += 1;
+                    }
+                    total_energy += e;
+                }
+
+                let alive_fraction = (alive as f64) / (num_rays as f64);
+                let would_terminate =
+                    min_alive_fraction > 0.0 && alive_fraction < min_alive_fraction;
+
+                if (should_report || would_terminate) && report_every > 0 {
+                    reporter.report(&SimulationProgress {
+                        steps_done,
+                        num_steps,
+                        dt_s: dt,
+                        sim_time_s: steps_done as f64 * dt,
+                        num_rays,
+                        alive_rays: alive,
+                        total_energy,
+                        initial_total_energy,
+                    });
+                }
+
+                if would_terminate {
                     break;
                 }
             }
@@ -216,7 +335,10 @@ impl Simulation {
         }
     }
 
-    fn run_frequency_dependent(self) -> SimulationResult {
+    fn run_frequency_dependent_with_progress<R: ProgressReporter>(
+        self,
+        mut reporter: R,
+    ) -> SimulationResult {
         let num_rays = self.config.num_rays;
         let num_steps = self.config.num_steps;
         let num_absorbers = self.config.absorbers.len();
@@ -255,12 +377,27 @@ impl Simulation {
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
         let mut all_band_hits: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(num_steps);
 
-        let eps = 1e-10;
+        let eps = ENERGY_EPS;
         let bbox_margin = 1e-6;
         let min_alive_fraction = self.config.min_alive_fraction;
 
         // Track whether each ray was inside each absorber on the previous step
         let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
+
+        let initial_total_energy: f64 = (num_rays as f64) * (NUM_OCTAVE_BANDS as f64);
+        let report_every = reporter.every_steps();
+        if report_every > 0 {
+            reporter.report(&SimulationProgress {
+                steps_done: 0,
+                num_steps,
+                dt_s: dt,
+                sim_time_s: 0.0,
+                num_rays,
+                alive_rays: num_rays,
+                total_energy: initial_total_energy,
+                initial_total_energy,
+            });
+        }
 
         for _step in 0..num_steps {
             let mut step_hits = vec![0.0; num_absorbers];
@@ -413,13 +550,40 @@ impl Simulation {
             all_hits.push(step_hits);
             all_band_hits.push(step_band_hits);
 
-            // Early termination if too few rays are alive
-            if min_alive_fraction > 0.0 {
-                let alive = band_energies
-                    .iter()
-                    .filter(|be| be.iter().sum::<f64>() > eps)
-                    .count();
-                if (alive as f64) / (num_rays as f64) < min_alive_fraction {
+            let steps_done = all_hits.len();
+            let should_report =
+                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let needs_stats = should_report || min_alive_fraction > 0.0;
+
+            if needs_stats {
+                let mut alive: usize = 0;
+                let mut total_energy: f64 = 0.0;
+                for be in band_energies.iter() {
+                    let e = be.iter().sum::<f64>();
+                    if e > eps {
+                        alive += 1;
+                    }
+                    total_energy += e;
+                }
+
+                let alive_fraction = (alive as f64) / (num_rays as f64);
+                let would_terminate =
+                    min_alive_fraction > 0.0 && alive_fraction < min_alive_fraction;
+
+                if (should_report || would_terminate) && report_every > 0 {
+                    reporter.report(&SimulationProgress {
+                        steps_done,
+                        num_steps,
+                        dt_s: dt,
+                        sim_time_s: steps_done as f64 * dt,
+                        num_rays,
+                        alive_rays: alive,
+                        total_energy,
+                        initial_total_energy,
+                    });
+                }
+
+                if would_terminate {
                     break;
                 }
             }
@@ -441,6 +605,32 @@ mod tests {
     use super::*;
     use crate::sim::materials::{AcousticMaterial, Material, MaterialLibrary};
     use crate::{Solid, Zone};
+
+    #[test]
+    fn test_progress_reporter_is_called() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10;
+        config.num_rays = 5;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.default_absorption = 0.0;
+        config.store_ray_history = false;
+
+        let mut calls: usize = 0;
+        let mut last_steps_done: usize = 999;
+        let sim = Simulation::new(&building, config).unwrap();
+        let _result = sim.run_with_progress(3, |p| {
+            calls += 1;
+            last_steps_done = p.steps_done;
+        });
+
+        // Called at start (0), then at steps 3/6/9, and at end (10).
+        assert_eq!(calls, 5);
+        assert_eq!(last_steps_done, 10);
+    }
 
     #[test]
     fn test_simulation_basic() {
