@@ -661,6 +661,9 @@ thermal metadata into geometry), adopt the following conventions:
   by polygon `UID` (with optional `zone/solid/wall/polygon` path strings for reporting).
 - **Payload types (code)**: `sim::coupling::ShortwaveAbsorbedWPerPolygon` and
   `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
+- **Producers**: choose exactly one shortwave producer in a composed pipeline:
+  - deterministic EPW-driven producer: `sim::lighting::shortwave::SolarShortwaveModule`, or
+  - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
 - **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
   photometric units (lux, cd/m²) only at output/reporting boundaries.
 - **Single source of truth for shortwave gains**: in a composed simulation pipeline, do not

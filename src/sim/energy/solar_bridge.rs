@@ -196,6 +196,7 @@ impl Default for SolarGainConfig {
 }
 
 /// Parameters describing the solar conditions for a single hour.
+#[derive(Debug, Clone, Copy)]
 pub struct SolarHourParams {
     /// Direct normal irradiance (W/m^2).
     pub direct_normal_irradiance: f64,
