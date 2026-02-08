@@ -20,6 +20,27 @@ impl Bus {
         self.values.insert(TypeId::of::<T>(), Box::new(value));
     }
 
+    /// Inserts the value only if no value of type `T` is already present.
+    ///
+    /// Returns an error if a value of that type already exists on the Bus.
+    /// Use this to enforce single-producer contracts in composed pipelines.
+    pub fn put_unique<T: 'static>(&mut self, value: T) -> anyhow::Result<()> {
+        use std::collections::hash_map::Entry;
+        match self.values.entry(TypeId::of::<T>()) {
+            Entry::Vacant(e) => {
+                e.insert(Box::new(value));
+                Ok(())
+            }
+            Entry::Occupied(_) => {
+                anyhow::bail!(
+                    "Bus already contains a value of type `{}`; \
+                     a composed pipeline must have exactly one producer per type",
+                    std::any::type_name::<T>(),
+                );
+            }
+        }
+    }
+
     /// Gets a reference to the stored value of type `T`, if present.
     pub fn get<T: 'static>(&self) -> Option<&T> {
         self.values

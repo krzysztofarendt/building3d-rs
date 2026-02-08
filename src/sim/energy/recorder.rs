@@ -42,17 +42,20 @@ impl MultiZoneRecorderData {
         self.hourly_zone_cooling_w = vec![Vec::new(); n];
     }
 
-    fn push_step(&mut self, step: &MultiZoneStepResult, month: Option<u8>) {
+    fn push_step(&mut self, step: &MultiZoneStepResult, month: Option<u8>) -> anyhow::Result<()> {
         self.ensure_zones_initialized(step);
 
         let n = self.zone_uids.len();
-        if step.zone_temperatures_c.len() != n
-            || step.zone_heating_w.len() != n
-            || step.zone_cooling_w.len() != n
-        {
-            // Skip inconsistent data; treat as an error upstream.
-            return;
-        }
+        anyhow::ensure!(
+            step.zone_temperatures_c.len() == n
+                && step.zone_heating_w.len() == n
+                && step.zone_cooling_w.len() == n,
+            "MultiZoneRecorderData::push_step: inconsistent zone count \
+             (expected {n}, got temps={}, heating={}, cooling={})",
+            step.zone_temperatures_c.len(),
+            step.zone_heating_w.len(),
+            step.zone_cooling_w.len(),
+        );
 
         let hour_heating: f64 = step.zone_heating_w.iter().sum();
         let hour_cooling: f64 = step.zone_cooling_w.iter().sum();
@@ -67,6 +70,8 @@ impl MultiZoneRecorderData {
 
         let m = month.unwrap_or(1).clamp(1, 12);
         self.month_by_step.push(m);
+
+        Ok(())
     }
 
     pub fn finalize(self, dt_s: f64) -> MultiZoneAnnualResult {
@@ -158,7 +163,7 @@ impl SimModule for MultiZoneRecorderModule {
         let Some(data) = bus.get_mut::<MultiZoneRecorderData>() else {
             anyhow::bail!("MultiZoneRecorderData not initialized on Bus");
         };
-        data.push_step(&step, month);
+        data.push_step(&step, month)?;
 
         // Keep dt_s here for future: might store it in RecorderData if needed.
         let _ = self.dt_s;
