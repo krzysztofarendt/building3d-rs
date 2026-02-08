@@ -453,7 +453,10 @@ pub struct SolarEpwBusModule {
 
 impl SolarEpwBusModule {
     pub fn new(config: SolarEpwBusConfig) -> Self {
-        Self { config, inner: None }
+        Self {
+            config,
+            inner: None,
+        }
     }
 
     fn ensure_initialized(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
@@ -703,7 +706,10 @@ pub struct SolarEpwShadedBusModule {
 
 impl SolarEpwShadedBusModule {
     pub fn new(config: SolarEpwShadedBusConfig) -> Self {
-        Self { config, inner: None }
+        Self {
+            config,
+            inner: None,
+        }
     }
 
     fn ensure_initialized(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
