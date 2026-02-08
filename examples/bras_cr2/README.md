@@ -3,6 +3,8 @@
 Validation of building3d-rs acoustic ray tracing against in-situ measurements
 from the BRAS (Benchmark for Room Acoustical Simulation) database.
 
+![Room geometry](geometry.png)
+
 ## Case Description
 
 **Scene**: CR2 (Scene 09) -- Small seminar room at RWTH Aachen University
@@ -110,6 +112,8 @@ the Schroeder backward-integrated energy decay curve.
   for speech; rooms used for music typically have lower D50.
 
 ## Results
+
+![Results comparison](results.png)
 
 Simulated room acoustic parameters averaged across all 10 source-receiver
 pairs (2 sources x 5 receivers), compared against BRAS in-situ measurements.
