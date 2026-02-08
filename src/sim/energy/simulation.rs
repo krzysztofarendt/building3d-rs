@@ -410,6 +410,128 @@ pub fn run_multizone_transient_simulation(
     })
 }
 
+/// Runs a multi-zone *steady-state* annual simulation with zone air nodes and ideal HVAC.
+///
+/// This uses the same multi-zone coupling model as [`run_multizone_transient_simulation`],
+/// but with zero thermal capacity (instantaneous steady-state each hour). It is useful for
+/// quick annual load estimates and for debugging inter-zone coupling without dynamics.
+pub fn run_multizone_steady_simulation(
+    building: &Building,
+    base_config: &ThermalConfig,
+    weather: &WeatherData,
+    hvac: &HvacIdealLoads,
+    gains_profile: Option<&InternalGainsProfile>,
+    solar_config: Option<&SolarGainConfig>,
+) -> anyhow::Result<MultiZoneAnnualResult> {
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+    let network = ThermalNetwork::build(building, base_config, &index, &boundaries);
+
+    // Zero-capacity zones: steady-state per hour.
+    let mut model = MultiZoneAirModel::new(
+        building,
+        &network,
+        base_config.infiltration_ach,
+        0.0,
+        base_config.indoor_temperature,
+    );
+
+    let zones = building.zones();
+    let zone_volumes_m3: Vec<f64> = zones.iter().map(|z| z.volume()).collect();
+    let total_volume: f64 = zone_volumes_m3.iter().sum();
+
+    let num_hours = weather.num_hours();
+    let n_zones = zones.len();
+
+    let mut hourly_zone_temperatures_c = vec![Vec::with_capacity(num_hours); n_zones];
+    let mut hourly_zone_heating_w = vec![Vec::with_capacity(num_hours); n_zones];
+    let mut hourly_zone_cooling_w = vec![Vec::with_capacity(num_hours); n_zones];
+
+    let mut hourly_heating = Vec::with_capacity(num_hours);
+    let mut hourly_cooling = Vec::with_capacity(num_hours);
+
+    let mut annual_heating = 0.0;
+    let mut annual_cooling = 0.0;
+    let mut peak_heating = 0.0_f64;
+    let mut peak_cooling = 0.0_f64;
+    let mut monthly_heating = [0.0; 12];
+    let mut monthly_cooling = [0.0; 12];
+
+    for (hour_idx, record) in weather.records.iter().enumerate() {
+        let gains_internal = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
+        let solar_by_zone = match solar_config {
+            Some(sc) => {
+                let params = SolarHourParams {
+                    direct_normal_irradiance: record.direct_normal_radiation,
+                    diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+                    day_of_year: day_of_year(record.month, record.day),
+                    hour: record.hour as f64,
+                    latitude: weather.latitude,
+                    longitude: weather.longitude,
+                };
+                compute_solar_gains_per_zone(building, &params, sc)
+            }
+            None => std::collections::HashMap::new(),
+        };
+
+        let mut gains_by_zone = vec![0.0; n_zones];
+        if total_volume > 1e-14 {
+            for i in 0..n_zones {
+                let internal_i = gains_internal * (zone_volumes_m3[i] / total_volume);
+                let solar_i = solar_by_zone
+                    .get(&model.zone_uids()[i])
+                    .cloned()
+                    .unwrap_or(0.0);
+                gains_by_zone[i] = internal_i + solar_i;
+            }
+        }
+
+        let step = model.step(record.dry_bulb_temperature, &gains_by_zone, hvac, 3600.0)?;
+
+        let hour_heating: f64 = step.zone_heating_w.iter().sum();
+        let hour_cooling: f64 = step.zone_cooling_w.iter().sum();
+
+        hourly_heating.push(hour_heating);
+        hourly_cooling.push(hour_cooling);
+
+        annual_heating += hour_heating;
+        annual_cooling += hour_cooling;
+        peak_heating = peak_heating.max(hour_heating);
+        peak_cooling = peak_cooling.max(hour_cooling);
+
+        let month_idx = (record.month as usize).saturating_sub(1).min(11);
+        monthly_heating[month_idx] += hour_heating;
+        monthly_cooling[month_idx] += hour_cooling;
+
+        for z in 0..n_zones {
+            hourly_zone_temperatures_c[z].push(step.zone_temperatures_c[z]);
+            hourly_zone_heating_w[z].push(step.zone_heating_w[z]);
+            hourly_zone_cooling_w[z].push(step.zone_cooling_w[z]);
+        }
+    }
+
+    let to_kwh = 1.0 / 1000.0;
+    let annual = AnnualResult {
+        hourly_heating,
+        hourly_cooling,
+        annual_heating_kwh: annual_heating * to_kwh,
+        annual_cooling_kwh: annual_cooling * to_kwh,
+        peak_heating,
+        peak_cooling,
+        monthly_heating_kwh: monthly_heating.map(|v| v * to_kwh),
+        monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
+    };
+
+    Ok(MultiZoneAnnualResult {
+        zone_uids: model.zone_uids().to_vec(),
+        zone_names: model.zone_names().to_vec(),
+        hourly_zone_temperatures_c,
+        hourly_zone_heating_w,
+        hourly_zone_cooling_w,
+        annual,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +637,28 @@ mod tests {
 
         let result =
             run_multizone_transient_simulation(&building, &config, &weather, &hvac, None, None)
+                .unwrap();
+
+        assert_eq!(result.zone_names.len(), 2);
+        assert_eq!(result.hourly_zone_temperatures_c.len(), 2);
+        assert_eq!(result.hourly_zone_temperatures_c[0].len(), 8760);
+        assert_eq!(result.annual.hourly_heating.len(), 8760);
+    }
+
+    #[test]
+    fn test_multizone_steady_simulation_basic() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
+
+        let config = ThermalConfig::new();
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
+        let hvac = HvacIdealLoads::new();
+
+        let result =
+            run_multizone_steady_simulation(&building, &config, &weather, &hvac, None, None)
                 .unwrap();
 
         assert_eq!(result.zone_names.len(), 2);
