@@ -19,6 +19,8 @@ pub struct SurfaceRef {
     pub zone_uid: UID,
     /// Zone name (path component).
     pub zone_name: String,
+    /// Polygon surface area in m².
+    pub area_m2: f64,
 }
 
 /// Domain-agnostic lookup table for polygon surfaces.
@@ -57,6 +59,7 @@ impl SurfaceIndex {
                             polygon_uid,
                             zone_uid,
                             zone_name: zone.name.clone(),
+                            area_m2: polygon.area(),
                         });
                     }
                 }

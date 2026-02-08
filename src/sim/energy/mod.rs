@@ -2,6 +2,7 @@ pub mod boundary;
 pub mod config;
 pub mod construction;
 pub mod hvac;
+pub mod network;
 pub mod result;
 pub mod schedule;
 pub mod simulation;

@@ -27,6 +27,10 @@ pub struct ThermalBoundaries {
     ///
     /// Any polygon not present in this map is treated as `Exterior`.
     pub interfaces: HashMap<UID, ThermalInterface>,
+    /// Cached list of facing polygon UID pairs, as reported by the polygon-facing graph.
+    ///
+    /// Each pair appears at most once.
+    pub facing_pairs: Vec<(UID, UID)>,
 }
 
 impl ThermalBoundaries {
@@ -42,6 +46,7 @@ impl ThermalBoundaries {
         let edges = get_graph_edges(building, params);
 
         let mut interfaces: HashMap<UID, ThermalInterface> = HashMap::new();
+        let mut facing_pairs = Vec::new();
 
         for edge in edges {
             if edge.relationship != "facing" {
@@ -54,6 +59,8 @@ impl ThermalBoundaries {
             let Some(uid2) = index.polygon_uid_by_path(&edge.path2).cloned() else {
                 continue;
             };
+
+            facing_pairs.push((uid1.clone(), uid2.clone()));
 
             let zone1 = index.zone_uid_by_polygon_uid(&uid1).cloned();
             let zone2 = index.zone_uid_by_polygon_uid(&uid2).cloned();
@@ -83,7 +90,10 @@ impl ThermalBoundaries {
             }
         }
 
-        Self { interfaces }
+        Self {
+            interfaces,
+            facing_pairs,
+        }
     }
 
     /// Returns true if the polygon is considered exterior for thermal transmission.
