@@ -16,7 +16,7 @@ halls. For each room, it includes:
 - Frequency-dependent absorption and scattering coefficients (fitted estimates
   from measurements, 31 third-octave bands from 20 Hz to 20 kHz)
 - Source and receiver positions matching the measurement setup
-- Measured room impulse responses and derived acoustic parameters (EDT, RT60,
+- Measured room impulse responses and derived acoustic parameters (EDT, T20,
   C80, D50) for all source-receiver pairs
 
 The geometry files and simulation input data used in this benchmark come from
@@ -88,10 +88,10 @@ CSV files at runtime.
 | Parameter                | Value                                  |
 |--------------------------|----------------------------------------|
 | Acoustic mode            | Frequency-dependent (6 octave bands)   |
-| Number of rays           | 50,000                                 |
+| Number of rays           | 5,000 (default; set `BRAS_CR2_NUM_RAYS=50000`) |
 | Time step (dt)           | 25 us                                  |
-| Maximum simulation time  | 3.0 s                                  |
-| Number of steps          | 120,000                                |
+| Maximum simulation time  | 2.8 s (default; set `BRAS_CR2_MAX_TIME_S=...`) |
+| Number of steps          | 112,000                                |
 | Receiver radius          | 0.8 m (spherical absorbers)            |
 | Receiver time resolution | 2 ms (histogram bin width)             |
 | Reflection model         | Hybrid (specular + diffuse scattering) |
@@ -102,8 +102,8 @@ CSV files at runtime.
 
 | Parameter          | building3d        | RAVEN                       |
 |--------------------|-------------------|-----------------------------|
-| Ray count          | 50,000            | 500,000                     |
-| Filter length      | 3.0 s             | 2.8 s                       |
+| Ray count          | 5,000 (default)   | 500,000                     |
+| Filter length      | 2.8 s (default)   | 2.8 s                       |
 | Detection sphere   | 0.8 m             | 0.8 m                       |
 | Time resolution    | 2 ms              | 2 ms                        |
 | Image sources      | none              | order 2                     |
@@ -121,11 +121,11 @@ the Schroeder backward-integrated energy decay curve.
   correlates with the *perceived* reverberance of a room because human hearing
   is most sensitive to the early part of the decay.
 
-- **RT60 (Reverberation Time)**: The time for sound energy to decay by 60 dB.
-  Because measuring a full 60 dB decay requires very high signal-to-noise
-  ratios, RT60 is usually estimated from a smaller range: T20 fits the decay
-  from -5 to -25 dB and extrapolates to 60 dB; T30 uses -5 to -35 dB. RT60
-  is the most widely used metric for characterizing room acoustics.
+- **T20 (Reverberation Time)**: Because measuring a full 60 dB decay requires
+  very high signal-to-noise ratios, reverberation time is usually estimated
+  from a smaller decay range. **T20** fits the Schroeder decay curve from
+  -5 to -25 dB and extrapolates to 60 dB, matching the BRAS reference data
+  used in this benchmark. (RT60 is often computed via T30 with T20 fallback.)
 
 - **C80 (Clarity)**: The ratio of early sound energy (first 80 ms) to late
   energy (after 80 ms), expressed in decibels:
@@ -154,64 +154,65 @@ reduces statistical noise but does not substantially change the averaged metrics
 
 | Freq (Hz) | Simulated (s) | Measured (s) | Error (%) |
 |-----------|---------------|--------------|-----------|
-| 125       | 1.55          | 1.50         | +3.4      |
-| 250       | 1.48          | 1.31         | +13.4     |
-| 500       | 2.13          | 2.02         | +5.8      |
-| 1000      | 2.03          | 1.92         | +6.0      |
-| 2000      | 1.81          | 1.76         | +2.9      |
-| 4000      | 1.76          | 1.65         | +6.5      |
+| 125       | 1.54          | 1.50         | +2.5      |
+| 250       | 1.47          | 1.31         | +12.4     |
+| 500       | 2.11          | 2.02         | +4.7      |
+| 1000      | 2.01          | 1.92         | +4.9      |
+| 2000      | 1.79          | 1.76         | +1.9      |
+| 4000      | 1.74          | 1.65         | +5.6      |
 
-### RT60 (Reverberation Time)
+### T20 (Reverberation Time)
 
-Simulated values use T30 with T20 fallback (Schroeder backward integration).
+Simulated values use **T20** (Schroeder backward integration), matching the BRAS
+reference data.
 
 | Freq (Hz) | Simulated (s) | Measured T20 (s) | Error (%) |
 |-----------|---------------|------------------|-----------|
-| 125       | 1.58          | 1.45             | +8.5      |
-| 250       | 1.55          | 1.35             | +15.3     |
-| 500       | 2.16          | 2.02             | +6.8      |
-| 1000      | 2.05          | 1.93             | +5.9      |
-| 2000      | 1.81          | 1.72             | +5.7      |
-| 4000      | 1.76          | 1.60             | +9.9      |
+| 125       | 1.56          | 1.45             | +7.6      |
+| 250       | 1.52          | 1.35             | +12.8     |
+| 500       | 2.16          | 2.02             | +7.2      |
+| 1000      | 2.06          | 1.93             | +6.3      |
+| 2000      | 1.82          | 1.72             | +5.9      |
+| 4000      | 1.76          | 1.60             | +10.0     |
 
 ### C80 (Clarity)
 
 | Freq (Hz) | Simulated (dB) | Measured (dB) | Error (dB) |
 |-----------|----------------|---------------|------------|
-| 125       | -0.08          | +0.55         | -0.6       |
-| 250       | +0.27          | +0.90         | -0.6       |
-| 500       | -1.93          | -1.86         | -0.1       |
-| 1000      | -1.67          | -0.61         | -1.1       |
-| 2000      | -1.02          | -0.48         | -0.5       |
-| 4000      | -0.84          | +0.16         | -1.0       |
+| 125       | -0.13          | +0.55         | -0.7       |
+| 250       | +0.21          | +0.90         | -0.7       |
+| 500       | -1.97          | -1.86         | -0.1       |
+| 1000      | -1.71          | -0.61         | -1.1       |
+| 2000      | -1.07          | -0.48         | -0.6       |
+| 4000      | -0.90          | +0.16         | -1.1       |
 
 ### D50 (Definition)
 
 | Freq (Hz) | Simulated (%) | Measured (%) | Error (pp) |
 |-----------|---------------|--------------|------------|
-| 125       | 34.0          | 29.5         | +4.5       |
-| 250       | 35.7          | 39.4         | -3.7       |
-| 500       | 26.0          | 27.8         | -1.8       |
-| 1000      | 27.1          | 32.1         | -5.0       |
-| 2000      | 29.8          | 35.6         | -5.8       |
-| 4000      | 30.6          | 36.6         | -6.0       |
+| 125       | 33.6          | 29.5         | +4.1       |
+| 250       | 35.3          | 39.4         | -4.1       |
+| 500       | 25.7          | 27.8         | -2.1       |
+| 1000      | 26.7          | 32.1         | -5.4       |
+| 2000      | 29.4          | 35.6         | -6.2       |
+| 4000      | 30.2          | 36.6         | -6.4       |
 
 ### Summary
 
 | Metric | Frequency range | Typical error         |
 |--------|-----------------|-----------------------|
-| EDT    | 125--4000 Hz    | +3% to +13%           |
-| RT60   | 125--4000 Hz    | +6% to +15%           |
+| EDT    | 125--4000 Hz    | +2% to +12%           |
+| T20    | 125--4000 Hz    | +6% to +13%           |
 | C80    | 125--4000 Hz    | -0.1 to -1.1 dB       |
-| D50    | 125--4000 Hz    | -6.0 to +4.5 pp       |
+| D50    | 125--4000 Hz    | -6.4 to +4.1 pp       |
 
-EDT and RT60 show a systematic positive bias of 3--15%, meaning the simulation
+EDT and T20 show a systematic positive bias of 2--13%, meaning the simulation
 slightly overestimates reverberation. This is consistent with the absence of
 image sources (which capture early specular reflections more accurately) and
 the use of octave-band rather than third-octave-band resolution.
 
 C80 is systematically negative (simulation predicts less early energy relative
-to late energy), which is consistent with the RT overestimation.
+to late energy), which is consistent with the T20 overestimation.
 
 D50 errors are within 6 percentage points, which is acceptable for geometric
 acoustics at these frequencies.
@@ -226,10 +227,10 @@ The simulation requires the BRAS validation data in `validation/bras/`. This
 data is not distributed with building3d-rs; see the Data Sources section below
 for download instructions.
 
-**Runtime**: With 50,000 rays and 120,000 steps, each source takes
-approximately 15--30 minutes on a modern multi-core CPU (ray propagation is
-parallelized with rayon). Total benchmark time is ~30--60 minutes for both
-sources. Reduce `num_rays` to 5,000 for a quick test (~2 minutes per source).
+**Runtime**: With 5,000 rays (default) and 112,000 steps, each source takes
+roughly a few minutes on a modern multi-core CPU (ray propagation is
+parallelized with rayon). Increase ray count via `BRAS_CR2_NUM_RAYS` for lower
+noise at the cost of runtime.
 
 ## Known Limitations
 

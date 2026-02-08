@@ -14,7 +14,7 @@ use std::path::Path;
 use building3d::Point;
 use building3d::io::{Ac3dCoordSystem, read_ac3d};
 use building3d::sim::acoustics::impulse_response::ImpulseResponse;
-use building3d::sim::acoustics::metrics::RoomAcousticReport;
+use building3d::sim::acoustics::metrics::{self, RoomAcousticReport};
 use building3d::sim::acoustics::receiver::Receiver;
 use building3d::sim::materials::{
     AcousticMaterial, Material, MaterialLibrary, NUM_OCTAVE_BANDS, OCTAVE_BAND_FREQUENCIES,
@@ -65,6 +65,19 @@ fn parse_material_csv(path: &Path) -> Result<([f64; 6], [f64; 6])> {
     Ok((absorption, scattering))
 }
 
+struct PairMetrics {
+    report: RoomAcousticReport,
+    t20: [Option<f64>; NUM_OCTAVE_BANDS],
+}
+
+fn t20_per_band(ir: &ImpulseResponse) -> [Option<f64>; NUM_OCTAVE_BANDS] {
+    let mut out = [None; NUM_OCTAVE_BANDS];
+    for band in 0..NUM_OCTAVE_BANDS {
+        out[band] = metrics::t20(ir, band);
+    }
+    out
+}
+
 fn main() -> Result<()> {
     let base = Path::new("validation/bras");
     let ac3d_path = base.join("informed_sim/RavenModels/scene9.ac");
@@ -74,6 +87,10 @@ fn main() -> Result<()> {
     println!("Loading CR2 geometry from {}...", ac3d_path.display());
     let (_mat_names, building) = read_ac3d(&ac3d_path, "seminar_room", Ac3dCoordSystem::ZUp)?;
     println!("  Loaded building with {} zones", building.zones().len());
+    let solids = building.solids();
+    let solid = solids
+        .first()
+        .context("Expected at least one solid in the imported AC3D model")?;
 
     // ── 2. Parse material CSVs → MaterialLibrary ──────────────────────
     let material_names = ["concrete", "windows", "ceiling", "plaster", "floor"];
@@ -110,9 +127,16 @@ fn main() -> Result<()> {
 
     // ── 4. Simulation parameters ──────────────────────────────────────
     let time_step = 2.5e-5; // 25 μs
-    let num_rays = 50_000;
-    let max_time = 3.0; // 3 seconds (RAVEN uses 2.8 s)
-    let num_steps = (max_time / time_step) as usize;
+    let num_rays = std::env::var("BRAS_CR2_NUM_RAYS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(5_000);
+    let requested_max_time = std::env::var("BRAS_CR2_MAX_TIME_S")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(2.8); // RAVEN filter length: 2.8 s
+    let num_steps = (requested_max_time / time_step).round() as usize;
+    let max_time = num_steps as f64 * time_step;
     let absorber_radius = 0.8;
     // Receiver time resolution for histograms (RAVEN uses 2 ms)
     let receiver_dt = 0.002;
@@ -126,9 +150,19 @@ fn main() -> Result<()> {
     println!("  Absorber radius: {} m", absorber_radius);
     println!("  Receiver time resolution: {} ms", receiver_dt * 1000.0);
 
+    // Sanity: positions should be inside the room volume.
+    for (name, p) in sources.iter().chain(receivers.iter()) {
+        if !solid.is_point_inside(*p) {
+            eprintln!(
+                "WARNING: {name} at ({:.3}, {:.3}, {:.3}) is outside the imported geometry",
+                p.x, p.y, p.z
+            );
+        }
+    }
+
     // ── 5. Run simulation for each source ─────────────────────────────
     // Accumulate per-pair reports for averaging
-    let mut all_reports: Vec<(String, RoomAcousticReport)> = Vec::new();
+    let mut all_pairs: Vec<PairMetrics> = Vec::new();
 
     for (src_name, src_pos) in sources.iter() {
         println!("\n{}", "=".repeat(60));
@@ -179,6 +213,7 @@ fn main() -> Result<()> {
 
             let ir = ImpulseResponse::from_receiver(&receiver);
             let report = RoomAcousticReport::from_ir(&ir);
+            let t20 = t20_per_band(&ir);
 
             let pair_name = format!("{}->{}", src_name, recv_name);
             println!(
@@ -188,7 +223,7 @@ fn main() -> Result<()> {
             );
             print_report(&report);
 
-            all_reports.push((pair_name, report));
+            all_pairs.push(PairMetrics { report, t20 });
         }
     }
 
@@ -208,7 +243,6 @@ fn main() -> Result<()> {
     let measured_d50: [f64; 6]  = [0.295, 0.394, 0.278, 0.321, 0.356, 0.366]; // converted from %
 
     // Average simulated metrics
-    let _n = all_reports.len() as f64;
     let mut avg_edt = [0.0f64; NUM_OCTAVE_BANDS];
     let mut avg_t20 = [0.0f64; NUM_OCTAVE_BANDS];
     let mut avg_c80 = [0.0f64; NUM_OCTAVE_BANDS];
@@ -218,16 +252,14 @@ fn main() -> Result<()> {
     let mut cnt_c80 = [0usize; NUM_OCTAVE_BANDS];
     let mut cnt_d50 = [0usize; NUM_OCTAVE_BANDS];
 
-    for (_, report) in &all_reports {
+    for pair in &all_pairs {
+        let report = &pair.report;
         for b in 0..NUM_OCTAVE_BANDS {
             if let Some(v) = report.edt[b] {
                 avg_edt[b] += v;
                 cnt_edt[b] += 1;
             }
-            if let Some(v) = report.rt60[b] {
-                // rt60 uses T30 with T20 fallback; we want T20 specifically
-                // but RoomAcousticReport stores rt60. Use metrics::t20 directly
-                // if needed. For now use rt60 as proxy.
+            if let Some(v) = pair.t20[b] {
                 avg_t20[b] += v;
                 cnt_t20[b] += 1;
             }
@@ -314,23 +346,52 @@ fn main() -> Result<()> {
         );
     }
 
-    println!("\n  Note: T20 column shows RT60 (T30 with T20 fallback) from simulation.");
-    println!("  {} source-receiver pairs averaged.", all_reports.len());
+    println!("  {} source-receiver pairs averaged.", all_pairs.len());
 
     // ── 7. Write results CSV for figure generation ───────────────────
     let csv_path = Path::new("examples/bras_cr2/results.csv");
     let mut csv = String::from("metric,freq_hz,simulated,measured\n");
     for b in 0..NUM_OCTAVE_BANDS {
         let freq = OCTAVE_BAND_FREQUENCIES[b];
-        let sim_edt = if cnt_edt[b] > 0 { avg_edt[b] / cnt_edt[b] as f64 } else { f64::NAN };
-        let sim_t20 = if cnt_t20[b] > 0 { avg_t20[b] / cnt_t20[b] as f64 } else { f64::NAN };
-        let sim_c80 = if cnt_c80[b] > 0 { avg_c80[b] / cnt_c80[b] as f64 } else { f64::NAN };
-        let sim_d50 = if cnt_d50[b] > 0 { avg_d50[b] / cnt_d50[b] as f64 } else { f64::NAN };
+        let sim_edt = if cnt_edt[b] > 0 {
+            avg_edt[b] / cnt_edt[b] as f64
+        } else {
+            f64::NAN
+        };
+        let sim_t20 = if cnt_t20[b] > 0 {
+            avg_t20[b] / cnt_t20[b] as f64
+        } else {
+            f64::NAN
+        };
+        let sim_c80 = if cnt_c80[b] > 0 {
+            avg_c80[b] / cnt_c80[b] as f64
+        } else {
+            f64::NAN
+        };
+        let sim_d50 = if cnt_d50[b] > 0 {
+            avg_d50[b] / cnt_d50[b] as f64
+        } else {
+            f64::NAN
+        };
 
-        csv.push_str(&format!("EDT,{},{:.6},{:.6}\n", freq, sim_edt, measured_edt[b]));
-        csv.push_str(&format!("RT60,{},{:.6},{:.6}\n", freq, sim_t20, measured_t20[b]));
-        csv.push_str(&format!("C80,{},{:.6},{:.6}\n", freq, sim_c80, measured_c80[b]));
-        csv.push_str(&format!("D50,{},{:.6},{:.6}\n", freq, sim_d50 * 100.0, measured_d50[b] * 100.0));
+        csv.push_str(&format!(
+            "EDT,{},{:.6},{:.6}\n",
+            freq, sim_edt, measured_edt[b]
+        ));
+        csv.push_str(&format!(
+            "T20,{},{:.6},{:.6}\n",
+            freq, sim_t20, measured_t20[b]
+        ));
+        csv.push_str(&format!(
+            "C80,{},{:.6},{:.6}\n",
+            freq, sim_c80, measured_c80[b]
+        ));
+        csv.push_str(&format!(
+            "D50,{},{:.6},{:.6}\n",
+            freq,
+            sim_d50 * 100.0,
+            measured_d50[b] * 100.0
+        ));
     }
     std::fs::write(&csv_path, &csv)?;
     println!("\n  Results written to {}", csv_path.display());

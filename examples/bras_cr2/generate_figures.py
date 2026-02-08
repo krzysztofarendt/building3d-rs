@@ -5,7 +5,7 @@ Reads simulation results from results.csv (produced by the Rust benchmark)
 and the room geometry from the AC3D file.
 
 Produces:
-  - results.png: Simulated vs measured room acoustic metrics (EDT, RT60, C80, D50)
+  - results.png: Simulated vs measured room acoustic metrics (EDT, T20, C80, D50)
   - geometry.png: 3D wireframe of the CR2 seminar room with source/receiver positions
 
 Usage:
@@ -71,7 +71,7 @@ def generate_results_chart(data):
 
     plots = [
         ("EDT", "EDT (s)", "Early Decay Time"),
-        ("RT60", "RT60 (s)", "Reverberation Time"),
+        ("T20", "T20 (s)", "Reverberation Time (T20)"),
         ("C80", "C80 (dB)", "Clarity"),
         ("D50", "D50 (%)", "Definition"),
     ]
