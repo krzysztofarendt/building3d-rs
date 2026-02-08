@@ -1,13 +1,41 @@
 # BRAS CR2 Benchmark: Small Seminar Room
 
-Validation of building3d-rs acoustic ray tracing against in-situ measurements
-from the BRAS (Benchmark for Room Acoustical Simulation) database.
+## Background
+
+Validating a room acoustics simulator requires comparing its predictions against
+real-world measurements taken in well-characterized rooms. The **BRAS (Benchmark
+for Room Acoustical Simulation)** database [1] was created for exactly this
+purpose. It provides detailed 3D geometry, calibrated material data, and in-situ
+acoustic measurements for a set of rooms, enabling reproducible comparison across
+different simulation tools.
+
+The BRAS database covers rooms ranging from small seminar rooms to large concert
+halls. For each room, it includes:
+
+- 3D geometry models (AC3D format) with per-surface material assignments
+- Frequency-dependent absorption and scattering coefficients (fitted estimates
+  from measurements, 31 third-octave bands from 20 Hz to 20 kHz)
+- Source and receiver positions matching the measurement setup
+- Measured room impulse responses and derived acoustic parameters (EDT, RT60,
+  C80, D50) for all source-receiver pairs
+
+The geometry files and simulation input data used in this benchmark come from
+a supplementary dataset by Aspoeck [2], which provides simulation input files
+for RAVEN -- a room acoustic simulation software developed at RWTH Aachen
+University that combines image source and ray tracing methods [2]. The dataset
+includes RAVEN project files (`.rpf`), AC3D geometry, and source/receiver
+positions for all BRAS scenes.
+
+This benchmark validates building3d-rs against the **CR2** case (Scene 09), a
+small seminar room. Treble Technologies published a similar validation of their
+commercial solver against the same BRAS CR2 case [5], which served as a useful
+reference for expected accuracy levels with geometric acoustics methods.
 
 ![Room geometry](geometry.png)
 
 ## Case Description
 
-**Scene**: CR2 (Scene 09) -- Small seminar room at RWTH Aachen University
+**Scene**: CR2 (Scene 09) -- Small seminar room at RWTH Aachen University [1]
 
 | Property           | Value                                      |
 |--------------------|--------------------------------------------|
@@ -21,9 +49,10 @@ from the BRAS (Benchmark for Room Acoustical Simulation) database.
 
 ## Source and Receiver Positions
 
-Two loudspeaker sources (LS1, LS2) and five microphone receivers (MP1--MP5).
-Coordinates below are in building3d z-up convention, converted from the RAVEN
-y-up system via (x, y_up, z_raven) -> (x, -z_raven, y_up).
+Two loudspeaker sources (LS1, LS2) and five microphone receivers (MP1--MP5),
+matching the BRAS measurement setup [1]. Coordinates below are in building3d
+z-up convention, converted from the RAVEN y-up system [2] via
+(x, y_up, z_raven) -> (x, -z_raven, y_up).
 
 | Position | x (m)  | y (m)   | z (m)  |
 |----------|--------|---------|--------|
@@ -38,7 +67,7 @@ y-up system via (x, y_up, z_raven) -> (x, -z_raven, y_up).
 ## Materials
 
 Frequency-dependent absorption and scattering coefficients from BRAS fitted
-estimates (31 third-octave bands, subsampled to 6 octave bands).
+estimates [1] (31 third-octave bands, subsampled to 6 octave bands).
 
 ### Absorption coefficients
 
@@ -68,10 +97,10 @@ CSV files at runtime.
 | Receiver radius          | 0.8 m (spherical absorbers)            |
 | Receiver time resolution | 2 ms (histogram bin width)             |
 | Reflection model         | Hybrid (specular + diffuse scattering) |
-| Air absorption           | ISO 9613-1 (20 C, 50% RH)              |
+| Air absorption           | ISO 9613-1 [3] (20 C, 50% RH)          |
 | Early termination        | < 1% rays alive                        |
 
-### Comparison with RAVEN reference settings
+### Comparison with RAVEN reference settings [2]
 
 | Parameter          | building3d        | RAVEN                       |
 |--------------------|-------------------|-----------------------------|
@@ -86,7 +115,7 @@ CSV files at runtime.
 ## Room Acoustic Metrics
 
 All metrics are derived from the room impulse response (IR) between a source
-and receiver, following ISO 3382-1. They are computed per octave band from
+and receiver, following ISO 3382-1 [4]. They are computed per octave band from
 the Schroeder backward-integrated energy decay curve.
 
 - **EDT (Early Decay Time)**: A line is fit to the Schroeder decay curve over
@@ -218,7 +247,7 @@ sources. Reduce `num_rays` to 5,000 for a quick test (~2 minutes per source).
   above are the octave-band equivalents.
 - **Geometry simplification**: 4 ceiling polygons are skipped due to degenerate
   normals, which slightly alters the ceiling geometry.
-- **Air absorption**: Uses ISO 9613-1 standard conditions (20 C, 50% RH)
+- **Air absorption**: Uses ISO 9613-1 [3] standard conditions (20 C, 50% RH)
   rather than the actual room conditions (19.5 C, 41.7% RH). The difference
   is small but contributes to the systematic bias.
 - **Absorber model**: Receivers are modeled as transparent spherical absorbers
@@ -227,7 +256,7 @@ sources. Reduce `num_rays` to 5,000 for a quick test (~2 minutes per source).
 
 ## Data Sources
 
-### BRAS Database (CC BY-SA 4.0)
+### BRAS Database [1] (CC BY-SA 4.0)
 
 > Brinkmann, F., Aspoeck, L., Ackermann, D., Opdam, R., Vorlaender, M., &
 > Weinzierl, S. (2021). "A benchmark for room acoustical simulation. Concept
@@ -238,7 +267,7 @@ sources. Reduce `num_rays` to 5,000 for a quick test (~2 minutes per source).
 - **DOI**: 10.14279/depositonce-6726.3
 - **License**: CC BY-SA 4.0
 
-### Informed Simulation Data (CC BY-NC-SA 4.0)
+### Informed Simulation Data [2] (CC BY-NC-SA 4.0)
 
 > Aspoeck, L. (2020). "Input and output data for informed room acoustic
 > simulations of the BRAS scene database." RWTH Aachen University.
