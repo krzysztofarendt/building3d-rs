@@ -654,6 +654,50 @@ coupling to thermal loads. A practical progression:
      authoritative pipeline (avoid “two ways to compute the same gains” drifting apart)
    - if a lighting→thermal bridge remains, document it as an approximation with limits.
 
+#### 3.8.5a Immediate milestone: geometry-aware solar shortwave (shading + glazing)
+
+The current EPW-driven shortwave producers (`SolarShortwaveModule` /
+`SolarShortwaveStepModule`) are intentionally **deterministic and fast**, but they treat
+solar gains as a **non-occluded** “energy accounting” problem (DNI/DHI + SHGC) rather than
+a geometry-aware lighting problem.
+
+The next concrete lighting-engine milestone should be to add a **geometry-aware,
+still-deterministic** shortwave producer that:
+
+- uses the existing `FlatScene` ray casting for **direct-sun occlusion** (hard shadows),
+- keeps **diffuse sky unoccluded** initially (isotropic DHI approximation), and
+- publishes the same coupling payloads (`ShortwaveTransmittedWPerZone` and optionally
+  `ShortwaveAbsorbedWPerPolygon`) so thermal can consume it with zero API changes.
+
+Step-by-step implementation sketch (dev branch):
+
+1. Add a step-based module (e.g. `SolarShortwaveShadedStepModule`) that consumes EPW hourly
+   DNI/DHI and computes sun direction via `SolarPosition` per step.
+2. Build a `FlatScene` once (module init) for ray tests and reuse it across steps.
+3. Select “candidate glazing” polygons without embedding thermal metadata into geometry:
+   - use `ThermalBoundaries` (overlay) to restrict to *exterior* surfaces, and
+   - use `MaterialLibrary` optical properties (or a `SolarGainConfig`-like resolver) to
+     decide which surfaces are transmissive and what their SHGC/transmittance is.
+4. For each candidate polygon:
+   - compute **direct incident irradiance** from DNI with cosine projection on the polygon
+     normal (0 when back-facing),
+   - compute a **visibility fraction** in `[0, 1]` by casting rays from a deterministic
+     set of sample points on the polygon (triangle centroids are sufficient initially)
+     toward the sun direction and counting occluded samples,
+   - apply this visibility fraction only to the direct component.
+5. Convert irradiance → power via polygon area, then split into:
+   - transmitted-to-zone shortwave (`ShortwaveTransmittedWPerZone`), and optionally
+   - per-polygon absorbed shortwave (`ShortwaveAbsorbedWPerPolygon`) for future envelope
+     surface temperature models.
+6. Validate correctness with two fast, non-flaky tests:
+   - “no occluder” ⇒ visibility ≈ 1 for a sun-facing window,
+   - “with occluder” ⇒ visibility ≈ 0 when a blocking polygon is placed between the sun
+     and the window.
+
+This keeps the “single source of truth” rule intact: a composed pipeline can switch from
+the unshaded producer to the shaded producer without changing the thermal module or
+coupling types.
+
 #### 3.8.6 Outputs, metrics, and post-processing (what the engine returns)
 
 To keep the core composable, treat “metrics” as a layer on top of a small set of primary
