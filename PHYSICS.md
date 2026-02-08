@@ -1235,6 +1235,36 @@ along with:
 Thermal should support a fallback path (EPW + SHGC) when no lighting/solar module is present,
 but the composed pipeline should designate a single authoritative producer.
 
+#### 4.9.6a Suggested next steps: shortwave coupling (make it energy-consistent)
+
+Current state:
+- EPW-based shortwave producers publish:
+  - `ShortwaveTransmittedWPerZone` for glazing (SHGC approximation),
+  - `ShortwaveAbsorbedWPerPolygon` for *opaque exterior* surfaces (absorptance approximation).
+- The envelope RC thermal model can consume exterior absorbed shortwave as an envelope heat source.
+
+Recommended next steps:
+1. **Glazing energy split (still deterministic)**:
+   - For “glazing” polygons, split incident shortwave into:
+     - transmitted-to-zone (what currently ends up in `ShortwaveTransmittedWPerZone`),
+     - absorbed-in-glass (publish as `ShortwaveAbsorbedWPerPolygon` on the glazing polygon),
+     - (optional) reflected (debug output; not necessarily a coupling payload).
+   - Keep a simple first model (SHGC + a fixed absorbed fraction), then refine with optical properties.
+
+2. **Inside/outside split for absorbed shortwave**:
+   - When the thermal model gains inside/outside surface nodes, split `ShortwaveAbsorbedWPerPolygon`
+     into “absorbed on exterior surface” vs “absorbed on interior surface” via a documented policy
+     (e.g. fixed fraction, or derived from construction).
+
+3. **Shading & occlusion policy (documented invariants)**:
+   - Keep diffuse shortwave unoccluded initially (isotropic DHI); apply occlusion only to direct DNI.
+   - Later add deterministic diffuse-occlusion approximations (sky patches + visibility).
+
+4. **Energy-balance diagnostics**:
+   - Add an optional “shortwave balance report” per step:
+     `incident ≈ absorbed + transmitted + reflected` (within tolerance).
+   - Use it as a regression harness when swapping producers (EPW unshaded → EPW shaded → ray-based).
+
 #### 4.9.7 Determinism requirements (for agentic iteration)
 
 All thermal simulation configs should be:
@@ -1244,6 +1274,30 @@ All thermal simulation configs should be:
 
 Where randomness is introduced (e.g. Monte Carlo view factors), it must be seeded and the
 results should be cacheable by a config hash.
+
+#### 4.9.8 Suggested next steps: RC wall models beyond envelope lumping
+
+After the current “air node + envelope RC node” model, the next fidelity jump should keep the
+same coupling payloads but introduce additional thermal states:
+
+1. **Per-construction low-order RC**:
+   - Implement 3R2C / 5R1C-style models per construction (ISO 13790 / ISO 52016 inspired),
+     aggregated per surface or per zone, to represent:
+     - outside surface temperature,
+     - inside surface temperature,
+     - thermal mass temperature(s).
+
+2. **Inter-zone partition dynamics**:
+   - Replace pure inter-zone conductances `K_ij` with a dynamic partition element so heat transfer
+     between zones has thermal lag (important for multi-room buildings).
+
+3. **Long-wave radiation + comfort outputs**:
+   - Once inside surface temperatures exist, add MRT / operative temperature and (later) view-factor
+     long-wave exchange (deterministic sampling seeded for reproducibility).
+
+4. **Reference validation targets**:
+   - Add a small set of canonical thermal cases and compare against EnergyPlus/Modelica-style
+     reference outputs (hourly zone temperature and ideal loads) with documented tolerances.
 
 ---
 
