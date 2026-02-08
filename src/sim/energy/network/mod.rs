@@ -9,6 +9,9 @@
 //! Important: thermal semantics like "exterior" or "inter-zone" are imposed via
 //! overlays (e.g. [`ThermalBoundaries`]) keyed by [`UID`], not stored on geometry.
 
+mod multizone;
+mod solve;
+
 use std::collections::HashMap;
 
 use crate::geom::polygon::relations::polygon_overlap_area;
@@ -16,6 +19,8 @@ use crate::sim::energy::boundary::ThermalBoundaries;
 use crate::sim::energy::config::ThermalConfig;
 use crate::sim::index::SurfaceIndex;
 use crate::{Building, UID};
+
+pub use multizone::{MultiZoneAirModel, MultiZoneStepResult};
 
 /// Inter-zone conductance between two thermal zones (W/K).
 #[derive(Debug, Clone)]
