@@ -728,6 +728,7 @@ thermal metadata into geometry), adopt the following conventions:
 - **Producers**: choose exactly one shortwave producer in a composed pipeline:
   - deterministic single-hour producer (fixed `SolarHourParams`): `sim::lighting::shortwave::SolarShortwaveModule`
   - EPW time-series producer (consumes `sim::coupling::WeatherHourIndex`): `sim::lighting::shortwave::SolarEpwModule`
+  - EPW time-series shaded producer (consumes `sim::coupling::WeatherHourIndex`): `sim::lighting::shortwave::SolarEpwShadedModule`
   - EPW step module (self-contained, publishes `OutdoorAirTemperatureC`): `sim::lighting::shortwave::SolarShortwaveStepModule`
   - EPW shaded step module (self-contained, hard-shadow direct sun): `sim::lighting::shortwave::SolarShortwaveShadedStepModule`
   - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.

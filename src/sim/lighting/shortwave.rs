@@ -279,6 +279,164 @@ impl SimModule for SolarEpwModule {
     }
 }
 
+/// EPW-driven (time-series) solar shortwave producer with direct-sun occlusion.
+///
+/// This is the `WeatherHourIndex`-based counterpart of [`SolarShortwaveShadedStepModule`].
+/// It is intended for composed pipelines where a separate weather module publishes the
+/// current hour index and outdoor temperature.
+///
+/// Each `step()` publishes:
+/// - [`ShortwaveTransmittedWPerZone`] (per zone, shaded direct + unshaded diffuse)
+/// - [`ShortwaveAbsorbedWPerPolygon`] (currently empty placeholder)
+#[derive(Clone)]
+pub struct SolarEpwShadedConfig {
+    pub weather: Arc<WeatherData>,
+    pub gain_config: SolarGainConfig,
+    pub material_library: Option<MaterialLibrary>,
+    /// Voxel size for `FlatScene` acceleration.
+    pub voxel_size: f64,
+}
+
+impl SolarEpwShadedConfig {
+    pub fn new(weather: Arc<WeatherData>, gain_config: SolarGainConfig) -> Self {
+        Self {
+            weather,
+            gain_config,
+            material_library: None,
+            voxel_size: 0.5,
+        }
+    }
+}
+
+pub struct SolarEpwShadedModule {
+    config: SolarEpwShadedConfig,
+    scene: Option<FlatScene>,
+    polygon_idx_by_uid: HashMap<crate::UID, usize>,
+    boundaries: Option<ThermalBoundaries>,
+}
+
+impl SolarEpwShadedModule {
+    pub fn new(config: SolarEpwShadedConfig) -> Self {
+        Self {
+            config,
+            scene: None,
+            polygon_idx_by_uid: HashMap::new(),
+            boundaries: None,
+        }
+    }
+
+    fn ensure_initialized(&mut self, ctx: &SimContext) {
+        if self.scene.is_some() {
+            return;
+        }
+
+        let scene = FlatScene::new(ctx.building, self.config.voxel_size, false);
+        self.polygon_idx_by_uid = scene
+            .polygons
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.uid.clone(), idx))
+            .collect();
+        self.scene = Some(scene);
+        self.boundaries = Some(ThermalBoundaries::classify(ctx.building, ctx.surface_index));
+    }
+}
+
+impl SimModule for SolarEpwShadedModule {
+    fn name(&self) -> &'static str {
+        "solar_epw_shaded_shortwave"
+    }
+
+    fn init(&mut self, ctx: &SimContext, _bus: &mut Bus) -> Result<()> {
+        self.ensure_initialized(ctx);
+        Ok(())
+    }
+
+    fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        self.ensure_initialized(ctx);
+
+        let Some(hour_idx) = bus.get::<WeatherHourIndex>().map(|i| i.0) else {
+            anyhow::bail!("SolarEpwShadedModule requires WeatherHourIndex on the Bus");
+        };
+        anyhow::ensure!(
+            hour_idx < self.config.weather.records.len(),
+            "SolarEpwShadedModule: hour_idx {hour_idx} out of range (len={})",
+            self.config.weather.records.len()
+        );
+
+        let scene = self.scene.as_ref().expect("initialized");
+        let boundaries = self.boundaries.as_ref().expect("initialized");
+
+        let record = &self.config.weather.records[hour_idx];
+        let day_of_year = day_of_year(record.month, record.day);
+        let solar_pos = SolarPosition::calculate(
+            self.config.weather.latitude,
+            self.config.weather.longitude,
+            day_of_year,
+            record.hour as f64,
+        );
+        let sun_dir = solar_pos.to_direction();
+        let sun_above = solar_pos.is_above_horizon();
+
+        let dni = record.direct_normal_radiation.max(0.0);
+        let dhi = record.diffuse_horizontal_radiation.max(0.0);
+
+        let mut gains_by_zone: HashMap<crate::UID, f64> = HashMap::new();
+
+        for surface in &ctx.surface_index.surfaces {
+            // Exclude interface polygons (coplanar facing pairs) from exterior shortwave.
+            if !boundaries.is_exterior(&surface.polygon_uid) {
+                continue;
+            }
+
+            let Some(shgc) = self
+                .config
+                .gain_config
+                .resolve_shgc_with_materials(&surface.path, self.config.material_library.as_ref())
+            else {
+                continue;
+            };
+
+            let Some(&poly_idx) = self.polygon_idx_by_uid.get(&surface.polygon_uid) else {
+                continue;
+            };
+            let poly = &scene.polygons[poly_idx];
+            let area = poly.area();
+            if area <= 0.0 {
+                continue;
+            }
+
+            let normal = poly.vn;
+            let mut q = 0.0;
+
+            // Diffuse component: isotropic sky view factor (matches `compute_solar_gains_*`).
+            let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+            q += dhi * sky_view * area * shgc;
+
+            // Direct component: DNI * cos(incidence) * visibility * area * SHGC.
+            if sun_above && dni > 0.0 {
+                let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                if cos_incidence > 0.0 {
+                    let vis = visibility_fraction(scene, poly_idx, sun_dir);
+                    q += dni * cos_incidence * vis * area * shgc;
+                }
+            }
+
+            if q != 0.0 {
+                *gains_by_zone.entry(surface.zone_uid.clone()).or_insert(0.0) += q;
+            }
+        }
+
+        let mut transmitted = ShortwaveTransmittedWPerZone::default();
+        transmitted.watts_by_zone_uid = gains_by_zone;
+        bus.put(transmitted);
+
+        // Future: apportion absorbed shortwave to surfaces for envelope models.
+        bus.put(ShortwaveAbsorbedWPerPolygon::default());
+        Ok(())
+    }
+}
+
 /// Step-based EPW-driven solar shortwave producer for composed pipelines.
 ///
 /// Each `step()` publishes:
@@ -913,6 +1071,117 @@ mod tests {
             gain_config,
             material_library: None,
             start_hour_idx: 0,
+            voxel_size: 0.25,
+        });
+        m_shaded.init(&ctx_shaded, &mut bus_shaded)?;
+        m_shaded.step(&ctx_shaded, &mut bus_shaded)?;
+        let q_shaded = bus_shaded
+            .get::<ShortwaveTransmittedWPerZone>()
+            .unwrap()
+            .watts_by_zone_uid
+            .values()
+            .next()
+            .cloned()
+            .unwrap_or(0.0);
+
+        assert!(q_clear > 100.0, "q_clear={q_clear}");
+        assert!(
+            q_shaded < q_clear * 0.1,
+            "q_shaded={q_shaded} q_clear={q_clear}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_solar_epw_shaded_module_blocks_direct_component() -> Result<()> {
+        fn weather_one_hour(dni: f64, dhi: f64) -> WeatherData {
+            WeatherData {
+                location: "x".to_string(),
+                latitude: 0.0,
+                longitude: 0.0,
+                timezone: 0.0,
+                elevation: 0.0,
+                records: vec![HourlyRecord {
+                    month: 3,
+                    day: 21,
+                    hour: 7, // near sunrise at equator: sun dir ~ +X
+                    dry_bulb_temperature: 20.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: dni + dhi,
+                    direct_normal_radiation: dni,
+                    diffuse_horizontal_radiation: dhi,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                }],
+            }
+        }
+
+        fn make_building(with_shade: bool) -> Result<Building> {
+            let win = Polygon::new(
+                "glass",
+                vec![
+                    Point::new(0.0, 0.0, 0.0),
+                    Point::new(0.0, 1.0, 0.0),
+                    Point::new(0.0, 1.0, 1.0),
+                    Point::new(0.0, 0.0, 1.0),
+                ],
+                Some(Vector::new(1.0, 0.0, 0.0)),
+            )?;
+
+            let mut walls = vec![Wall::new("window", vec![win])?];
+            if with_shade {
+                let shade = Polygon::new(
+                    "panel",
+                    vec![
+                        Point::new(0.25, -2.0, -2.0),
+                        Point::new(0.25, 3.0, -2.0),
+                        Point::new(0.25, 3.0, 3.0),
+                        Point::new(0.25, -2.0, 3.0),
+                    ],
+                    Some(Vector::new(-1.0, 0.0, 0.0)),
+                )?;
+                walls.push(Wall::new("shade", vec![shade])?);
+            }
+
+            let solid = Solid::new("room", walls)?;
+            let zone = Zone::new("zone", vec![solid])?;
+            Ok(Building::new("b", vec![zone])?)
+        }
+
+        let weather = Arc::new(weather_one_hour(1000.0, 0.0));
+        let gain_config = SolarGainConfig::new();
+
+        let b_clear = make_building(false)?;
+        let idx_clear = SurfaceIndex::new(&b_clear);
+        let ctx_clear = SimContext::new(&b_clear, &idx_clear);
+        let mut bus_clear = Bus::new();
+        bus_clear.put(WeatherHourIndex(0));
+        let mut m_clear = SolarEpwShadedModule::new(SolarEpwShadedConfig {
+            weather: weather.clone(),
+            gain_config: gain_config.clone(),
+            material_library: None,
+            voxel_size: 0.25,
+        });
+        m_clear.init(&ctx_clear, &mut bus_clear)?;
+        m_clear.step(&ctx_clear, &mut bus_clear)?;
+        let q_clear = bus_clear
+            .get::<ShortwaveTransmittedWPerZone>()
+            .unwrap()
+            .watts_by_zone_uid
+            .values()
+            .next()
+            .cloned()
+            .unwrap_or(0.0);
+
+        let b_shaded = make_building(true)?;
+        let idx_shaded = SurfaceIndex::new(&b_shaded);
+        let ctx_shaded = SimContext::new(&b_shaded, &idx_shaded);
+        let mut bus_shaded = Bus::new();
+        bus_shaded.put(WeatherHourIndex(0));
+        let mut m_shaded = SolarEpwShadedModule::new(SolarEpwShadedConfig {
+            weather,
+            gain_config,
+            material_library: None,
             voxel_size: 0.25,
         });
         m_shaded.init(&ctx_shaded, &mut bus_shaded)?;
