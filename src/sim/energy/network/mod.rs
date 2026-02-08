@@ -10,6 +10,7 @@
 //! overlays (e.g. [`ThermalBoundaries`]) keyed by [`UID`], not stored on geometry.
 
 mod multizone;
+mod multizone_envelope;
 mod solve;
 
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ use crate::sim::index::SurfaceIndex;
 use crate::{Building, UID};
 
 pub use multizone::{MultiZoneAirModel, MultiZoneStepResult};
+pub use multizone_envelope::MultiZoneEnvelopeRcModel;
 
 /// Inter-zone conductance between two thermal zones (W/K).
 #[derive(Debug, Clone)]

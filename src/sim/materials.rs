@@ -75,7 +75,7 @@ pub struct Material {
 }
 
 /// Library of named materials with path-pattern assignment to building surfaces.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MaterialLibrary {
     /// Material definitions by name.
     materials: HashMap<String, Material>,

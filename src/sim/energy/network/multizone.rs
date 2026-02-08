@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::ThermalNetwork;
-use super::solve::solve_dense;
+use super::solve::solve_with_fixed_nodes;
 use crate::sim::energy::hvac::HvacIdealLoads;
 use crate::{Building, UID};
 
@@ -281,50 +281,7 @@ fn solve_with_controls(
         }
     }
 
-    let mut unknown = Vec::new();
-    let mut pos = vec![usize::MAX; n];
-    for i in 0..n {
-        if !is_fixed[i] {
-            pos[i] = unknown.len();
-            unknown.push(i);
-        }
-    }
-
-    let mut temps = vec![0.0; n];
-    for i in 0..n {
-        if is_fixed[i] {
-            temps[i] = fixed_temp[i];
-        }
-    }
-
-    if unknown.is_empty() {
-        return Ok(temps);
-    }
-
-    let m = unknown.len();
-    let mut a = vec![vec![0.0; m]; m];
-    let mut b = vec![0.0; m];
-
-    for (row_idx, &i) in unknown.iter().enumerate() {
-        a[row_idx][row_idx] = diag[i];
-        let mut rhs = rhs_base[i];
-        for &(j, k) in &neighbors[i] {
-            if is_fixed[j] {
-                rhs += k * fixed_temp[j];
-            } else {
-                let col_idx = pos[j];
-                a[row_idx][col_idx] -= k;
-            }
-        }
-        b[row_idx] = rhs;
-    }
-
-    let x = solve_dense(a, b)?;
-    for (row_idx, &i) in unknown.iter().enumerate() {
-        temps[i] = x[row_idx];
-    }
-
-    Ok(temps)
+    solve_with_fixed_nodes(diag, rhs_base, neighbors, &is_fixed, &fixed_temp)
 }
 
 #[cfg(test)]

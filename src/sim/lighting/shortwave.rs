@@ -1,15 +1,15 @@
 use anyhow::Result;
-
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::sim::coupling::OutdoorAirTemperatureC;
+use crate::sim::coupling::{OutdoorAirTemperatureC, WeatherHourIndex};
 use crate::sim::coupling::{ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerZone};
+use crate::sim::engine::FlatScene;
 use crate::sim::energy::boundary::ThermalBoundaries;
 use crate::sim::energy::solar_bridge::{
     SolarGainConfig, SolarHourParams, compute_solar_gains_per_zone_with_materials,
 };
 use crate::sim::energy::weather::WeatherData;
-use crate::sim::engine::FlatScene;
 use crate::sim::framework::{Bus, SimContext, SimModule};
 use crate::sim::lighting::result::LightingResult;
 use crate::sim::lighting::solar::SolarPosition;
@@ -297,6 +297,72 @@ impl SimModule for SolarShortwaveStepModule {
         bus.put(ShortwaveAbsorbedWPerPolygon::default());
 
         self.hour_idx += 1;
+        Ok(())
+    }
+}
+
+/// EPW-driven (time-series) solar shortwave producer.
+///
+/// This module consumes [`WeatherHourIndex`] (typically published by
+/// `sim::energy::weather_module::WeatherModule`) and uses the referenced EPW record
+/// (DNI/DHI + timestamp) to compute per-zone solar gains.
+#[derive(Clone)]
+pub struct SolarEpwConfig {
+    pub weather: Arc<WeatherData>,
+    pub gain_config: SolarGainConfig,
+    pub material_library: Option<MaterialLibrary>,
+}
+
+pub struct SolarEpwModule {
+    config: SolarEpwConfig,
+}
+
+impl SolarEpwModule {
+    pub fn new(config: SolarEpwConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl SimModule for SolarEpwModule {
+    fn name(&self) -> &'static str {
+        "solar_epw_shortwave"
+    }
+
+    fn step(&mut self, ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        let Some(hour_index) = bus.get::<WeatherHourIndex>().map(|i| i.0) else {
+            anyhow::bail!("SolarEpwModule requires WeatherHourIndex on the Bus");
+        };
+        anyhow::ensure!(
+            hour_index < self.config.weather.records.len(),
+            "SolarEpwModule: hour index {hour_index} out of range (len={})",
+            self.config.weather.records.len()
+        );
+        let record = &self.config.weather.records[hour_index];
+
+        let params = SolarHourParams {
+            direct_normal_irradiance: record.direct_normal_radiation,
+            diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+            day_of_year: day_of_year(record.month, record.day),
+            hour: record.hour as f64,
+            latitude: self.config.weather.latitude,
+            longitude: self.config.weather.longitude,
+        };
+
+        let gains_by_zone = compute_solar_gains_per_zone_with_materials(
+            ctx.building,
+            &params,
+            &self.config.gain_config,
+            self.config.material_library.as_ref(),
+        );
+
+        let mut transmitted = ShortwaveTransmittedWPerZone::default();
+        transmitted.watts_by_zone_uid = gains_by_zone;
+
+        // For now, this module does not attempt to apportion absorbed shortwave to surfaces.
+        let absorbed = ShortwaveAbsorbedWPerPolygon::default();
+
+        bus.put(transmitted);
+        bus.put(absorbed);
         Ok(())
     }
 }
@@ -817,6 +883,53 @@ mod tests {
             q_shaded < q_clear * 0.1,
             "q_shaded={q_shaded} q_clear={q_clear}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_solar_epw_module_consumes_weather_hour_index() -> Result<()> {
+        // Single zone with a 1m² "glass" polygon facing up: diffuse-only should add gains.
+        let poly = Polygon::new(
+            "glass",
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+            None,
+        )?;
+        let wall = Wall::new("window", vec![poly])?;
+        let solid = Solid::new("room", vec![wall])?;
+        let zone = Zone::new("z", vec![solid])?;
+        let building = Building::new("b", vec![zone])?;
+
+        let index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &index);
+
+        let mut weather = WeatherData::synthetic("X", 52.0, 13.0, 10.0, 0.0);
+        weather.records[0].diffuse_horizontal_radiation = 100.0;
+        weather.records[0].direct_normal_radiation = 0.0;
+        let weather = Arc::new(weather);
+
+        let mut bus = Bus::new();
+        bus.put(WeatherHourIndex(0));
+
+        let mut module = SolarEpwModule::new(SolarEpwConfig {
+            weather,
+            gain_config: SolarGainConfig::new(),
+            material_library: None,
+        });
+        module.step(&ctx, &mut bus)?;
+
+        let transmitted = bus.get::<ShortwaveTransmittedWPerZone>().unwrap();
+        let zone_uid = ctx.building.zones().first().unwrap().uid.clone();
+        let g = transmitted
+            .watts_by_zone_uid
+            .get(&zone_uid)
+            .cloned()
+            .unwrap_or(0.0);
+        assert!(g > 0.0);
         Ok(())
     }
 }

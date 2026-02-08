@@ -726,11 +726,14 @@ thermal metadata into geometry), adopt the following conventions:
 - **Payload types (code)**: `sim::coupling::ShortwaveAbsorbedWPerPolygon` and
   `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
 - **Producers**: choose exactly one shortwave producer in a composed pipeline:
-  - deterministic EPW-driven producer: `sim::lighting::shortwave::SolarShortwaveModule`, or
+  - deterministic single-hour producer (fixed `SolarHourParams`): `sim::lighting::shortwave::SolarShortwaveModule`
+  - EPW time-series producer (consumes `sim::coupling::WeatherHourIndex`): `sim::lighting::shortwave::SolarEpwModule`, or
   - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
-- **Step-based pipelines**: for hour-by-hour composition, use `sim::lighting::shortwave::SolarShortwaveStepModule`
-  to publish `OutdoorAirTemperatureC` and `ShortwaveTransmittedWPerZone` each step, then consume them in
-  `sim::energy::module::EnergyModule`.
+- **Weather time base**: time-series pipelines should publish `sim::coupling::WeatherHourIndex`
+  and `sim::coupling::OutdoorAirTemperatureC` each step (see `sim::energy::weather_module::WeatherModule`).
+- **Shading milestone**: as the first geometry-aware step, prefer a direct-sun occlusion producer
+  (e.g. `sim::lighting::shortwave::SolarShortwaveShadedStepModule` today; a `WeatherHourIndex`-driven
+  shaded producer is the next compatibility step).
 - **Bus inputs**: step-based thermal simulations consume weather and gains from the `Bus`:
   - `sim::coupling::OutdoorAirTemperatureC`
   - `sim::coupling::InternalGainsWPerZone` (preferred) or `sim::coupling::InternalGainsWTotal` (fallback)
@@ -943,6 +946,39 @@ Implementation notes (code):
   (`src/sim/energy/simulation.rs`)
 - Per-zone default solar: `compute_solar_gains_per_zone()` (`src/sim/energy/solar_bridge.rs`)
 
+#### 4.3.2 Multi-zone envelope RC (2R1C per zone)
+
+To introduce a first-order representation of wall thermal mass (without adding per-surface
+temperature nodes yet), an optional aggregated envelope node `T_env,i` can be added per zone:
+
+- Air node: `T_air,i`
+- Envelope node: `T_env,i`
+
+Exterior conductance for zone `i` (from the envelope classification overlay):
+```
+K_env,i = Σ(U*A)_exterior,i   [W/K]
+```
+
+To preserve the same steady-state heat flow to outside, split the conductance into two equal
+resistances (a common low-order approximation):
+```
+K_air_env,i = 2*K_env,i
+K_env_out,i = 2*K_env,i
+```
+
+Thermal capacity of the envelope is estimated as:
+```
+C_env,i = Σ( C_area(surface) * A_surface )   [J/K]
+```
+
+where `C_area(surface)` is preferably taken from `MaterialLibrary` thermal properties
+(`ThermalMaterial.thermal_capacity` in J/(m^2*K)) and otherwise falls back to a configurable
+default.
+
+Implementation notes (code):
+- RC model: `MultiZoneEnvelopeRcModel` (`src/sim/energy/network/multizone_envelope.rs`)
+- Selection in step-based runs: `EnergyModelKind::EnvelopeRc2R1C` (`src/sim/energy/module.rs`)
+
 ### 4.4 HVAC Ideal Loads
 
 The HVAC model maintains zone temperature between heating and cooling setpoints:
@@ -1043,6 +1079,22 @@ Direct = 0.6 * GHR
 Diffuse = 0.4 * GHR
 ```
 
+#### 4.6.1 EPW-driven composed pipelines (step-based)
+
+To keep multi-physics workflows composable, step-based pipelines should use a shared time
+base keyed by the EPW record index:
+
+- `sim::coupling::WeatherHourIndex(hour_idx)` (0-based hour-of-year index)
+- `sim::coupling::OutdoorAirTemperatureC(T_out)` (published by weather each step)
+
+Recommended modules:
+- Weather publisher: `sim::energy::weather_module::WeatherModule` (publishes `WeatherHourIndex`
+  + `OutdoorAirTemperatureC`, stores `Arc<WeatherData>` on the Bus)
+- EPW solar shortwave producer: `sim::lighting::shortwave::SolarEpwModule` (consumes
+  `WeatherHourIndex`, publishes `ShortwaveTransmittedWPerZone`)
+- Thermal recorder: `sim::energy::recorder::MultiZoneRecorderModule` (accumulates
+  `MultiZoneStepResult` and finalizes to `MultiZoneAnnualResult`)
+
 ### 4.7 Internal Gains Schedules
 
 Gains are computed from occupancy, equipment, and lighting schedules:
@@ -1063,8 +1115,9 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
 
 - **Steady-state or simple transient**: no detailed finite-element thermal modeling or
   pressure-based multi-zone air flow. Multi-zone heat coupling through partitions is supported.
-- **Single-node thermal mass**: entire zone lumped into one capacitance; no temperature
-  gradients within the zone.
+- **Low-order thermal mass**: default is a zone air node with a tuned capacity; an optional
+  aggregated envelope RC node may be used for first-order wall thermal lag. No per-surface
+  temperature gradients yet.
 - **Fixed air properties**: density 1.2 kg/m^3, c_p = 1005 J/(kg*K); no humidity or
   pressure dependence.
 - **Ideal HVAC**: instantaneous response, perfect setpoint control (within capacity limits).

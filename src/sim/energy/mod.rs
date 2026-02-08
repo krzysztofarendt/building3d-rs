@@ -1,12 +1,15 @@
 pub mod boundary;
 pub mod config;
 pub mod construction;
+pub mod gains_module;
 pub mod hvac;
 pub mod module;
 pub mod network;
+pub mod recorder;
 pub mod result;
 pub mod schedule;
 pub mod simulation;
 pub mod solar_bridge;
 pub mod weather;
+pub mod weather_module;
 pub mod zone;
