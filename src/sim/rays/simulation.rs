@@ -370,10 +370,12 @@ impl Simulation {
             vec![[1.0; NUM_OCTAVE_BANDS]; num_rays];
 
         let store_history = self.config.store_ray_history;
+        let store_band_history = store_history && self.config.store_ray_band_history;
         let hist_cap = if store_history { num_steps } else { 0 };
         let mut all_positions: Vec<Vec<Point>> = Vec::with_capacity(hist_cap);
         let mut all_energies: Vec<Vec<f64>> = Vec::with_capacity(hist_cap);
-        let mut all_band_energies: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(hist_cap);
+        let mut all_band_energies: Option<Vec<Vec<[f64; NUM_OCTAVE_BANDS]>>> =
+            store_band_history.then(|| Vec::with_capacity(hist_cap));
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
         let mut all_band_hits: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(num_steps);
 
@@ -545,7 +547,9 @@ impl Simulation {
                     band_energies.iter().map(|be| be.iter().sum()).collect();
                 all_positions.push(positions.clone());
                 all_energies.push(scalar_energies);
-                all_band_energies.push(band_energies.clone());
+                if let Some(ref mut v) = all_band_energies {
+                    v.push(band_energies.clone());
+                }
             }
             all_hits.push(step_hits);
             all_band_hits.push(step_band_hits);
@@ -592,7 +596,7 @@ impl Simulation {
         SimulationResult {
             positions: all_positions,
             energies: all_energies,
-            band_energies: Some(all_band_energies),
+            band_energies: all_band_energies,
             hits: all_hits,
             band_hits: Some(all_band_hits),
             config: self.config,
@@ -722,6 +726,7 @@ mod tests {
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.material_library = Some(lib);
         config.store_ray_history = true;
+        config.store_ray_band_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();
@@ -742,6 +747,29 @@ mod tests {
     }
 
     #[test]
+    fn test_frequency_dependent_band_history_is_opt_in() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 5;
+        config.num_rays = 3;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.store_ray_history = true;
+        // store_ray_band_history intentionally left as default (false).
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        assert!(result.band_hits.is_some());
+        assert!(result.band_energies.is_none());
+        assert_eq!(result.positions.len(), 5);
+        assert_eq!(result.energies.len(), 5);
+    }
+
+    #[test]
     fn test_frequency_dependent_with_air_absorption() {
         let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
         let zone = Zone::new("z", vec![s0]).unwrap();
@@ -753,6 +781,8 @@ mod tests {
         config.source = Point::new(1.0, 1.0, 1.0);
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.enable_air_absorption = true;
+        config.store_ray_history = true;
+        config.store_ray_band_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();
@@ -930,6 +960,7 @@ mod tests {
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.material_library = Some(lib);
         config.store_ray_history = true;
+        config.store_ray_band_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();
