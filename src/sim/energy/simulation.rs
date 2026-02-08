@@ -300,7 +300,7 @@ pub fn run_multizone_transient_simulation(
     hvac: &HvacIdealLoads,
     gains_profile: Option<&InternalGainsProfile>,
     solar_config: Option<&SolarGainConfig>,
-) -> MultiZoneAnnualResult {
+) -> anyhow::Result<MultiZoneAnnualResult> {
     let index = SurfaceIndex::new(building);
     let boundaries = ThermalBoundaries::classify(building, &index);
     let network = ThermalNetwork::build(building, base_config, &index, &boundaries);
@@ -358,9 +358,7 @@ pub fn run_multizone_transient_simulation(
             }
         }
 
-        let step = model
-            .step(record.dry_bulb_temperature, &gains_by_zone, hvac, 3600.0)
-            .expect("multi-zone step should succeed");
+        let step = model.step(record.dry_bulb_temperature, &gains_by_zone, hvac, 3600.0)?;
 
         let hour_heating: f64 = step.zone_heating_w.iter().sum();
         let hour_cooling: f64 = step.zone_cooling_w.iter().sum();
@@ -396,14 +394,14 @@ pub fn run_multizone_transient_simulation(
         monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
     };
 
-    MultiZoneAnnualResult {
+    Ok(MultiZoneAnnualResult {
         zone_uids: model.zone_uids().to_vec(),
         zone_names: model.zone_names().to_vec(),
         hourly_zone_temperatures_c,
         hourly_zone_heating_w,
         hourly_zone_cooling_w,
         annual,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -510,7 +508,8 @@ mod tests {
         let hvac = HvacIdealLoads::new();
 
         let result =
-            run_multizone_transient_simulation(&building, &config, &weather, &hvac, None, None);
+            run_multizone_transient_simulation(&building, &config, &weather, &hvac, None, None)
+                .unwrap();
 
         assert_eq!(result.zone_names.len(), 2);
         assert_eq!(result.hourly_zone_temperatures_c.len(), 2);
