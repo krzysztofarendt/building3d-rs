@@ -179,6 +179,7 @@ pub fn draw_simulation(
         .enumerate()
     {
         session.set_time_sequence("step", step as i64);
+        session.set_time("time", std::time::Duration::from_secs_f64(step as f64 * result.config.time_step));
 
         // Collect alive rays (energy > threshold)
         let mut pts: Vec<Point> = Vec::new();
