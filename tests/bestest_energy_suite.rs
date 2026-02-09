@@ -8,8 +8,12 @@ use building3d::sim::materials::Layer;
 use building3d::{Building, Point, Polygon, Solid, Wall, Zone};
 use std::path::PathBuf;
 
-fn bestest_600_constructions() -> (WallConstruction, WallConstruction, WallConstruction, WallConstruction)
-{
+fn bestest_600_constructions() -> (
+    WallConstruction,
+    WallConstruction,
+    WallConstruction,
+    WallConstruction,
+) {
     let lt_wall = WallConstruction::new(
         "LTWALL",
         vec![
@@ -229,12 +233,10 @@ fn repo_root() -> PathBuf {
 
 fn find_bestest_epw() -> Option<PathBuf> {
     let candidates = [
-        repo_root().join(
-            "examples/bestest_energy_suite/data/USA_MA_Boston-Logan.Intl.AP.725090_TMY3.epw",
-        ),
-        repo_root().join(
-            "examples/bestest_600_energy/data/USA_MA_Boston-Logan.Intl.AP.725090_TMY3.epw",
-        ),
+        repo_root()
+            .join("examples/bestest_energy_suite/data/USA_MA_Boston-Logan.Intl.AP.725090_TMY3.epw"),
+        repo_root()
+            .join("examples/bestest_600_energy/data/USA_MA_Boston-Logan.Intl.AP.725090_TMY3.epw"),
     ];
     candidates.into_iter().find(|p| p.exists())
 }
