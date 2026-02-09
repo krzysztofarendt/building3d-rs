@@ -593,6 +593,56 @@ Step-by-step:
 
 This harness becomes the backbone of future refactors (sampling, BVH, glazing, MIS).
 
+#### 3.8.2a Candidate validation benchmarks (measured + reference suites)
+
+The repo already contains a **measurement-backed** acoustics benchmark (`examples/bras_cr2`).
+For lighting and thermal, comparable “validation examples” are harder to source, but there
+are a few good, well-scoped options:
+
+**Lighting**
+
+- **CIE 171:2006 (standardized test suite; includes experimental reference data)**:
+  “Test cases to assess the accuracy of lighting computer programs”.
+  Good fit for an `examples/bench_cie_171_*` family that runs a subset of cases and compares
+  against the published reference values with documented tolerances.
+  Note: the CIE publication is typically paywalled; the benchmark should store only derived
+  result tables and case metadata, not redistributed standard content.
+  - Reference: https://cie.co.at/publications/test-cases-assess-accuracy-lighting-computer-programs
+- **Radiance-as-oracle (reference, not measured)**:
+  if measured datasets are unavailable/licensing-restricted, check in canonical scenes plus
+  “golden” sensor values produced out-of-tree by Radiance. This aligns with 3.8.2 and keeps
+  validation actionable in CI.
+- **Measured light exposure datasets (research-grade, often spectral)**:
+  these can validate the *measurement workflow* (sensor placement, sky visibility, etc.) even
+  if the engine remains RGB-only initially. One openly available example:
+  - Zenodo dataset: “Validation of Spectral Light Simulation Tools: Dataset of Simulated and
+    Measured Indoor Light Exposure” (Pierson et al., 2022): https://zenodo.org/records/5919054
+    (large; may be better suited for an optional/manual benchmark run).
+
+**Thermal / Energy**
+
+- **ASHRAE Standard 140 / BESTEST (reference suite; not measured)**:
+  industry-standard regression suite for envelope and HVAC diagnostic cases. Good fit for a
+  deterministic `examples/bench_bestest_*` runner that compares annual/peak loads and a few
+  hourly profiles to reference ranges.
+  Note: ASHRAE Standard 140 is typically paywalled; prefer cases whose input definitions and
+  reference ranges can be legally redistributed, and/or keep the “expected outputs” out-of-tree.
+  - Implementation helper repo (EnergyPlus-oriented): https://github.com/NREL/BESTEST-GSR
+- **NIST Net-Zero Energy Residential Test Facility (NZERTF) (measured, high resolution)**:
+  a heavily instrumented lab home with minutely data across many subsystems. Good fit for an
+  end-to-end `examples/bench_nzertf_*` validation comparing:
+  - aggregated electricity/thermal energy by subsystem,
+  - indoor temperature / humidity time series,
+  - ideal-loads heating/cooling (or measured HVAC energy) over selected periods.
+  - Data landing page: https://pages.nist.gov/netzero/data.html
+  - Overview publication: https://www.nist.gov/publications/performance-data-nist-net-zero-energy-residential-test-facility
+- **EnergyPlus model vs measured building energy (open dataset)**:
+  small office building case with measured heating/cooling energy, plus EnergyPlus inputs
+  (IDF/EPW). Good fit for a `examples/bench_energyplus_office_measured` example that compares
+  annual/monthly heating/cooling totals.
+  - Mendeley Data: “Validation of Early Design Stage EnergyPlus Model for Office Building”
+    (Singh, 2020), DOI: 10.17632/x6xwvb2r9r.1 (https://doi.org/10.17632/x6xwvb2r9r.1)
+
 #### 3.8.3 Make the lighting pipeline explicitly modular (composability)
 
 The code already has `LightingSimulation` (forward) and `BackwardTracer`. To move toward a
@@ -1477,8 +1527,13 @@ same coupling payloads but introduce additional thermal states:
      long-wave exchange (deterministic sampling seeded for reproducibility).
 
 4. **Reference validation targets**:
-   - Add a small set of canonical thermal cases and compare against EnergyPlus/Modelica-style
-     reference outputs (hourly zone temperature and ideal loads) with documented tolerances.
+   - Add a small set of canonical thermal cases and compare against:
+     - **ASHRAE Standard 140 / BESTEST** reference ranges (regression; not measured),
+     - **measurement-backed datasets** where inputs are sufficiently specified (e.g. NIST NZERTF),
+     - and (when available) **public EnergyPlus-vs-measurement** cases that ship an IDF/EPW plus
+       metered heating/cooling energy time series (see 3.8.2a).
+   - Compare hourly zone air temperatures and ideal loads (or HVAC energy) with documented
+     tolerances and pinned configuration (U-values, infiltration, schedules, setpoints).
 
 ---
 
