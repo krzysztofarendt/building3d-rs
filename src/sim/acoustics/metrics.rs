@@ -425,7 +425,7 @@ mod tests {
             for band in 0..NUM_OCTAVE_BANDS {
                 if let Some(d) = d50(&ir, band) {
                     assert!(
-                        d >= 0.0 && d <= 1.0,
+                        (0.0..=1.0).contains(&d),
                         "D50 should be in [0,1], got {d:.4} (rate={rate}, band={band})"
                     );
                 }
@@ -501,7 +501,7 @@ mod tests {
         );
 
         // STI should be in [0, 1]
-        assert!(sti_short >= 0.0 && sti_short <= 1.0);
-        assert!(sti_long >= 0.0 && sti_long <= 1.0);
+        assert!((0.0..=1.0).contains(&sti_short));
+        assert!((0.0..=1.0).contains(&sti_long));
     }
 }

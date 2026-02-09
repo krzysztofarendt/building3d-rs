@@ -224,8 +224,9 @@ impl SimModule for SolarShortwaveModule {
             self.config.material_library.as_ref(),
         );
 
-        let mut transmitted = ShortwaveTransmittedWPerZone::default();
-        transmitted.watts_by_zone_uid = gains_by_zone;
+        let transmitted = ShortwaveTransmittedWPerZone {
+            watts_by_zone_uid: gains_by_zone,
+        };
 
         let boundaries = ThermalBoundaries::classify(ctx.building, ctx.surface_index);
         let absorbed = compute_unshaded_opaque_absorbed(
@@ -312,8 +313,9 @@ impl SimModule for SolarEpwModule {
             self.config.material_library.as_ref(),
         );
 
-        let mut transmitted = ShortwaveTransmittedWPerZone::default();
-        transmitted.watts_by_zone_uid = gains_by_zone;
+        let transmitted = ShortwaveTransmittedWPerZone {
+            watts_by_zone_uid: gains_by_zone,
+        };
 
         let boundaries = self.boundaries.as_ref().expect("set above");
         let absorbed = compute_unshaded_opaque_absorbed(
@@ -691,8 +693,9 @@ impl SimModule for SolarShortwaveStepModule {
             self.config.material_library.as_ref(),
         );
 
-        let mut transmitted = ShortwaveTransmittedWPerZone::default();
-        transmitted.watts_by_zone_uid = gains_by_zone;
+        let transmitted = ShortwaveTransmittedWPerZone {
+            watts_by_zone_uid: gains_by_zone,
+        };
 
         let boundaries = self.boundaries.as_ref().expect("set above");
         let absorbed = compute_unshaded_opaque_absorbed(
@@ -783,10 +786,7 @@ impl SolarShortwaveShadedStepModule {
             .map(|(idx, p)| (p.uid.clone(), idx))
             .collect();
         self.scene = Some(scene);
-        self.boundaries = Some(ThermalBoundaries::classify(
-            ctx.building,
-            &ctx.surface_index,
-        ));
+        self.boundaries = Some(ThermalBoundaries::classify(ctx.building, ctx.surface_index));
     }
 }
 
@@ -1463,7 +1463,7 @@ mod tests {
 
             let solid = Solid::new("room", walls)?;
             let zone = Zone::new("zone", vec![solid])?;
-            Ok(Building::new("b", vec![zone])?)
+            Building::new("b", vec![zone])
         }
 
         let weather = weather_one_hour(1000.0, 0.0);
@@ -1574,7 +1574,7 @@ mod tests {
 
             let solid = Solid::new("room", walls)?;
             let zone = Zone::new("zone", vec![solid])?;
-            Ok(Building::new("b", vec![zone])?)
+            Building::new("b", vec![zone])
         }
 
         let weather = Arc::new(weather_one_hour(1000.0, 0.0));

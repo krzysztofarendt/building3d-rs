@@ -73,8 +73,8 @@ struct PairMetrics {
 
 fn t20_per_band(ir: &ImpulseResponse) -> [Option<f64>; NUM_OCTAVE_BANDS] {
     let mut out = [None; NUM_OCTAVE_BANDS];
-    for band in 0..NUM_OCTAVE_BANDS {
-        out[band] = metrics::t20(ir, band);
+    for (band, out_band) in out.iter_mut().enumerate() {
+        *out_band = metrics::t20(ir, band);
     }
     out
 }
@@ -568,7 +568,7 @@ fn main() -> Result<()> {
             measured_d50[b] * 100.0
         ));
     }
-    std::fs::write(&csv_path, &csv)?;
+    std::fs::write(csv_path, csv.as_bytes())?;
     println!("\n  Results written to {}", csv_path.display());
 
     // ── 8. Rerun visualization (opt-in) ──────────────────────────────
@@ -590,10 +590,10 @@ fn print_report(report: &RoomAcousticReport, t20: &[Option<f64>; NUM_OCTAVE_BAND
         "    {:>8} {:>8} {:>8} {:>9} {:>7}",
         "Freq", "EDT(s)", "T20(s)", "C80(dB)", "D50"
     );
-    for b in 0..NUM_OCTAVE_BANDS {
+    for (b, &t20_b) in t20.iter().enumerate() {
         let freq = report.frequencies[b];
         let edt_s = report.edt[b].map_or("--".to_string(), |v| format!("{:.3}", v));
-        let t20_s = t20[b].map_or("--".to_string(), |v| format!("{:.3}", v));
+        let t20_s = t20_b.map_or("--".to_string(), |v| format!("{:.3}", v));
         let c80_s = report.c80[b].map_or("--".to_string(), |v| format!("{:.2}", v));
         let d50_s = report.d50[b].map_or("--".to_string(), |v| format!("{:.1}%", v * 100.0));
         println!(

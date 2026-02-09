@@ -153,7 +153,7 @@ mod tests {
 
         result.record_hit_index(0, [100.0, 100.0, 100.0]);
         result.record_hit_index(0, [50.0, 50.0, 50.0]);
-        result.finalize(&[u0.clone()], &[10.0]);
+        result.finalize(std::slice::from_ref(&u0), &[10.0]);
 
         let flux = result.incident_flux.get(&u0).unwrap();
         assert!((flux[0] - 150.0).abs() < 1e-10);
