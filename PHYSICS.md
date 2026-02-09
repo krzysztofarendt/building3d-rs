@@ -1228,9 +1228,11 @@ glazing gains within each zone:
 Q_solar,zone = sum_{glazing in zone} Q_solar_window
 ```
 
-A legacy `SolarBridgeConfig` and `lighting_to_solar_gains()` function remain available
-for converting lighting simulation results to thermal gains via luminous efficacy, but
-the recommended approach is the direct weather-based calculation.
+The legacy photometric bridge (`SolarBridgeConfig` / `lighting_to_solar_gains*`) was removed.
+For composed simulations, couple lighting ↔ thermal through the radiometric shortwave payloads
+(`ShortwaveAbsorbedWPerPolygon`, `ShortwaveTransmittedWPerZone`) produced by either:
+- EPW-driven solar modules (`sim::lighting::shortwave`), or
+- direct EPW helpers (`sim::energy::solar_bridge::compute_solar_gains*`).
 
 > **Note**: Window detection by name pattern is fragile. Should use an explicit material
 > flag or construction type property.
@@ -1564,6 +1566,25 @@ information and is numerically robust for all latitude/declination combinations.
 **Fixed**: Renamed `intensity` to `radiance` in the backward tracer code, consistent
 with the radiometric unit convention adopted across the lighting module.
 
+#### OPEN: Forward lighting energy normalization is inconsistent
+
+**Problem**: The forward ray tracer (`sim::lighting::simulation::LightingSimulation`) records
+`LightingResult.incident_flux` as “total incident radiant power [W] per polygon”, but the
+current per-ray weights do not incorporate the sampling PDF (e.g. uniform sphere sampling
+implies `pdf = 1/(4π)`). As a result, the accumulated `incident_flux` is scaled by a constant
+factor relative to the configured source flux, which makes lighting→thermal coupling
+quantitatively inconsistent.
+
+**Plan**:
+- Define `LightingResult.incident_flux` as radiometric power [W] (RGB channels), and make the
+  Monte Carlo estimator unbiased by weighting each ray by `1/pdf`.
+- For point lights sampled uniformly on the sphere:
+  - `P_ray = I(dir) * 4π / N_rays` where `I` is radiant intensity [W/sr].
+- For directional lights sampled uniformly on an emitter face of area `A_emit`:
+  - `P_ray = E * A_emit / N_rays` where `E` is irradiance [W/m²] on the emitter face.
+- Add a regression test: closed box, fully absorbing, 1 bounce ⇒ total deposited power ≈
+  `source_flux` (within sampling tolerance), not `source_flux/(4π)`.
+
 ### 5.4 Energy
 
 #### ~~BUG: Solar gains computed from lighting lumens instead of solar radiation~~ (FIXED)
@@ -1572,8 +1593,10 @@ with the radiometric unit convention adopted across the lighting module.
 sun position, window orientation (`cos(theta_incidence)`), isotropic sky view factor, and
 SHGC. The `solar_gain_factor: f64` parameter was replaced with
 `solar_config: Option<&SolarGainConfig>` in both `run_annual_simulation()` and
-`run_transient_simulation()`. The legacy `SolarBridgeConfig`/`lighting_to_solar_gains()`
-functions remain for backward compatibility.
+`run_transient_simulation()`. The legacy photometric (lm/lux) bridge from lighting → thermal
+(`SolarBridgeConfig` / `lighting_to_solar_gains*`) was removed to avoid radiometric vs
+photometric ambiguity. Use `compute_solar_gains*` (EPW-based) and/or the shortwave modules in
+`sim::lighting::shortwave` for composed pipelines.
 
 #### ~~BIAS: HVAC load calculation ignores concurrent losses~~ (FIXED)
 
@@ -1626,6 +1649,77 @@ clearly documented:
 - Steady-state option for quick estimates
 - Fixed atmospheric conditions for air absorption
 - No latent loads in energy model
+
+### 5.7 Cross-Domain Unification Plan (MaterialLibrary-first)
+
+This section is a concrete plan to make **acoustics**, **lighting/shortwave**, and
+**thermal/energy** consistent as a multi-physics system.
+
+#### 5.7.1 Shared contracts: radiometric SI units only
+
+1) **Cross-module payloads (Bus)**:
+   - Keep all coupling payloads in `src/sim/coupling.rs` radiometric:
+     - `ShortwaveAbsorbedWPerPolygon`: absorbed shortwave power [W] per polygon UID
+     - `ShortwaveTransmittedWPerZone`: transmitted shortwave power [W] per zone UID
+     - `InternalGainsWPerZone` / `InternalGainsWTotal`: internal gains [W]
+   - Convert to photometric units only at reporting/output boundaries (not in coupling code).
+
+2) **LightingResult**:
+   - Treat `incident_flux` as radiometric power [W] (RGB channels).
+   - Treat “illuminance” fields as irradiance [W/m²] (consider renaming to avoid photometric
+     confusion).
+
+3) **Remove photometric bridges**:
+   - Keep solar gains driven by EPW DNI/DHI (`sim::energy::solar_bridge`) and/or by explicit
+     shortwave producer modules (`sim::lighting::shortwave`).
+
+#### 5.7.2 Shared surface semantics (one truth for “what is a surface?”)
+
+Today, different simulations treat same-zone internal interfaces differently:
+- acoustics can mark same-zone facing polygon pairs “transparent” and skip them in intersection,
+- thermal excludes them from the exterior envelope,
+- lighting currently includes them unconditionally.
+
+Unification steps:
+1) Define a **surface semantics overlay** keyed by polygon `UID`:
+   - `Exterior` (no facing neighbor),
+   - `SameZoneInterface` (faces another polygon in the same zone),
+   - `InterZoneInterface` (faces a polygon in another zone).
+2) Build it once from the polygon-facing graph (reuse `ThermalBoundaries` logic).
+3) Apply it consistently:
+   - acoustics: default to skipping `SameZoneInterface` in `FlatScene` (transparent),
+   - lighting + solar shading: default to skipping `SameZoneInterface` in ray intersection and
+     in visibility tests, so “splitting a zone into multiple solids” does not change results.
+
+Regression invariant:
+- A zone represented as one solid vs two adjacent solids in the same zone should produce the
+  same exterior shortwave absorption and the same thermal envelope UA (up to numerical noise).
+
+#### 5.7.3 MaterialLibrary-first (single assignment system across domains)
+
+Problem: thermal U-values and thermal capacities can currently come from different assignment
+systems, which makes the “same wall” physically inconsistent.
+
+Plan:
+1) Make `MaterialLibrary` the primary assignment mechanism for:
+   - acoustics absorption/scattering,
+   - optical reflectance/transmittance and glazing tagging,
+   - thermal U-value and thermal capacity.
+2) Treat domain configs as overrides + fallbacks:
+   - `ThermalConfig` holds defaults/overrides (e.g. infiltration, setpoints, policy knobs),
+     but U-values and capacities resolve from `MaterialLibrary` by default.
+3) Provide a deterministic, explicit precedence order:
+   - exact surface UID/path override > MaterialLibrary assignment > config default.
+
+#### 5.7.4 Validation tests that lock in consistency
+
+Add a small set of “cross-domain invariants” that prevent regressions:
+- **Lighting power conservation** (after normalization fix): closed box, absorb-all walls, 1 bounce
+  ⇒ total deposited power ≈ configured source flux.
+- **Same-zone interface invariance**: splitting a zone into multiple solids in the same zone does
+  not change lighting totals, shortwave absorbed totals, or thermal exterior UA.
+- **Shortwave accounting sanity**: for unshaded solar producers, ensure absorbed(opaque) + transmitted(glazing)
+  is finite and scales linearly with DNI/DHI and surface areas.
 
 ---
 
