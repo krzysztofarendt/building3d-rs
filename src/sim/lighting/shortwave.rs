@@ -456,7 +456,7 @@ impl SolarEpwShadedModule {
             return;
         }
 
-        let scene = FlatScene::new(ctx.building, self.config.voxel_size, false);
+        let scene = FlatScene::new(ctx.building, self.config.voxel_size, true);
         self.polygon_idx_by_uid = scene
             .polygons
             .iter()
@@ -775,7 +775,7 @@ impl SolarShortwaveShadedStepModule {
             return;
         }
 
-        let scene = FlatScene::new(ctx.building, self.config.voxel_size, false);
+        let scene = FlatScene::new(ctx.building, self.config.voxel_size, true);
         self.polygon_idx_by_uid = scene
             .polygons
             .iter()
@@ -1157,6 +1157,50 @@ mod tests {
     }
 
     #[test]
+    fn test_same_zone_split_invariant_unshaded_opaque_absorbed_total() {
+        let one = {
+            let s = Solid::from_box(2.0, 1.0, 1.0, None, "s").unwrap();
+            let z = Zone::new("z", vec![s]).unwrap();
+            Building::new("b", vec![z]).unwrap()
+        };
+        let split = {
+            let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+            let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+            let z = Zone::new("z", vec![s0, s1]).unwrap();
+            Building::new("b", vec![z]).unwrap()
+        };
+
+        let params = SolarHourParams {
+            direct_normal_irradiance: 800.0,
+            diffuse_horizontal_irradiance: 200.0,
+            day_of_year: 80,
+            hour: 12.0,
+            latitude: 0.0,
+            longitude: 0.0,
+        };
+        let gain_cfg = SolarGainConfig::new();
+
+        let index_one = SurfaceIndex::new(&one);
+        let ctx_one = SimContext::new(&one, &index_one);
+        let b_one = ThermalBoundaries::classify(&one, &index_one);
+        let absorbed_one =
+            compute_unshaded_opaque_absorbed(&ctx_one, &b_one, &params, &gain_cfg, None);
+        let total_one: f64 = absorbed_one.watts_by_polygon_uid.values().sum();
+
+        let index_split = SurfaceIndex::new(&split);
+        let ctx_split = SimContext::new(&split, &index_split);
+        let b_split = ThermalBoundaries::classify(&split, &index_split);
+        let absorbed_split =
+            compute_unshaded_opaque_absorbed(&ctx_split, &b_split, &params, &gain_cfg, None);
+        let total_split: f64 = absorbed_split.watts_by_polygon_uid.values().sum();
+
+        assert!(
+            (total_one - total_split).abs() < 1e-8,
+            "Expected same total absorbed shortwave. one={total_one:.6}, split={total_split:.6}"
+        );
+    }
+
+    #[test]
     fn test_solar_epw_module_consumes_weather_hour_index() -> Result<()> {
         // Single zone with a 1m² "glass" polygon facing up: diffuse-only should add gains.
         let poly = Polygon::new(
@@ -1315,7 +1359,7 @@ mod tests {
         let zone = Zone::new("z", vec![solid])?;
         let building = Building::new("b", vec![zone])?;
 
-        let scene = FlatScene::new(&building, 0.25, false);
+        let scene = FlatScene::new(&building, 0.25, true);
         let idx = scene
             .paths
             .iter()
@@ -1355,7 +1399,7 @@ mod tests {
         let zone = Zone::new("z", vec![solid])?;
         let building = Building::new("b", vec![zone])?;
 
-        let scene = FlatScene::new(&building, 0.25, false);
+        let scene = FlatScene::new(&building, 0.25, true);
         let idx = scene
             .paths
             .iter()

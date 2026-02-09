@@ -369,8 +369,10 @@ direction.
 For each light source, `num_rays` rays are traced through the scene:
 
 1. **Initialize** energy per ray:
-   - Point light: `E[c] = intensity[c] / num_rays`
-   - Directional: `E[c] = irradiance[c] / num_rays`
+   - Point light (uniform sphere sampling, `pdf = 1/(4π)`):
+     `P_ray[c] = intensity[c] * 4π / num_rays`
+   - Directional (uniform emitter-face sampling, `pdf = 1/A_emit`):
+     `P_ray[c] = irradiance[c] * A_emit / num_rays`
 
 2. **Trace** each ray up to `max_bounces` (default 5):
    - Find closest surface intersection
@@ -1566,24 +1568,16 @@ information and is numerically robust for all latitude/declination combinations.
 **Fixed**: Renamed `intensity` to `radiance` in the backward tracer code, consistent
 with the radiometric unit convention adopted across the lighting module.
 
-#### OPEN: Forward lighting energy normalization is inconsistent
+#### ~~BUG: Forward lighting energy normalization is inconsistent~~ (FIXED)
 
-**Problem**: The forward ray tracer (`sim::lighting::simulation::LightingSimulation`) records
-`LightingResult.incident_flux` as “total incident radiant power [W] per polygon”, but the
-current per-ray weights do not incorporate the sampling PDF (e.g. uniform sphere sampling
-implies `pdf = 1/(4π)`). As a result, the accumulated `incident_flux` is scaled by a constant
-factor relative to the configured source flux, which makes lighting→thermal coupling
-quantitatively inconsistent.
+**Fixed**: The forward tracer now applies correct Monte Carlo weights so that
+`LightingResult.incident_flux` is radiometric power [W] (RGB channels):
+- Point lights sampled uniformly on the sphere use `P_ray = I(dir) * 4π / N_rays`.
+- Directional lights sampled uniformly on a bounding-box emitter face use
+  `P_ray = E * A_emit / N_rays`.
 
-**Plan**:
-- Define `LightingResult.incident_flux` as radiometric power [W] (RGB channels), and make the
-  Monte Carlo estimator unbiased by weighting each ray by `1/pdf`.
-- For point lights sampled uniformly on the sphere:
-  - `P_ray = I(dir) * 4π / N_rays` where `I` is radiant intensity [W/sr].
-- For directional lights sampled uniformly on an emitter face of area `A_emit`:
-  - `P_ray = E * A_emit / N_rays` where `E` is irradiance [W/m²] on the emitter face.
-- Add a regression test: closed box, fully absorbing, 1 bounce ⇒ total deposited power ≈
-  `source_flux` (within sampling tolerance), not `source_flux/(4π)`.
+A regression test verifies that in a closed box with fully absorbing walls and one bounce,
+the total deposited power matches the configured source flux (within sampling tolerance).
 
 ### 5.4 Energy
 

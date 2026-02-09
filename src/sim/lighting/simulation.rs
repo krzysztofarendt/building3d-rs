@@ -31,7 +31,9 @@ pub struct LightingSimulation {
 
 impl LightingSimulation {
     pub fn new(building: &Building, config: LightingConfig) -> Result<Self> {
-        let scene = FlatScene::new(building, config.voxel_size, false);
+        // Treat same-zone internal interfaces as transparent so that splitting a zone into
+        // multiple solids does not change lighting results.
+        let scene = FlatScene::new(building, config.voxel_size, true);
 
         // Resolve optical properties per polygon
         let mut diffuse_reflectance: Vec<Rgb> = Vec::with_capacity(scene.paths.len());
@@ -98,50 +100,54 @@ impl LightingSimulation {
 
     /// Runs the forward ray tracing simulation.
     pub fn run(&self) -> LightingResult {
+        let mut rng = rand::thread_rng();
+        self.run_with_rng(&mut rng)
+    }
+
+    fn run_with_rng(&self, rng: &mut impl Rng) -> LightingResult {
         let mut result = LightingResult::new();
         result.sensor_grids = self.sensor_grids.clone();
-        let mut rng = rand::thread_rng();
+
+        let rays_per_light = self.config.num_rays.max(1) as f64;
+        let sphere_weight = 4.0 * std::f64::consts::PI / rays_per_light;
 
         // Trace rays from each point light
         for light in &self.config.point_lights {
-            let rays_per_light = self.config.num_rays;
-            // Each ray carries an equal share of the total flux
-            let scale = 1.0 / rays_per_light as f64;
-
-            for _ in 0..rays_per_light {
-                let dir = random_unit_vector(&mut rng);
+            for _ in 0..self.config.num_rays {
+                let dir = random_unit_vector(rng);
                 let intensity = light.intensity(dir);
+                // Uniform sampling on the unit sphere: pdf = 1/(4π).
+                // Each ray carries power = I(dir) / pdf / N = I(dir) * 4π / N.
                 let energy = [
-                    intensity[0] * scale,
-                    intensity[1] * scale,
-                    intensity[2] * scale,
+                    intensity[0] * sphere_weight,
+                    intensity[1] * sphere_weight,
+                    intensity[2] * sphere_weight,
                 ];
 
-                self.trace_ray(light.position(), dir, energy, &mut result, &mut rng);
+                self.trace_ray(light.position(), dir, energy, &mut result, rng);
             }
         }
 
         // Trace rays from directional lights
         for light in &self.config.directional_lights {
-            let rays_per_light = self.config.num_rays;
-            let irradiance = light.intensity(light.direction);
-
             // Spawn rays from the top of the bounding box in the light direction
             let dir_norm = match light.direction.normalize() {
                 Ok(v) => v,
                 Err(_) => continue,
             };
 
-            for _ in 0..rays_per_light {
-                // Random point on the scene bounding box face
-                let origin = random_point_on_bbox_face(&self.scene, dir_norm, &mut rng);
-                let energy_per_ray = [
-                    irradiance[0] / rays_per_light as f64,
-                    irradiance[1] / rays_per_light as f64,
-                    irradiance[2] / rays_per_light as f64,
-                ];
+            let irradiance = light.intensity(dir_norm);
+            let emit_area_m2 = bbox_face_area(&self.scene, dir_norm).max(0.0);
+            let energy_per_ray = [
+                irradiance[0] * emit_area_m2 / rays_per_light,
+                irradiance[1] * emit_area_m2 / rays_per_light,
+                irradiance[2] * emit_area_m2 / rays_per_light,
+            ];
 
-                self.trace_ray(origin, dir_norm, energy_per_ray, &mut result, &mut rng);
+            for _ in 0..self.config.num_rays {
+                // Random point on the scene bounding box face
+                let origin = random_point_on_bbox_face(&self.scene, dir_norm, rng);
+                self.trace_ray(origin, dir_norm, energy_per_ray, &mut result, rng);
             }
         }
 
@@ -295,6 +301,29 @@ fn random_point_on_bbox_face(scene: &FlatScene, direction: Vector, rng: &mut imp
         let y = rng.gen_range(min.y..max.y);
         let z = rng.gen_range(min.z..max.z);
         Point::new(x, y, z)
+    }
+}
+
+/// Area of the bounding box face used by [`random_point_on_bbox_face`].
+fn bbox_face_area(scene: &FlatScene, direction: Vector) -> f64 {
+    let min = scene.bbox_min;
+    let max = scene.bbox_max;
+
+    let dx = (max.x - min.x).abs();
+    let dy = (max.y - min.y).abs();
+    let dz = (max.z - min.z).abs();
+
+    // Choose the same dominant-axis face as `random_point_on_bbox_face`.
+    let abs_x = direction.dx.abs();
+    let abs_y = direction.dy.abs();
+    let abs_z = direction.dz.abs();
+
+    if abs_z >= abs_x && abs_z >= abs_y {
+        dx * dy
+    } else if abs_y >= abs_x {
+        dx * dz
+    } else {
+        dy * dz
     }
 }
 
@@ -492,18 +521,14 @@ mod tests {
 
     #[test]
     fn test_energy_conservation_first_bounce() {
-        // With fully absorbing walls (reflectance=0) and one bounce,
-        // all rays hit exactly one surface. In a closed box, total collected
-        // flux should be consistent across two runs with the same setup.
-        //
-        // The PointLight emits intensity in W/sr; ray energy = intensity/N_rays.
-        // Total collected = source_flux / (4*pi) for an omnidirectional source.
+        // With fully absorbing walls (reflectance=0) and one bounce, all rays hit
+        // exactly one surface. With correct Monte Carlo normalization, the total
+        // deposited power should match the configured source flux.
         let s0 = Solid::from_box(4.0, 4.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s0]).unwrap();
         let building = Building::new("b", vec![zone]).unwrap();
 
         let source_flux = 1000.0;
-        let expected = source_flux / (4.0 * std::f64::consts::PI);
         let mut config = LightingConfig::new();
         config.num_rays = 200_000;
         config.max_bounces = 1;
@@ -513,7 +538,8 @@ mod tests {
             .push(PointLight::white(Point::new(2.0, 2.0, 1.5), source_flux));
 
         let sim = LightingSimulation::new(&building, config).unwrap();
-        let result = sim.run();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let result = sim.run_with_rng(&mut rng);
 
         let total_collected: f64 = result
             .incident_flux
@@ -521,13 +547,53 @@ mod tests {
             .map(|f| f[0] + f[1] + f[2])
             .sum();
 
-        // Total should be close to source_flux/(4*pi) ≈ 79.6 W.
-        // Allow 5% tolerance for ray sampling variance.
-        let ratio = total_collected / expected;
+        // Allow 5% tolerance for sampling variance.
+        let ratio = total_collected / source_flux;
         assert!(
             ratio > 0.95 && ratio < 1.05,
-            "Total collected flux should approximate source_flux/(4*pi). \
-             ratio={ratio:.3} (collected={total_collected:.1}, expected={expected:.1})"
+            "Total collected power should approximate source flux. \
+             ratio={ratio:.3} (collected={total_collected:.1}, source={source_flux:.1})"
+        );
+    }
+
+    #[test]
+    fn test_same_zone_split_invariant_total_deposited_power() {
+        // Splitting a zone into multiple solids should not change results when
+        // same-zone interfaces are treated as transparent.
+        let one = {
+            let s = Solid::from_box(2.0, 1.0, 1.0, None, "s").unwrap();
+            let z = Zone::new("z", vec![s]).unwrap();
+            Building::new("b", vec![z]).unwrap()
+        };
+        let split = {
+            let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+            let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+            let z = Zone::new("z", vec![s0, s1]).unwrap();
+            Building::new("b", vec![z]).unwrap()
+        };
+
+        let mut cfg = LightingConfig::new();
+        cfg.num_rays = 200_000;
+        cfg.max_bounces = 1;
+        cfg.default_reflectance = [0.0; 3];
+        cfg.point_lights
+            .push(PointLight::white(Point::new(1.0, 0.5, 0.5), 500.0));
+
+        let sim_one = LightingSimulation::new(&one, cfg.clone()).unwrap();
+        let sim_split = LightingSimulation::new(&split, cfg).unwrap();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let r1 = sim_one.run_with_rng(&mut rng);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let r2 = sim_split.run_with_rng(&mut rng);
+
+        let p1: f64 = r1.incident_flux.values().map(|f| f[0] + f[1] + f[2]).sum();
+        let p2: f64 = r2.incident_flux.values().map(|f| f[0] + f[1] + f[2]).sum();
+
+        let ratio = p2 / p1;
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "Expected split-zone total power close to single-solid total. ratio={ratio:.3} (one={p1:.1}, split={p2:.1})"
         );
     }
 

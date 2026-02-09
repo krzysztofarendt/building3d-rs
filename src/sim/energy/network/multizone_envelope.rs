@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::sim::energy::config::ThermalConfig;
 use crate::sim::energy::hvac::HvacIdealLoads;
 use crate::sim::materials::MaterialLibrary;
 use crate::{Building, UID};
@@ -56,6 +57,73 @@ impl MultiZoneEnvelopeRcModel {
         material_library: Option<&MaterialLibrary>,
         initial_temp_c: f64,
     ) -> Self {
+        let cap_area_for_surface = |surface: &crate::sim::index::SurfaceRef| -> f64 {
+            material_library
+                .and_then(|lib| lib.lookup(&surface.path))
+                .and_then(|m| m.thermal.as_ref())
+                .map(|t| t.thermal_capacity)
+                .unwrap_or(default_envelope_capacity_j_per_m2_k)
+                .max(0.0)
+        };
+
+        Self::new_impl(
+            building,
+            network,
+            surface_index,
+            boundaries,
+            infiltration_ach,
+            air_capacity_j_per_m3_k,
+            cap_area_for_surface,
+            initial_temp_c,
+        )
+    }
+
+    /// Like [`Self::new`], but resolves envelope capacity per surface using the shared
+    /// [`ThermalConfig`] precedence rules (UID override > exact path construction >
+    /// MaterialLibrary thermal capacity > pattern construction > default).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_thermal_config(
+        building: &Building,
+        network: &ThermalNetwork,
+        surface_index: &SurfaceIndex,
+        boundaries: &ThermalBoundaries,
+        thermal_config: &ThermalConfig,
+        infiltration_ach: f64,
+        air_capacity_j_per_m3_k: f64,
+        default_envelope_capacity_j_per_m2_k: f64,
+        initial_temp_c: f64,
+    ) -> Self {
+        let cap_area_for_surface = |surface: &crate::sim::index::SurfaceRef| -> f64 {
+            thermal_config.resolve_envelope_capacity_j_per_m2_k(
+                Some(&surface.polygon_uid),
+                &surface.path,
+                default_envelope_capacity_j_per_m2_k,
+            )
+        };
+
+        Self::new_impl(
+            building,
+            network,
+            surface_index,
+            boundaries,
+            infiltration_ach,
+            air_capacity_j_per_m3_k,
+            cap_area_for_surface,
+            initial_temp_c,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_impl(
+        building: &Building,
+        network: &ThermalNetwork,
+        surface_index: &SurfaceIndex,
+        boundaries: &ThermalBoundaries,
+        infiltration_ach: f64,
+        air_capacity_j_per_m3_k: f64,
+        cap_area_for_surface: impl Fn(&crate::sim::index::SurfaceRef) -> f64,
+        initial_temp_c: f64,
+    ) -> Self {
         // Stable zone ordering: building.zones() is name-sorted by convention.
         let zones = building.zones();
         let n = zones.len();
@@ -104,12 +172,7 @@ impl MultiZoneEnvelopeRcModel {
                 continue;
             };
 
-            let cap_area = material_library
-                .and_then(|lib| lib.lookup(&surface.path))
-                .and_then(|m| m.thermal.as_ref())
-                .map(|t| t.thermal_capacity)
-                .unwrap_or(default_envelope_capacity_j_per_m2_k)
-                .max(0.0);
+            let cap_area = cap_area_for_surface(surface);
 
             env_capacity_j_per_k[i] += cap_area * surface.area_m2;
         }
