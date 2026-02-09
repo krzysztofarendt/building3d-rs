@@ -1,6 +1,7 @@
 use anyhow::Result;
 use building3d::draw::lighting::{draw_illuminance_heatmap, draw_sensor_grid};
 use building3d::draw::rerun::start_session;
+use building3d::sim::index::SurfaceIndex;
 use building3d::sim::lighting::config::LightingConfig;
 use building3d::sim::lighting::simulation::LightingSimulation;
 use building3d::sim::lighting::sources::PointLight;
@@ -69,6 +70,7 @@ fn main() -> Result<()> {
     // Run simulation
     let sim = LightingSimulation::new(&building, config)?;
     let result = sim.run();
+    let surface_index = SurfaceIndex::new(&building);
 
     // Print illuminance summary
     let avg = result.average_illuminance();
@@ -85,15 +87,18 @@ fn main() -> Result<()> {
     let mut min_path = String::new();
     let mut max_path = String::new();
 
-    for (path, ill) in &result.illuminance {
+    for (polygon_uid, ill) in &result.illuminance {
+        let path = surface_index
+            .path_by_polygon_uid(polygon_uid)
+            .unwrap_or("<unknown>");
         let lux = (ill[0] + ill[1] + ill[2]) / 3.0;
         if lux < min_lux {
             min_lux = lux;
-            min_path = path.clone();
+            min_path = path.to_string();
         }
         if lux > max_lux {
             max_lux = lux;
-            max_path = path.clone();
+            max_path = path.to_string();
         }
     }
 
@@ -105,11 +110,21 @@ fn main() -> Result<()> {
 
     // Print per-surface illuminance
     println!("Per-surface illuminance:");
-    let mut surfaces: Vec<_> = result.illuminance.iter().collect();
-    surfaces.sort_by(|a, b| a.0.cmp(b.0));
-    for (path, ill) in &surfaces {
+    let mut surfaces: Vec<(String, &building3d::UID, &[f64; 3])> = result
+        .illuminance
+        .iter()
+        .map(|(polygon_uid, ill)| {
+            let path = surface_index
+                .path_by_polygon_uid(polygon_uid)
+                .unwrap_or("<unknown>")
+                .to_string();
+            (path, polygon_uid, ill)
+        })
+        .collect();
+    surfaces.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, polygon_uid, ill) in &surfaces {
         let lux = (ill[0] + ill[1] + ill[2]) / 3.0;
-        let hits = result.hit_count.get(*path).copied().unwrap_or(0);
+        let hits = result.hit_count.get(*polygon_uid).copied().unwrap_or(0);
         println!("  {:50} {:>8.1} lux  ({} hits)", path, lux, hits);
     }
     println!();

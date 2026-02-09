@@ -74,6 +74,26 @@ polygons with:
 - Transparent surface detection (internal interfaces between solids in the same zone)
 - Voxel grid for spatial queries
 
+### 1.4 Composable Simulation Pipeline (Bus + Modules)
+
+Multi-physics workflows (lighting ↔ thermal, acoustics-only runs, etc.) are intended to be
+composed from small modules rather than hard-wired into a monolithic “simulation app”.
+
+The shared runtime lives in `src/sim/framework/`:
+- `SimContext`: immutable inputs shared by modules (the `Building` plus `SurfaceIndex`)
+- `Bus`: typed message/value store connecting modules (keyed by concrete Rust type)
+- `Pipeline`: ordered list of `SimModule`s with `init()` and `step()`
+
+Cross-module “contracts” (payload types carried on the `Bus`) live in `src/sim/coupling.rs`.
+Examples:
+- `OutdoorAirTemperatureC` (weather boundary for step-based thermal)
+- `ShortwaveTransmittedWPerZone` (solar shortwave gains per zone)
+- `InternalGainsWPerZone` / `InternalGainsWTotal`
+
+This enables step-based pipelines such as:
+1) a weather/solar producer publishes `OutdoorAirTemperatureC` and `ShortwaveTransmittedWPerZone`
+2) the thermal module consumes those inputs each step (see `sim::energy::module::EnergyModule`)
+
 ---
 
 ## 2. Acoustics
@@ -512,6 +532,444 @@ DF = E_interior / E_exterior
 - **Solar time only**: longitude is not used for equation-of-time correction.
 - **No atmospheric scattering**: sky models provide direct luminance, no volumetric effects.
 
+### 3.8 Next Steps (Lighting Engine Roadmap)
+
+This project’s long-term goal is to be a **composable simulation core** (acoustics, heat,
+light) with **no hard dependency on a specific GUI**. Visualization is handled via Rerun,
+and the user-facing interface is expected to be **natural language through an AI agent**
+communicating with a small, deterministic MCP tool API.
+
+For the lighting engine specifically, the next steps should be organized around two
+principles:
+
+1. **Correctness first, then performance**: establish a validation harness against a
+   trusted reference (Radiance-like workflows) before accelerating or adding features.
+2. **Composable building blocks**: keep the lighting engine assembled from small pieces
+   (scene, materials/BSDF, sky/sun, sampler, integrator, outputs) so an AI agent can
+   “compose” a simulation for a specific use-case.
+
+#### 3.8.1 Decide the “first product” (deliverables)
+
+Avoid trying to land everything at once. Pick one of these as the first-class output and
+design the integrator around it:
+
+- **Daylight metrics mode (recommended first)**: sensor-based irradiance/illuminance on
+  workplanes + annual metrics (DF, DA/sDA/UDI/ASE) driven by sky + sun time series.
+- **View/image mode**: luminance/HDR rendering from a camera, for visual evaluation and
+  glare analysis.
+
+Both can share almost all infrastructure, but the sampling strategy, outputs, and “what is
+considered correct” differ enough that one should lead.
+
+#### 3.8.2 Create a reference-backed validation harness (Radiance as oracle)
+
+Before changing integrators, create a repeatable way to compare against Radiance-style
+results. The goal is not a byte-identical match; it is to detect regressions and reduce
+unknown bias.
+
+Step-by-step:
+
+1. **Canonical scenes** (small set, hand-auditable):
+   - empty box + point light (already partially validated via inverse-square test)
+   - box + window + overcast sky (daylight factor sanity)
+   - box + window + sun (hard shadows and direct component)
+   - simple “L-room” (multiple bounces and occlusion)
+   - glass pane variants (clear vs diffuse) once transmissive materials exist
+2. **Scene export** from `FlatScene`:
+   - geometry: triangulated polygons (consistent winding and normals)
+   - materials: map `MaterialLibrary` optical properties to a minimal Radiance material set
+   - sky/sun: export CIE sky as an environment source; export sun as a directional source
+3. **Golden outputs**:
+   - store reference sensor values (and/or images) in `validation/` with configuration
+     metadata (ray counts, bounces, random seed, sky parameters)
+4. **Tolerance policy**:
+   - define acceptable error bands per deliverable (e.g., relative error on mean sensor
+     illuminance, percentile error across sensors, and “shadow edge” checks for sun cases)
+5. **Regression tests**:
+   - add non-flaky tests that run fast locally (small ray counts) and a slower “validation”
+     suite for CI/manual runs (large ray counts).
+
+This harness becomes the backbone of future refactors (sampling, BVH, glazing, MIS).
+
+#### 3.8.3 Make the lighting pipeline explicitly modular (composability)
+
+The code already has `LightingSimulation` (forward) and `BackwardTracer`. To move toward a
+Radiance-like model while remaining composable, restructure conceptually into:
+
+- **Scene**: intersection, normals, area, and material lookup (currently `FlatScene`)
+- **Emitter model**: point/directional/area lights + sky + sun (treat sky/sun as emitters)
+- **Surface model (BSDF)**: mapping from `OpticalMaterial` → reflect/transmit sampling
+- **Sampler**: deterministic random/low-discrepancy sequences (reproducible per run)
+- **Integrator**: a small set of algorithms (direct-only, path tracing, bidirectional later)
+- **Measurements**: sensors and/or camera film; post-processing to metrics
+
+Key constraint for agentic use: each component should have a clear config struct that can
+be serialized, diffed, and re-run deterministically.
+
+#### 3.8.4 Implement a Radiance-style backward integrator (incremental milestones)
+
+Radiance’s strength in building daylighting comes from **backward sampling from sensors**
+(and images), plus aggressive variance reduction. Implement this as a staged sequence:
+
+1. **Direct-only backward estimator (sky + sun)**:
+   - keep the current hemisphere sampling, but add explicit evaluation of the chosen sky
+     and sun models
+   - add a “separate sun” option (sun as delta light) so the estimator handles sharp shadows
+2. **Next-event estimation (NEE)**:
+   - for each bounce, sample direct contribution from explicit emitters:
+     - sun direction (delta) if visible
+     - one or more sky patches / environment samples with proper pdf
+   - keep the existing path continuation for indirect light
+3. **Multiple bounces with energy conservation**:
+   - ensure diffuse bounce sampling is cosine-weighted (Lambertian BSDF)
+   - keep Russian roulette, but tie termination probability to path throughput
+4. **Multiple importance sampling (MIS)**:
+   - combine BSDF sampling and light sampling (especially important for sun/bright sky)
+   - implement power heuristic weights
+5. **Specular/glossy reflection and transmissive glazing**:
+   - specular reflection: deterministic reflection direction
+   - refraction through glazing: direction change + transmittance/absorption model
+   - “thin glass” approximation as a first step (no thickness), then optionally thickness
+6. **BSDF hooks**:
+   - keep a trait boundary so a future measured/window-system BSDF can plug in without
+     changing the integrator’s core logic.
+
+At each milestone, add/extend one canonical validation scene so correctness stays anchored.
+
+#### 3.8.5 Sky, sun, and climate integration (annual workflows)
+
+For building simulation, the biggest value is often **annual daylight availability** and
+coupling to thermal loads. A practical progression:
+
+1. **Keep CIE skies for unit tests** (stable and parameter-light).
+2. **Add a weather-driven sky/sun pipeline**:
+   - reuse EPW parsing from `src/sim/energy/weather.rs` to get per-hour DNI/DHI/GHI
+   - compute sun position per timestamp (already present in `src/sim/lighting/solar.rs`)
+   - generate an environment distribution (sky patches) driven by DHI and sun from DNI
+3. **Introduce luminous efficacy boundaries**:
+   - clearly separate *radiometric* engine units from *photometric* reporting (lux)
+   - convert only at outputs, with documented assumptions and user-overridable constants
+4. **Thermal coupling**:
+   - use lighting results as a potential source for solar gains, but prefer a single
+     authoritative pipeline (avoid “two ways to compute the same gains” drifting apart)
+   - if a lighting→thermal bridge remains, document it as an approximation with limits.
+
+#### 3.8.5a Immediate milestone: geometry-aware solar shortwave (shading + glazing)
+
+The current EPW-driven shortwave producers (`SolarShortwaveModule` /
+`SolarShortwaveStepModule`) are intentionally **deterministic and fast**, but they treat
+solar gains as a **non-occluded** “energy accounting” problem (DNI/DHI + SHGC) rather than
+a geometry-aware lighting problem.
+
+The next concrete lighting-engine milestone should be to add a **geometry-aware,
+still-deterministic** shortwave producer that:
+
+- uses the existing `FlatScene` ray casting for **direct-sun occlusion** (hard shadows),
+- keeps **diffuse sky unoccluded** initially (isotropic DHI approximation), and
+- publishes the same coupling payloads (`ShortwaveTransmittedWPerZone` and optionally
+  `ShortwaveAbsorbedWPerPolygon`) so thermal can consume it with zero API changes.
+
+Step-by-step implementation sketch (dev branch):
+
+1. Add a step-based module (e.g. `SolarShortwaveShadedStepModule`) that consumes EPW hourly
+   DNI/DHI and computes sun direction via `SolarPosition` per step.
+2. Build a `FlatScene` once (module init) for ray tests and reuse it across steps.
+3. Select “candidate glazing” polygons without embedding thermal metadata into geometry:
+   - use `ThermalBoundaries` (overlay) to restrict to *exterior* surfaces, and
+   - use `MaterialLibrary` optical properties (or a `SolarGainConfig`-like resolver) to
+     decide which surfaces are transmissive and what their SHGC/transmittance is.
+4. For each candidate polygon:
+   - compute **direct incident irradiance** from DNI with cosine projection on the polygon
+     normal (0 when back-facing),
+   - compute a **visibility fraction** in `[0, 1]` by casting rays from a deterministic
+     set of sample points on the polygon (triangle centroids are sufficient initially)
+     toward the sun direction and counting occluded samples,
+   - apply this visibility fraction only to the direct component.
+5. Convert irradiance → power via polygon area, then split into:
+   - transmitted-to-zone shortwave (`ShortwaveTransmittedWPerZone`), and optionally
+   - per-polygon absorbed shortwave (`ShortwaveAbsorbedWPerPolygon`) for future envelope
+     surface temperature models.
+   For now, absorbed shortwave on *opaque* exterior surfaces is approximated using a scalar
+   absorptance (from `MaterialLibrary` optical properties when present; otherwise a fixed
+   default).
+6. Validate correctness with two fast, non-flaky tests:
+   - “no occluder” ⇒ visibility ≈ 1 for a sun-facing window,
+   - “with occluder” ⇒ visibility ≈ 0 when a blocking polygon is placed between the sun
+     and the window.
+
+This keeps the “single source of truth” rule intact: a composed pipeline can switch from
+the unshaded producer to the shaded producer without changing the thermal module or
+coupling types.
+
+#### 3.8.6 Outputs, metrics, and post-processing (what the engine returns)
+
+To keep the core composable, treat “metrics” as a layer on top of a small set of primary
+outputs:
+
+- **Primary outputs**:
+  - per-sensor irradiance/illuminance (direct + indirect separated if possible)
+  - per-surface irradiance maps (for visualization and debugging)
+  - optional path statistics: bounce counts, visibility ratios, variance estimates
+- **Derived daylight metrics** (computed from time series + thresholds):
+  - daylight factor (single sky condition)
+  - DA/sDA, UDI, ASE (annual)
+  - glare metrics (later; typically needs view/camera mode and luminance distributions)
+
+Prefer returning both:
+1) machine-friendly data (tables), and
+2) a small set of Rerun artifacts (heatmaps, falsecolor, debug rays) for inspection.
+
+#### 3.8.6a Interface guidelines for thermal coupling (keep worktrees aligned)
+
+To keep lighting results usable as inputs to thermal simulation (without hardcoding any
+thermal metadata into geometry), adopt the following conventions:
+
+- **Stable identifiers**: any per-surface output intended for other modules should be keyed
+  by polygon `UID` (with optional `zone/solid/wall/polygon` path strings for reporting).
+- **Payload types (code)**: `sim::coupling::ShortwaveAbsorbedWPerPolygon` and
+  `sim::coupling::ShortwaveTransmittedWPerZone` define the default cross-module contracts.
+- **Producers**: choose exactly one shortwave producer in a composed pipeline:
+  - deterministic single-hour producer (fixed `SolarHourParams`): `sim::lighting::shortwave::SolarShortwaveModule`
+  - EPW time-series producer (consumes `sim::coupling::WeatherHourIndex`):
+    - explicit EPW in config: `sim::lighting::shortwave::SolarEpwModule`
+    - weather shared via `Bus` (`Arc<WeatherData>`): `sim::lighting::shortwave::SolarEpwBusModule`
+  - EPW time-series shaded producer (consumes `sim::coupling::WeatherHourIndex`):
+    - explicit EPW in config: `sim::lighting::shortwave::SolarEpwShadedModule`
+    - weather shared via `Bus` (`Arc<WeatherData>`): `sim::lighting::shortwave::SolarEpwShadedBusModule`
+  - EPW step module (self-contained, publishes `OutdoorAirTemperatureC`): `sim::lighting::shortwave::SolarShortwaveStepModule`
+  - EPW shaded step module (self-contained, hard-shadow direct sun): `sim::lighting::shortwave::SolarShortwaveShadedStepModule`
+  - ray-based producer: `sim::lighting::shortwave::LightingToShortwaveModule` fed by a lighting run.
+- **Weather time base**: time-series pipelines should publish `sim::coupling::WeatherHourIndex`
+  and `sim::coupling::OutdoorAirTemperatureC` each step (see `sim::energy::weather_module::WeatherModule`).
+- **Weather dataset sharing**: `WeatherModule` publishes `Arc<WeatherData>` on the `Bus` during `init()`.
+  Prefer the bus-driven solar modules in composed pipelines so EPW dataset wiring is standardized.
+- **Shading milestone**: as the first geometry-aware step, prefer a direct-sun occlusion producer
+  (`sim::lighting::shortwave::SolarEpwShadedModule` for `WeatherHourIndex` pipelines, or
+  `sim::lighting::shortwave::SolarShortwaveShadedStepModule` as a self-contained convenience).
+- **Bus inputs**: step-based thermal simulations consume weather and gains from the `Bus`:
+  - `sim::coupling::WeatherHourIndex` (recommended shared time base)
+  - `sim::coupling::OutdoorAirTemperatureC`
+  - `sim::coupling::InternalGainsWPerZone` (preferred) or `sim::coupling::InternalGainsWTotal` (fallback)
+  - `sim::coupling::ShortwaveTransmittedWPerZone`
+  - `sim::coupling::ShortwaveAbsorbedWPerPolygon` (optional; becomes important for envelope RC / surface-temperature models)
+- **Separation of concerns**: `sim::lighting::module::LightingModule` publishes `LightingResult`
+  only; shortwave coupling payloads are produced explicitly by the chosen producer module.
+- **Units**: keep the integrator in radiometric units (W, W/m², W/sr) and convert to
+  photometric units (lux, cd/m²) only at output/reporting boundaries.
+- **Single source of truth for shortwave gains**: in a composed simulation pipeline, do not
+  compute solar gains in two different places. Either:
+  - a lighting/solar module produces absorbed/transmitted shortwave power, or
+  - the thermal module uses EPW + SHGC as a fallback approximation.
+
+#### 3.8.7 Performance roadmap (after correctness)
+
+Once validated, address performance in a way that preserves determinism:
+
+1. **Better acceleration**:
+   - keep `VoxelGrid` for “broadphase,” but add a BVH for triangle intersections (narrowphase)
+   - consider per-solid/per-zone BVHs to align with the hierarchy and allow incremental updates
+2. **Sampling efficiency**:
+   - importance sample the sky (bright patches) and the sun
+   - stratified / low-discrepancy sequences per sensor pixel (reduces noise at same ray count)
+3. **Parallelism**:
+   - parallelize over sensors (and/or paths) with stable chunking to keep reproducibility
+4. **Caching** (optional, but important for agentic iteration):
+   - cache `FlatScene` and derived structures (BVH, patch distributions) keyed by config hash
+
+#### 3.8.8 MCP + agentic “simulation composition” interface
+
+The lighting engine should be controllable via a small MCP tool surface that an AI agent can
+call safely and deterministically.
+
+Recommended design steps:
+
+1. **Define a “case spec”** (serializable struct) containing:
+   - building/model reference (or procedural instructions to generate one)
+   - material assignments (via `MaterialLibrary` patterns and/or explicit overrides)
+   - sky/sun/weather configuration (including timestamp series for annual mode)
+   - sensor definition (workplane height, grids, polygon attachments)
+   - integrator selection (direct-only vs path tracing), ray counts, bounces, seeds, budgets
+2. **Expose idempotent MCP tools**:
+   - create/update/delete model entities and materials
+   - run lighting simulation as an asynchronous job with explicit resource limits
+   - fetch results (tables + references to generated Rerun logs/artifacts)
+3. **Make every run explainable**:
+   - return the full resolved configuration (after defaults) and a minimal “diff” from
+     the previous run so an agent can justify changes in natural language
+4. **Keep the core GUI-free**:
+   - never return “UI actions” from the engine; return data + optional Rerun recordings only.
+
+This mirrors the composability goal: the agent composes the *case spec*, the core runs it,
+and Rerun is just one output consumer.
+
+#### 3.8.9 Radiance-inspired implementation plan (dev: lighting)
+
+This is the **step-by-step** plan for moving the lighting engine towards “Radiance-grade”
+capabilities while preserving core constraints:
+
+- no GUI in-core (Rerun is an output consumer),
+- deterministic, composable modules,
+- a small MCP tool surface so agentic workflows can build *case-specific* engines,
+- explicit coupling contracts to thermal (`Shortwave*` payloads).
+
+The goal is not to replicate Radiance internals; it is to replicate the *capabilities* and
+validation culture (clear units, reproducible runs, reference comparisons).
+
+##### Step 0 — Lock down units, contracts, and determinism
+
+1. **Units contract** (core): keep the integrator strictly radiometric (`W`, `W/m²`, `W/(sr·m²)`),
+   and convert to photometric units only at output boundaries (lux, cd/m²).
+2. **Deterministic sampling**: every simulation config carries an explicit seed (and RNG choice);
+   parallelism must preserve determinism (stable chunking + per-chunk RNG streams).
+3. **Shortwave single source of truth**: a composed pipeline must have exactly one producer of
+   `ShortwaveTransmittedWPerZone` and `ShortwaveAbsorbedWPerPolygon`.
+
+Deliverable: a small “golden scene” example whose numeric outputs are stable and regression-tested.
+
+##### Step 1 — Make sky + sun first-class (weather-driven)
+
+1. **Weather → sky radiance**: define a `SkyRadianceModel` (radiance as `W/(sr·m²)`) driven by EPW
+   inputs (DHI/DNI + timestamp) with at least CIE overcast + Perez all-weather.
+2. **Sun disc**: treat direct sun as a finite angular source (disc/cone sampling), not only an
+   ideal directional light; this enables penumbra and reduces estimator bias for sharp edges.
+3. **Time base standardization**: prefer `WeatherHourIndex` pipelines with shared `Arc<WeatherData>`
+   on the `Bus` (annual-friendly), then add higher-resolution timestamps later.
+
+Deliverable: a “sky diagnostic” output (falsecolor dome + sun vector) viewable in Rerun.
+
+##### Step 2 — Upgrade optical materials to model families (Radiance-like primitives)
+
+1. **Material families** (incremental):
+   - opaque Lambertian diffuse (baseline)
+   - glossy/specular reflection (Phong first; microfacet GGX as follow-up)
+   - clear glass transmission with Fresnel + absorption (thin-sheet approximation first)
+   - “black” absorber (for validation)
+2. **Energy conservation**: enforce per channel: `rho_diffuse + rho_specular + tau <= 1`.
+3. **BSDF runway**: define a boundary for tabulated BSDFs (complex fenestration, shades) without
+   forcing integrator rewrites.
+
+Deliverable: material definitions that can express “plastic/glass/mirror/BSDF” capabilities.
+
+##### Step 3 — Improve estimators (daylight accuracy at low ray counts)
+
+1. **Next-event estimation**: explicit sampling of sun and bright sky patches for direct lighting.
+2. **MIS**: combine BSDF sampling and light sampling to reduce variance deterministically.
+3. **Transparent surfaces**: consistent intersection/shading rules (avoid double-counting and
+   “transparent but still blocks” inconsistencies).
+
+Deliverable: stable workplane illuminance with interactive runtimes.
+
+##### Step 4 — Outputs and coupling: from rays to deliverables
+
+1. **Sensor primitives**: workplane grids, polygon-attached grids, and later camera/view sensors
+   for luminance/glare.
+2. **Outputs**:
+   - per-sensor irradiance/illuminance tables
+   - per-surface irradiance (and absorbed shortwave)
+   - per-zone transmitted shortwave
+3. **Coupling boundary**: keep `LightingResult` separate from `Shortwave*` payloads; produce
+   coupling explicitly with a dedicated module (as in 3.8.6a).
+
+Deliverable: machine-readable tables + small Rerun artifacts (heatmaps + debug rays).
+
+##### Step 5 — Annual daylight via factorization (Radiance-style)
+
+Avoid brute-forcing 8760 full path traces.
+
+1. **Sky patch sets**: discretize the sky dome (Tregenza/Reinhart) and standardize on patch IDs.
+2. **Daylight coefficients**: precompute per-sensor response to each patch; multiply by time-varying
+   patch luminance for annual metrics (DA/sDA/UDI/ASE).
+3. **Three-phase runway**: later, split “window layer / BSDF layer / room layer” for complex glazing.
+
+Deliverable: annual daylight metrics with runtimes suitable for agentic iteration.
+
+##### Step 6 — Shading beyond hard shadows
+
+1. **Diffuse occlusion / sky visibility**: replace the isotropic `0.5*(1+nz)` heuristic with sampled
+   or patch-based sky visibility (deterministic budget per surface/sensor).
+2. **Penumbra**: sun disc sampling → soft shadows.
+3. **Translucent/porous shades**: add angular transmittance/scattering models (BSDF or parametric).
+
+Deliverable: shading that improves both daylight and thermal shortwave coupling.
+
+##### Step 7 — Validation harness (Radiance as reference, not a dependency)
+
+1. **Reference scenes**: small canonical scenes (box + window + sky/sun) with Radiance outputs.
+2. **Comparators**: define error metrics (relative RMSE, percentiles) for illuminance/irradiance.
+3. **Regression discipline**: pin seeds, configs, patch sets; run as CI tests to catch drift.
+
+Deliverable: CI-friendly validation tests that keep the engine honest.
+
+##### Step 8 — MCP tool surface for agentic composition (minimal + safe)
+
+1. **Case spec**: a serializable “lighting case” schema (building ref, materials, weather, sensors,
+   integrator, budgets, requested outputs).
+2. **Idempotent tools**: `validate_case`, `run_lighting`, `fetch_results`, `fetch_rerun_log`.
+3. **Resource governance**: explicit ray/time/memory limits; bounded outputs for safe agent use.
+
+Deliverable: an AI agent can assemble and run case-specific lighting pipelines without code edits.
+
+#### 3.8.10 Concrete next steps (dev: lighting)
+
+This is the recommended **sequence of PR-sized steps** to implement next. Each step should be
+mergeable on its own and keep the lighting engine usable as a composable kernel.
+
+1. **Determinism “hardening” (config + RNG + parallel rules)**
+   - Add an explicit `seed` to all lighting-facing configs (including any annual/daylight-coefficient runs).
+   - Centralize RNG creation in one place and document the rule: same inputs ⇒ same outputs.
+   - If/when parallelism is added: enforce stable chunking and per-chunk RNG streams so results
+     do not change with thread count.
+   - Acceptance: a golden-scene test asserts identical numeric outputs across repeated runs.
+
+2. **Refactor daylight inputs into a “sky + sun” stage**
+   - Create a small API boundary for “daylight inputs”:
+     - sky radiance model (CIE/Perez) returning `W/(sr·m²)` as a function of direction
+     - sun model as a finite disc (angular radius + sampling), not an idealized delta-direction
+   - Wire EPW time-series into this stage (DNI/DHI + timestamp via `WeatherHourIndex` pipelines).
+   - Acceptance: Rerun diagnostics show a sky dome falsecolor + sun direction/disc parameters.
+
+3. **Implement sky patch sets (annual-friendly)**
+   - Add a `SkyPatchSet` (Tregenza first; Reinhart later) with stable patch IDs and directions.
+   - Add a way to compute per-hour patch radiance from Perez (and a separate sun contribution).
+   - Acceptance: patch radiance sums match expected diffuse horizontal irradiance within tolerance.
+
+4. **Reduce variance in sensor results (NEE + MIS)**
+   - Add next-event estimation (explicit sampling of sun + bright sky patches) to the backward tracer.
+   - Add MIS between BSDF sampling and light/patch sampling; keep the estimator unbiased.
+   - Acceptance: workplane illuminance converges faster than uniform-hemisphere sampling at the
+     same ray budget on a canonical daylight scene.
+
+5. **Material model runway (beyond Lambertian-only)**
+   - Add a minimal “specular/glossy” reflection model and a thin-sheet glass transmission model
+     (Fresnel first; absorption later).
+   - Enforce energy conservation per channel (`diffuse + specular + transmit <= 1`).
+   - Acceptance: simple validation scenes reproduce expected behaviors (mirror-like reflection,
+     glass transmission, etc.).
+
+6. **Define “deliverable” outputs (tables first, Rerun second)**
+   - Standardize sensor outputs for:
+     - per-sensor irradiance/illuminance
+     - per-surface irradiance / absorbed shortwave
+     - per-zone transmitted shortwave
+   - Keep radiometric core outputs and convert to photometric at the reporting boundary.
+   - Acceptance: a result struct can be serialized and diffed (for agentic iteration) without Rerun.
+
+7. **Annual daylight via daylight coefficients**
+   - Precompute per-sensor coefficients to sky patches (+ sun positions as needed), cache them,
+     and multiply by time-varying patch radiance to produce DA/sDA/UDI/ASE.
+   - Acceptance: annual metrics run in “interactive” time for small models and scale predictably.
+
+8. **Validation harness (Radiance as the reference)**
+   - Check in a small set of canonical scenes and expected outputs (from Radiance runs performed
+     out-of-tree) and add regression tests comparing against them.
+   - Define tolerance metrics (relative RMSE + percentile errors) and pin seeds/configs.
+   - Acceptance: CI catches numerical drift in daylight and shortwave coupling outputs.
+
+9. **Agentic composition interface (MCP-facing)**
+   - Introduce a serializable “lighting case spec” and keep the MCP tool surface idempotent:
+     validate → run → fetch results → fetch Rerun artifacts (optional).
+   - Acceptance: an agent can build case-specific pipelines without modifying core modules.
+
 ---
 
 ## 4. Energy
@@ -556,6 +1014,8 @@ For each zone at each hour:
 Q_transmission = sum(U_i * A_i) * (T_indoor - T_outdoor)     [W]
 ```
 
+Where the sum is taken over **exterior** envelope surfaces only (see 4.2.1).
+
 **Infiltration loss**:
 ```
 Q_infiltration = rho * c_p * V * ACH / 3600 * (T_indoor - T_outdoor)     [W]
@@ -574,6 +1034,39 @@ Q_net = Q_transmission + Q_infiltration - Q_internal_gains - Q_solar_gains
 Heating demand = max(0, Q_net)
 Cooling demand = max(0, -Q_net)
 ```
+
+#### 4.2.1 Envelope classification and multi-zone coupling (steady-state)
+
+Polygons are classified using a facing-graph overlay (keyed by polygon `UID`) into:
+- **exterior** (faces “nothing”),
+- **same-zone interface** (internal partitions between solids in the same zone; excluded from envelope),
+- **inter-zone interface** (partition between two zones; becomes a coupling term).
+
+This classification is imposed *at simulation time* and is not stored on geometry types.
+
+For two zones `i` and `j` with an inter-zone partition conductance `K_ij` (W/K):
+```
+Q_ij = K_ij * (T_i - T_j)   [W]
+```
+
+Zone-level steady-state balance with coupling:
+```
+0 = -K_out,i*(T_i - T_out) - sum_j K_ij*(T_i - T_j) + Q_gains,i + Q_hvac,i
+```
+
+The conductance `K_ij` is computed from geometric overlap area and an explicit policy for
+combining the two assigned U-values (one per facing polygon). Two common policies:
+
+- **Mean** (default): `U_eq = (U1 + U2)/2`
+- **Series**: `U_eq = 1 / (1/U1 + 1/U2)`
+
+Then:
+```
+K_ij = U_eq * A_overlap
+```
+
+In code this policy is controlled by `ThermalConfig::interzone_u_value_policy`
+(`sim::energy::config::InterZoneUValuePolicy`).
 
 ### 4.3 Transient Thermal Model (1R1C Lumped Model)
 
@@ -596,11 +1089,10 @@ The factor 50 kJ/(m^3*K) represents a medium-weight construction estimate.
 > range from ~30 kJ/(m^3*K) (lightweight) to ~80 kJ/(m^3*K) (heavyweight). Should be
 > documented as such and ideally derived from actual construction layers.
 
-**Temperature evolution** (explicit Euler):
+**Temperature evolution** (backward Euler / implicit):
 ```
-Q_losses = (UA_total + Infiltration_cond) * (T_zone - T_outdoor)
-Q_net = Q_gains + Q_hvac - Q_losses
-T_zone(t + dt) = T_zone(t) + (dt / C) * Q_net
+K = UA_total + Infiltration_cond
+T_zone(t + dt) = (T_zone(t) + dt/C * (Q_gains + Q_hvac + K*T_outdoor)) / (1 + dt*K/C)
 ```
 
 with dt = 3600 s (1-hour time step).
@@ -609,6 +1101,71 @@ with dt = 3600 s (1-hour time step).
 ```
 T_zone = T_outdoor + (Q_gains + Q_hvac) / (UA_total + Infiltration_cond)
 ```
+
+#### 4.3.1 Multi-zone transient air-node model (network solve)
+
+For `N` zones, represent each zone air temperature as a state `T_i`. Let:
+- `C_i` be zone thermal capacity (J/K), typically `C_i = V_i * C_vol`,
+- `K_out,i = UA_i + K_inf,i` (W/K),
+- `K_ij` be inter-zone conductance (W/K),
+- `Q_gains,i` be total gains in zone `i` (W),
+- `Q_hvac,i` be HVAC heat input to zone `i` (W, positive heating, negative cooling).
+
+Backward Euler discretization yields a linear system each timestep:
+```
+C_i/dt * (T_i^{n+1} - T_i^n)
+  = -K_out,i * (T_i^{n+1} - T_out)
+    - sum_j K_ij * (T_i^{n+1} - T_j^{n+1})
+    + Q_gains,i + Q_hvac,i
+```
+
+In “ideal loads” mode, some zones may be clamped to heating/cooling setpoints, turning those
+temperatures into fixed boundary conditions for the solve.
+
+Implementation notes (code):
+- Multi-zone model: `MultiZoneAirModel` (`src/sim/energy/network/multizone.rs`)
+- Annual runners: `run_multizone_transient_simulation()` and `run_multizone_steady_simulation()`
+  (`src/sim/energy/simulation.rs`)
+- Per-zone default solar: `compute_solar_gains_per_zone()` (`src/sim/energy/solar_bridge.rs`)
+
+#### 4.3.2 Multi-zone envelope RC (2R1C per zone)
+
+To introduce a first-order representation of wall thermal mass (without adding per-surface
+temperature nodes yet), an optional aggregated envelope node `T_env,i` can be added per zone:
+
+- Air node: `T_air,i`
+- Envelope node: `T_env,i`
+
+Heat sources are split between nodes:
+- `Q_air,i`: internal gains + shortwave transmitted into the zone air (e.g. `InternalGains*` +
+  `ShortwaveTransmittedWPerZone`)
+- `Q_env,i`: shortwave absorbed at exterior surfaces (e.g. `ShortwaveAbsorbedWPerPolygon` restricted
+  to exterior polygons via the boundary overlay)
+
+Exterior conductance for zone `i` (from the envelope classification overlay):
+```
+K_env,i = Σ(U*A)_exterior,i   [W/K]
+```
+
+To preserve the same steady-state heat flow to outside, split the conductance into two equal
+resistances (a common low-order approximation):
+```
+K_air_env,i = 2*K_env,i
+K_env_out,i = 2*K_env,i
+```
+
+Thermal capacity of the envelope is estimated as:
+```
+C_env,i = Σ( C_area(surface) * A_surface )   [J/K]
+```
+
+where `C_area(surface)` is preferably taken from `MaterialLibrary` thermal properties
+(`ThermalMaterial.thermal_capacity` in J/(m^2*K)) and otherwise falls back to a configurable
+default.
+
+Implementation notes (code):
+- RC model: `MultiZoneEnvelopeRcModel` (`src/sim/energy/network/multizone_envelope.rs`)
+- Selection in step-based runs: `EnergyModelKind::EnvelopeRc2R1C` (`src/sim/energy/module.rs`)
 
 ### 4.4 HVAC Ideal Loads
 
@@ -665,6 +1222,12 @@ When the sun is below the horizon, only the diffuse component contributes.
 Glazing surfaces are identified by pattern matching on path names ("window", "glazing",
 "glass") or by explicit per-surface SHGC entries in `SolarGainConfig`.
 
+For multi-zone simulations, the same calculation can be aggregated **per zone** by summing
+glazing gains within each zone:
+```
+Q_solar,zone = sum_{glazing in zone} Q_solar_window
+```
+
 A legacy `SolarBridgeConfig` and `lighting_to_solar_gains()` function remain available
 for converting lighting simulation results to thermal gains via luminous efficacy, but
 the recommended approach is the direct weather-based calculation.
@@ -704,6 +1267,22 @@ Direct = 0.6 * GHR
 Diffuse = 0.4 * GHR
 ```
 
+#### 4.6.1 EPW-driven composed pipelines (step-based)
+
+To keep multi-physics workflows composable, step-based pipelines should use a shared time
+base keyed by the EPW record index:
+
+- `sim::coupling::WeatherHourIndex(hour_idx)` (0-based hour-of-year index)
+- `sim::coupling::OutdoorAirTemperatureC(T_out)` (published by weather each step)
+
+Recommended modules:
+- Weather publisher: `sim::energy::weather_module::WeatherModule` (publishes `WeatherHourIndex`
+  + `OutdoorAirTemperatureC`, stores `Arc<WeatherData>` on the Bus)
+- EPW solar shortwave producer: `sim::lighting::shortwave::SolarEpwModule` (consumes
+  `WeatherHourIndex`, publishes `ShortwaveTransmittedWPerZone`)
+- Thermal recorder: `sim::energy::recorder::MultiZoneRecorderModule` (accumulates
+  `MultiZoneStepResult` and finalizes to `MultiZoneAnnualResult`)
+
 ### 4.7 Internal Gains Schedules
 
 Gains are computed from occupancy, equipment, and lighting schedules:
@@ -723,9 +1302,10 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
 ### 4.8 Key Assumptions (Energy)
 
 - **Steady-state or simple transient**: no detailed finite-element thermal modeling or
-  multi-zone air flow.
-- **Single-node thermal mass**: entire zone lumped into one capacitance; no temperature
-  gradients within the zone.
+  pressure-based multi-zone air flow. Multi-zone heat coupling through partitions is supported.
+- **Low-order thermal mass**: default is a zone air node with a tuned capacity; an optional
+  aggregated envelope RC node may be used for first-order wall thermal lag. No per-surface
+  temperature gradients yet.
 - **Fixed air properties**: density 1.2 kg/m^3, c_p = 1005 J/(kg*K); no humidity or
   pressure dependence.
 - **Ideal HVAC**: instantaneous response, perfect setpoint control (within capacity limits).
@@ -735,6 +1315,166 @@ Q_gains(t) = q_person * n_occupants * f_occ(t)
   rather than an anisotropic sky model (e.g. Perez).
 - **No thermal bridging**: U-values are for clear-field construction only.
 - **1D heat conduction**: no lateral heat flow within wall layers.
+
+### 4.9 Next Steps (Thermal Simulation Roadmap)
+
+This section is an **interface document**: it describes the intended model boundaries and
+data contracts so that different worktrees (e.g. lighting-focused vs energy-focused) can
+advance independently without drifting.
+
+The guiding principle is the same as for lighting (Section 3.8): **composable building
+blocks** with **deterministic configs**, where domain-specific semantics are imposed as
+late-stage *overlays* keyed by stable IDs (UIDs), not stored directly on geometry types.
+
+#### 4.9.1 First milestone: correct envelope accounting + multi-zone readiness
+
+1. **Boundary classification overlay**
+   - Classify each polygon as:
+     - exterior (to weather boundary),
+     - interface to same zone (ignore for transmission),
+     - inter-zone partition (coupled to another zone air node),
+     - (later) ground / adiabatic / fixed-temperature boundary.
+   - This must remain an overlay keyed by polygon `UID` (not a `Polygon` field).
+
+2. **Stop double-counting internal partitions**
+   - Exterior transmission should sum only `U*A` for exterior polygons.
+   - Inter-zone partitions should not appear in “to-outdoor” transmission; they become
+     coupling conductances between zone air nodes.
+
+#### 4.9.2 Thermal network core (EnergyPlus-like heat balance kernel)
+
+Move from “ad-hoc formulas” to a reusable **thermal network representation**:
+
+- **Nodes** (initially): one air temperature node per `Zone` (a deliberate simplification).
+- **Components**:
+  - exterior conductances `UA_zone = sum(U*A)` (W/K),
+  - inter-zone conductances `K_zone_a_zone_b` (W/K),
+  - infiltration/ventilation conductance (W/K),
+  - heat sources: internal + solar + HVAC (W).
+
+Inter-zone conductances require an explicit policy for combining two facing U-values. This
+must be configurable so different modeling interpretations can be used without changing
+geometry or solver code (see 4.2.1).
+
+This network should be able to run in:
+- **steady-state** mode (instantaneous loads), and
+- **transient** mode (implicit timestep update; stable at 1-hour steps).
+
+#### 4.9.3 Pluggable wall/partition models (ISO 13790 → FD → 3D)
+
+Keep the network API stable while swapping internal component models:
+
+1. **Steady U-value** (current baseline): partitions and envelope are pure conductances.
+2. **Low-order RC networks** (recommended next): 2R1C/3R2C per construction for dynamic
+   surface temperatures and thermal mass effects.
+3. **1D finite-difference through layers** (optional): higher fidelity transient conduction.
+4. **3D conduction** (future): couple to tetrahedral meshes / FEM; should still expose
+   the same boundary heat-flow interface to the zone network.
+
+#### 4.9.4 Comfort outputs and radiant exchange (incremental)
+
+Once interior surface temperatures exist (via RC/FD models), add:
+- **MRT / operative temperature** per zone (start with area-weighted approximation),
+- **long-wave radiant exchange** (view-factor-based, later; can reuse ray infrastructure).
+
+#### 4.9.5 HVAC and airflow as replaceable boundary components (Modelica-style boundary)
+
+Treat HVAC and airflow as components connected to the zone air node:
+- keep **ideal loads** as the default actuator,
+- add optional explicit systems (fan-coil, heat pump with part-load curves, ERV/HRV),
+- add optional **airflow coupling** (pressure network) without changing geometry.
+
+#### 4.9.6 Cross-domain coupling contract (lighting ↔ thermal)
+
+To prevent “two ways to compute the same gains” drifting apart:
+
+- In any composed simulation, **exactly one module** should be responsible for producing
+  *shortwave solar absorption*.
+- Downstream thermal modules should consume a common payload keyed by polygon `UID`
+  (with optional path strings only for reporting/debugging).
+
+Suggested payload (conceptual):
+- `ShortwaveAbsorbedWPerPolygon { polygon_uid -> watts }`
+- `ShortwaveTransmittedWPerZone { zone_uid -> watts }` (optional simplification)
+
+In code, these contracts live in `sim::coupling` as `ShortwaveAbsorbedWPerPolygon` and
+`ShortwaveTransmittedWPerZone`.
+
+For multi-zone thermal models, `ShortwaveTransmittedWPerZone` is the most direct input: it
+maps cleanly onto the per-zone gains vector used by the zone-air solver. Per-polygon absorbed
+shortwave is optional (useful for future surface-temperature / radiant models).
+
+In step-based composed simulations, `sim::energy::module::EnergyModule` consumes these payloads
+along with:
+- `sim::coupling::OutdoorAirTemperatureC`
+- `sim::coupling::InternalGainsWPerZone` (or `sim::coupling::InternalGainsWTotal`)
+
+Thermal should support a fallback path (EPW + SHGC) when no lighting/solar module is present,
+but the composed pipeline should designate a single authoritative producer.
+
+#### 4.9.6a Suggested next steps: shortwave coupling (make it energy-consistent)
+
+Current state:
+- EPW-based shortwave producers publish:
+  - `ShortwaveTransmittedWPerZone` for glazing (SHGC approximation),
+  - `ShortwaveAbsorbedWPerPolygon` for *opaque exterior* surfaces (absorptance approximation).
+- The envelope RC thermal model can consume exterior absorbed shortwave as an envelope heat source.
+
+Recommended next steps:
+1. **Glazing energy split (still deterministic)**:
+   - For “glazing” polygons, split incident shortwave into:
+     - transmitted-to-zone (what currently ends up in `ShortwaveTransmittedWPerZone`),
+     - absorbed-in-glass (publish as `ShortwaveAbsorbedWPerPolygon` on the glazing polygon),
+     - (optional) reflected (debug output; not necessarily a coupling payload).
+   - Keep a simple first model (SHGC + a fixed absorbed fraction), then refine with optical properties.
+
+2. **Inside/outside split for absorbed shortwave**:
+   - When the thermal model gains inside/outside surface nodes, split `ShortwaveAbsorbedWPerPolygon`
+     into “absorbed on exterior surface” vs “absorbed on interior surface” via a documented policy
+     (e.g. fixed fraction, or derived from construction).
+
+3. **Shading & occlusion policy (documented invariants)**:
+   - Keep diffuse shortwave unoccluded initially (isotropic DHI); apply occlusion only to direct DNI.
+   - Later add deterministic diffuse-occlusion approximations (sky patches + visibility).
+
+4. **Energy-balance diagnostics**:
+   - Add an optional “shortwave balance report” per step:
+     `incident ≈ absorbed + transmitted + reflected` (within tolerance).
+   - Use it as a regression harness when swapping producers (EPW unshaded → EPW shaded → ray-based).
+
+#### 4.9.7 Determinism requirements (for agentic iteration)
+
+All thermal simulation configs should be:
+- serializable and diffable,
+- reproducible given a seed and a fixed case spec,
+- explicit about units (SI internally).
+
+Where randomness is introduced (e.g. Monte Carlo view factors), it must be seeded and the
+results should be cacheable by a config hash.
+
+#### 4.9.8 Suggested next steps: RC wall models beyond envelope lumping
+
+After the current “air node + envelope RC node” model, the next fidelity jump should keep the
+same coupling payloads but introduce additional thermal states:
+
+1. **Per-construction low-order RC**:
+   - Implement 3R2C / 5R1C-style models per construction (ISO 13790 / ISO 52016 inspired),
+     aggregated per surface or per zone, to represent:
+     - outside surface temperature,
+     - inside surface temperature,
+     - thermal mass temperature(s).
+
+2. **Inter-zone partition dynamics**:
+   - Replace pure inter-zone conductances `K_ij` with a dynamic partition element so heat transfer
+     between zones has thermal lag (important for multi-room buildings).
+
+3. **Long-wave radiation + comfort outputs**:
+   - Once inside surface temperatures exist, add MRT / operative temperature and (later) view-factor
+     long-wave exchange (deterministic sampling seeded for reproducibility).
+
+4. **Reference validation targets**:
+   - Add a small set of canonical thermal cases and compare against EnergyPlus/Modelica-style
+     reference outputs (hourly zone temperature and ideal loads) with documented tolerances.
 
 ---
 

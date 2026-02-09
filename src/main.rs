@@ -1,7 +1,7 @@
 use anyhow::Result;
 use building3d::{Point, Polygon, Wall};
 
-fn main() -> Result<()> {
+fn build_demo_wall() -> Result<Wall> {
     // Draw multiple polygons in a 3D window
     // U-shaped polygon
     let p0 = Point::new(0., 0., 0.);
@@ -40,10 +40,28 @@ fn main() -> Result<()> {
     )?;
 
     let wall = Wall::new("wall", vec![u_shape, tri, l_shape])?;
+    Ok(wall)
+}
+
+fn main() -> Result<()> {
+    let wall = build_demo_wall()?;
     println!("{:?}", wall);
-    // println!("{:?}", wall.polygons());
-
-    // draw_polygons(wall.polygons())?;
-
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_demo_wall_smoke() {
+        let wall = build_demo_wall().unwrap();
+        assert_eq!(wall.name, "wall");
+        assert_eq!(wall.polygons().len(), 3);
+    }
+
+    #[test]
+    fn test_main_smoke() {
+        main().unwrap();
+    }
 }

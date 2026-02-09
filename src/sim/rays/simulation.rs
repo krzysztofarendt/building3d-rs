@@ -12,6 +12,29 @@ use crate::{Building, Point, Vector};
 
 use super::config::{AcousticMode, SimulationConfig};
 
+/// Per-ray energy below this value is treated as "dead".
+pub const ENERGY_EPS: f64 = 1e-10;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SimulationProgress {
+    /// Number of completed steps (0..=num_steps).
+    pub steps_done: usize,
+    /// Target number of steps from the configuration (may stop early).
+    pub num_steps: usize,
+    /// Simulation time step (seconds).
+    pub dt_s: f64,
+    /// Simulated time elapsed (seconds).
+    pub sim_time_s: f64,
+    /// Total number of rays.
+    pub num_rays: usize,
+    /// Rays with energy > `ENERGY_EPS`.
+    pub alive_rays: usize,
+    /// Total scalar energy remaining (frequency-dependent mode sums bands).
+    pub total_energy: f64,
+    /// Total scalar energy at start (for fractions).
+    pub initial_total_energy: f64,
+}
+
 /// Result of a ray tracing simulation.
 pub struct SimulationResult {
     /// Ray positions per time step: positions[step][ray]
@@ -35,6 +58,35 @@ pub struct Simulation {
     scene: FlatScene,
 }
 
+trait ProgressReporter {
+    fn every_steps(&self) -> usize;
+    fn report(&mut self, progress: &SimulationProgress);
+}
+
+struct NoProgress;
+impl ProgressReporter for NoProgress {
+    fn every_steps(&self) -> usize {
+        0
+    }
+    fn report(&mut self, _progress: &SimulationProgress) {}
+}
+
+struct FnProgress<F> {
+    every_steps: usize,
+    f: F,
+}
+impl<F> ProgressReporter for FnProgress<F>
+where
+    F: FnMut(&SimulationProgress),
+{
+    fn every_steps(&self) -> usize {
+        self.every_steps
+    }
+    fn report(&mut self, progress: &SimulationProgress) {
+        (self.f)(progress);
+    }
+}
+
 impl Simulation {
     pub fn new(building: &Building, config: SimulationConfig) -> Result<Self> {
         let scene = FlatScene::new(building, config.voxel_size, config.search_transparent);
@@ -43,12 +95,35 @@ impl Simulation {
 
     pub fn run(self) -> SimulationResult {
         match self.config.acoustic_mode {
-            AcousticMode::Scalar => self.run_scalar(),
-            AcousticMode::FrequencyDependent => self.run_frequency_dependent(),
+            AcousticMode::Scalar => self.run_scalar_with_progress(NoProgress),
+            AcousticMode::FrequencyDependent => {
+                self.run_frequency_dependent_with_progress(NoProgress)
+            }
         }
     }
 
-    fn run_scalar(self) -> SimulationResult {
+    /// Runs the simulation while periodically reporting progress.
+    ///
+    /// - `every_steps=0` disables progress reporting.
+    /// - The reporter is called once at start (`steps_done=0`) and then every `every_steps`,
+    ///   plus once at the end (or early-termination step).
+    pub fn run_with_progress<F>(self, every_steps: usize, report: F) -> SimulationResult
+    where
+        F: FnMut(&SimulationProgress),
+    {
+        let reporter = FnProgress {
+            every_steps,
+            f: report,
+        };
+        match self.config.acoustic_mode {
+            AcousticMode::Scalar => self.run_scalar_with_progress(reporter),
+            AcousticMode::FrequencyDependent => {
+                self.run_frequency_dependent_with_progress(reporter)
+            }
+        }
+    }
+
+    fn run_scalar_with_progress<R: ProgressReporter>(self, mut reporter: R) -> SimulationResult {
         let num_rays = self.config.num_rays;
         let num_steps = self.config.num_steps;
         let num_absorbers = self.config.absorbers.len();
@@ -87,12 +162,27 @@ impl Simulation {
             Vec::with_capacity(if store_history { num_steps } else { 0 });
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
 
-        let eps = 1e-10;
+        let eps = ENERGY_EPS;
         let bbox_margin = 1e-6;
         let min_alive_fraction = self.config.min_alive_fraction;
 
         // Track whether each ray was inside each absorber on the previous step
         let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
+
+        let initial_total_energy: f64 = num_rays as f64; // energies start at 1.0
+        let report_every = reporter.every_steps();
+        if report_every > 0 {
+            reporter.report(&SimulationProgress {
+                steps_done: 0,
+                num_steps,
+                dt_s: dt,
+                sim_time_s: 0.0,
+                num_rays,
+                alive_rays: num_rays,
+                total_energy: initial_total_energy,
+                initial_total_energy,
+            });
+        }
 
         for _step in 0..num_steps {
             let mut step_hits = vec![0.0; num_absorbers];
@@ -175,8 +265,7 @@ impl Simulation {
                                     if next_dist > reflection_dist {
                                         current_target = None;
                                     } else {
-                                        search_pos =
-                                            search_pos + new_vel_norm * (next_dist * 0.5);
+                                        search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
                                     }
                                 }
                             }
@@ -198,10 +287,39 @@ impl Simulation {
             }
             all_hits.push(step_hits);
 
-            // Early termination if too few rays are alive
-            if min_alive_fraction > 0.0 {
-                let alive = energies.iter().filter(|&&e| e > eps).count();
-                if (alive as f64) / (num_rays as f64) < min_alive_fraction {
+            let steps_done = all_hits.len();
+            let should_report =
+                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let needs_stats = should_report || min_alive_fraction > 0.0;
+
+            if needs_stats {
+                let mut alive: usize = 0;
+                let mut total_energy: f64 = 0.0;
+                for &e in energies.iter() {
+                    if e > eps {
+                        alive += 1;
+                    }
+                    total_energy += e;
+                }
+
+                let alive_fraction = (alive as f64) / (num_rays as f64);
+                let would_terminate =
+                    min_alive_fraction > 0.0 && alive_fraction < min_alive_fraction;
+
+                if (should_report || would_terminate) && report_every > 0 {
+                    reporter.report(&SimulationProgress {
+                        steps_done,
+                        num_steps,
+                        dt_s: dt,
+                        sim_time_s: steps_done as f64 * dt,
+                        num_rays,
+                        alive_rays: alive,
+                        total_energy,
+                        initial_total_energy,
+                    });
+                }
+
+                if would_terminate {
                     break;
                 }
             }
@@ -217,7 +335,14 @@ impl Simulation {
         }
     }
 
-    fn run_frequency_dependent(self) -> SimulationResult {
+    fn run_frequency_dependent_with_progress<R: ProgressReporter>(
+        self,
+        mut reporter: R,
+    ) -> SimulationResult {
+        if let Some(band) = self.config.single_band_index {
+            return self.run_frequency_single_band_with_progress(reporter, band);
+        }
+
         let num_rays = self.config.num_rays;
         let num_steps = self.config.num_steps;
         let num_absorbers = self.config.absorbers.len();
@@ -249,19 +374,36 @@ impl Simulation {
             vec![[1.0; NUM_OCTAVE_BANDS]; num_rays];
 
         let store_history = self.config.store_ray_history;
+        let store_band_history = store_history && self.config.store_ray_band_history;
         let hist_cap = if store_history { num_steps } else { 0 };
         let mut all_positions: Vec<Vec<Point>> = Vec::with_capacity(hist_cap);
         let mut all_energies: Vec<Vec<f64>> = Vec::with_capacity(hist_cap);
-        let mut all_band_energies: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(hist_cap);
+        let mut all_band_energies: Option<Vec<Vec<[f64; NUM_OCTAVE_BANDS]>>> =
+            store_band_history.then(|| Vec::with_capacity(hist_cap));
         let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
         let mut all_band_hits: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(num_steps);
 
-        let eps = 1e-10;
+        let eps = ENERGY_EPS;
         let bbox_margin = 1e-6;
         let min_alive_fraction = self.config.min_alive_fraction;
 
         // Track whether each ray was inside each absorber on the previous step
         let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
+
+        let initial_total_energy: f64 = (num_rays as f64) * (NUM_OCTAVE_BANDS as f64);
+        let report_every = reporter.every_steps();
+        if report_every > 0 {
+            reporter.report(&SimulationProgress {
+                steps_done: 0,
+                num_steps,
+                dt_s: dt,
+                sim_time_s: 0.0,
+                num_rays,
+                alive_rays: num_rays,
+                total_energy: initial_total_energy,
+                initial_total_energy,
+            });
+        }
 
         for _step in 0..num_steps {
             let mut step_hits = vec![0.0; num_absorbers];
@@ -362,8 +504,7 @@ impl Simulation {
                                     if next_dist > reflection_dist {
                                         current_target = None;
                                     } else {
-                                        search_pos =
-                                            search_pos + new_vel_norm * (next_dist * 0.5);
+                                        search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
                                     }
                                 }
                             }
@@ -410,18 +551,47 @@ impl Simulation {
                     band_energies.iter().map(|be| be.iter().sum()).collect();
                 all_positions.push(positions.clone());
                 all_energies.push(scalar_energies);
-                all_band_energies.push(band_energies.clone());
+                if let Some(ref mut v) = all_band_energies {
+                    v.push(band_energies.clone());
+                }
             }
             all_hits.push(step_hits);
             all_band_hits.push(step_band_hits);
 
-            // Early termination if too few rays are alive
-            if min_alive_fraction > 0.0 {
-                let alive = band_energies
-                    .iter()
-                    .filter(|be| be.iter().sum::<f64>() > eps)
-                    .count();
-                if (alive as f64) / (num_rays as f64) < min_alive_fraction {
+            let steps_done = all_hits.len();
+            let should_report =
+                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let needs_stats = should_report || min_alive_fraction > 0.0;
+
+            if needs_stats {
+                let mut alive: usize = 0;
+                let mut total_energy: f64 = 0.0;
+                for be in band_energies.iter() {
+                    let e = be.iter().sum::<f64>();
+                    if e > eps {
+                        alive += 1;
+                    }
+                    total_energy += e;
+                }
+
+                let alive_fraction = (alive as f64) / (num_rays as f64);
+                let would_terminate =
+                    min_alive_fraction > 0.0 && alive_fraction < min_alive_fraction;
+
+                if (should_report || would_terminate) && report_every > 0 {
+                    reporter.report(&SimulationProgress {
+                        steps_done,
+                        num_steps,
+                        dt_s: dt,
+                        sim_time_s: steps_done as f64 * dt,
+                        num_rays,
+                        alive_rays: alive,
+                        total_energy,
+                        initial_total_energy,
+                    });
+                }
+
+                if would_terminate {
                     break;
                 }
             }
@@ -430,7 +600,257 @@ impl Simulation {
         SimulationResult {
             positions: all_positions,
             energies: all_energies,
-            band_energies: Some(all_band_energies),
+            band_energies: all_band_energies,
+            hits: all_hits,
+            band_hits: Some(all_band_hits),
+            config: self.config,
+        }
+    }
+
+    fn run_frequency_single_band_with_progress<R: ProgressReporter>(
+        self,
+        mut reporter: R,
+        band: usize,
+    ) -> SimulationResult {
+        let num_rays = self.config.num_rays;
+        let num_steps = self.config.num_steps;
+        let num_absorbers = self.config.absorbers.len();
+        let dt = self.config.time_step;
+        let speed = self.config.ray_speed;
+        let absorber_r2 = self.config.absorber_radius * self.config.absorber_radius;
+
+        let band = band.min(NUM_OCTAVE_BANDS.saturating_sub(1));
+
+        let band_absorption = self
+            .config
+            .resolve_band_absorption(&self.scene.paths)
+            .into_iter()
+            .map(|a| a[band])
+            .collect::<Vec<f64>>();
+        let band_scattering = self
+            .config
+            .resolve_scattering(&self.scene.paths)
+            .into_iter()
+            .map(|s| s[band])
+            .collect::<Vec<f64>>();
+
+        // Air absorption (optional)
+        let air_factor = if self.config.enable_air_absorption {
+            let air = AirAbsorption::standard();
+            let step_distance = speed * dt;
+            air.apply_distance(step_distance)[band]
+        } else {
+            1.0
+        };
+
+        let propagation_model = FixedTimeStep;
+        let reflection_dist = propagation_model.reflection_distance(speed, dt);
+
+        let batch = RayBatch::new(self.config.source, speed, num_rays);
+        let mut positions: Vec<Point> = batch.rays.iter().map(|r| r.position).collect();
+        let mut velocities: Vec<Vector> = batch.rays.iter().map(|r| r.velocity).collect();
+        let mut energies: Vec<f64> = vec![1.0; num_rays];
+
+        let store_history = self.config.store_ray_history;
+        let store_band_history = store_history && self.config.store_ray_band_history;
+        let hist_cap = if store_history { num_steps } else { 0 };
+        let mut all_positions: Vec<Vec<Point>> = Vec::with_capacity(hist_cap);
+        let mut all_energies: Vec<Vec<f64>> = Vec::with_capacity(hist_cap);
+        let mut all_band_energies: Option<Vec<Vec<[f64; NUM_OCTAVE_BANDS]>>> =
+            store_band_history.then(|| Vec::with_capacity(hist_cap));
+        let mut all_hits: Vec<Vec<f64>> = Vec::with_capacity(num_steps);
+        let mut all_band_hits: Vec<Vec<[f64; NUM_OCTAVE_BANDS]>> = Vec::with_capacity(num_steps);
+
+        let eps = ENERGY_EPS;
+        let bbox_margin = 1e-6;
+        let min_alive_fraction = self.config.min_alive_fraction;
+
+        // Track whether each ray was inside each absorber on the previous step
+        let mut was_inside: Vec<Vec<bool>> = vec![vec![false; num_absorbers]; num_rays];
+
+        let initial_total_energy: f64 = num_rays as f64;
+        let report_every = reporter.every_steps();
+        if report_every > 0 {
+            reporter.report(&SimulationProgress {
+                steps_done: 0,
+                num_steps,
+                dt_s: dt,
+                sim_time_s: 0.0,
+                num_rays,
+                alive_rays: num_rays,
+                total_energy: initial_total_energy,
+                initial_total_energy,
+            });
+        }
+
+        for _step in 0..num_steps {
+            let mut step_hits = vec![0.0; num_absorbers];
+            let mut step_band_hits = vec![[0.0; NUM_OCTAVE_BANDS]; num_absorbers];
+
+            // Check absorbers
+            for ray in 0..num_rays {
+                let e = energies[ray];
+                if e <= eps {
+                    continue;
+                }
+                for (ai, absorber) in self.config.absorbers.iter().enumerate() {
+                    let dx = positions[ray].x - absorber.x;
+                    let dy = positions[ray].y - absorber.y;
+                    let dz = positions[ray].z - absorber.z;
+                    let dist2 = dx * dx + dy * dy + dz * dz;
+                    if dist2 <= absorber_r2 {
+                        if !was_inside[ray][ai] {
+                            step_hits[ai] += e;
+                            step_band_hits[ai][band] += e;
+                            was_inside[ray][ai] = true;
+                        }
+                    } else {
+                        was_inside[ray][ai] = false;
+                    }
+                }
+            }
+
+            // Propagate rays (parallel)
+            positions
+                .par_iter_mut()
+                .zip(velocities.par_iter_mut())
+                .zip(energies.par_iter_mut())
+                .for_each(|((pos, vel), energy)| {
+                    if *energy <= eps {
+                        return;
+                    }
+
+                    let orig_pos = *pos;
+                    if !self.scene.is_in_bounds(orig_pos, bbox_margin) {
+                        *energy = 0.0;
+                        return;
+                    }
+
+                    let vel_norm = match vel.normalize() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            *energy = 0.0;
+                            return;
+                        }
+                    };
+
+                    if let Some((target_idx, target_dist)) =
+                        self.scene.find_target_surface(orig_pos, vel_norm)
+                    {
+                        if target_dist <= reflection_dist {
+                            let mut current_target = Some((target_idx, target_dist));
+                            let mut search_pos = orig_pos;
+
+                            while let Some((tidx, _tdist)) = current_target {
+                                if *energy <= eps {
+                                    break;
+                                }
+
+                                let alpha = band_absorption.get(tidx).copied().unwrap_or(0.0);
+                                *energy *= 1.0 - alpha;
+                                if *energy <= eps {
+                                    *energy = 0.0;
+                                    break;
+                                }
+
+                                let scattering = band_scattering.get(tidx).copied().unwrap_or(0.0);
+                                let reflection_model = Hybrid::new(scattering);
+
+                                let normal = self.scene.polygons[tidx].vn;
+                                *vel = reflection_model.reflect(*vel, normal);
+
+                                let new_vel_norm = match vel.normalize() {
+                                    Ok(v) => v,
+                                    Err(_) => break,
+                                };
+
+                                current_target =
+                                    self.scene.find_target_surface(search_pos, new_vel_norm);
+
+                                if let Some((_, next_dist)) = current_target {
+                                    if next_dist > reflection_dist {
+                                        current_target = None;
+                                    } else {
+                                        search_pos = search_pos + new_vel_norm * (next_dist * 0.5);
+                                    }
+                                }
+                            }
+
+                            if *energy > eps {
+                                *energy *= air_factor;
+                                *pos = propagation_model.advance(orig_pos, *vel, dt);
+                            }
+                        } else {
+                            *energy *= air_factor;
+                            *pos = propagation_model.advance(orig_pos, *vel, dt);
+                        }
+                    } else {
+                        *energy *= air_factor;
+                        *pos = propagation_model.advance(orig_pos, *vel, dt);
+                    }
+                });
+
+            if store_history {
+                all_positions.push(positions.clone());
+                all_energies.push(energies.clone());
+                if let Some(ref mut v) = all_band_energies {
+                    let bands: Vec<[f64; NUM_OCTAVE_BANDS]> = energies
+                        .iter()
+                        .map(|&e| {
+                            let mut arr = [0.0; NUM_OCTAVE_BANDS];
+                            arr[band] = e;
+                            arr
+                        })
+                        .collect();
+                    v.push(bands);
+                }
+            }
+
+            all_hits.push(step_hits);
+            all_band_hits.push(step_band_hits);
+
+            let steps_done = all_hits.len();
+            let should_report =
+                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let needs_stats = should_report || min_alive_fraction > 0.0;
+
+            if needs_stats {
+                let mut alive: usize = 0;
+                let mut total_energy: f64 = 0.0;
+                for &e in energies.iter() {
+                    if e > eps {
+                        alive += 1;
+                    }
+                    total_energy += e;
+                }
+
+                let alive_fraction = (alive as f64) / (num_rays as f64);
+                let would_terminate =
+                    min_alive_fraction > 0.0 && alive_fraction < min_alive_fraction;
+
+                if (should_report || would_terminate) && report_every > 0 {
+                    reporter.report(&SimulationProgress {
+                        steps_done,
+                        num_steps,
+                        dt_s: dt,
+                        sim_time_s: steps_done as f64 * dt,
+                        num_rays,
+                        alive_rays: alive,
+                        total_energy,
+                        initial_total_energy,
+                    });
+                }
+
+                if would_terminate {
+                    break;
+                }
+            }
+        }
+
+        SimulationResult {
+            positions: all_positions,
+            energies: all_energies,
+            band_energies: all_band_energies,
             hits: all_hits,
             band_hits: Some(all_band_hits),
             config: self.config,
@@ -443,6 +863,32 @@ mod tests {
     use super::*;
     use crate::sim::materials::{AcousticMaterial, Material, MaterialLibrary};
     use crate::{Solid, Zone};
+
+    #[test]
+    fn test_progress_reporter_is_called() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10;
+        config.num_rays = 5;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.default_absorption = 0.0;
+        config.store_ray_history = false;
+
+        let mut calls: usize = 0;
+        let mut last_steps_done: usize = 999;
+        let sim = Simulation::new(&building, config).unwrap();
+        let _result = sim.run_with_progress(3, |p| {
+            calls += 1;
+            last_steps_done = p.steps_done;
+        });
+
+        // Called at start (0), then at steps 3/6/9, and at end (10).
+        assert_eq!(calls, 5);
+        assert_eq!(last_steps_done, 10);
+    }
 
     #[test]
     fn test_simulation_basic() {
@@ -534,6 +980,7 @@ mod tests {
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.material_library = Some(lib);
         config.store_ray_history = true;
+        config.store_ray_band_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();
@@ -554,6 +1001,51 @@ mod tests {
     }
 
     #[test]
+    fn test_frequency_dependent_band_history_is_opt_in() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 5;
+        config.num_rays = 3;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.store_ray_history = true;
+        // store_ray_band_history intentionally left as default (false).
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        assert!(result.band_hits.is_some());
+        assert!(result.band_energies.is_none());
+        assert_eq!(result.positions.len(), 5);
+        assert_eq!(result.energies.len(), 5);
+    }
+
+    #[test]
+    fn test_frequency_dependent_single_band_runs() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10;
+        config.num_rays = 20;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.single_band_index = Some(3);
+        config.store_ray_history = true;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        assert_eq!(result.positions.len(), 10);
+        assert_eq!(result.energies.len(), 10);
+        assert!(result.band_hits.is_some());
+    }
+
+    #[test]
     fn test_frequency_dependent_with_air_absorption() {
         let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
         let zone = Zone::new("z", vec![s0]).unwrap();
@@ -565,6 +1057,8 @@ mod tests {
         config.source = Point::new(1.0, 1.0, 1.0);
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.enable_air_absorption = true;
+        config.store_ray_history = true;
+        config.store_ray_band_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();
@@ -728,13 +1222,11 @@ mod tests {
         let building = Building::new("b", vec![zone]).unwrap();
 
         let mut lib = MaterialLibrary::new();
-        lib.add(
-            Material::new("walls").with_acoustic(AcousticMaterial::new(
-                "walls",
-                [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
-                [0.1; 6],
-            )),
-        );
+        lib.add(Material::new("walls").with_acoustic(AcousticMaterial::new(
+            "walls",
+            [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
+            [0.1; 6],
+        )));
         lib.assign("/", "walls");
 
         let mut config = SimulationConfig::new();
@@ -744,6 +1236,7 @@ mod tests {
         config.acoustic_mode = AcousticMode::FrequencyDependent;
         config.material_library = Some(lib);
         config.store_ray_history = true;
+        config.store_ray_band_history = true;
 
         let sim = Simulation::new(&building, config).unwrap();
         let result = sim.run();

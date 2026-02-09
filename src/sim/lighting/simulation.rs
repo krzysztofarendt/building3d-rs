@@ -19,7 +19,8 @@ pub struct LightingSimulation {
     diffuse_reflectance: Vec<Rgb>,
     specular_reflectance: Vec<Rgb>,
     transmittance: Vec<Rgb>,
-    areas: HashMap<String, f64>,
+    polygon_uids: Vec<crate::UID>,
+    areas_m2: Vec<f64>,
     /// Maps polygon index → sensor grid index (only for sensor-equipped polygons).
     sensor_map: HashMap<usize, usize>,
     /// Sensor grids generated for matching polygons.
@@ -55,11 +56,8 @@ impl LightingSimulation {
             }
         }
 
-        // Compute polygon areas
-        let mut areas = HashMap::new();
-        for (i, poly) in scene.polygons.iter().enumerate() {
-            areas.insert(scene.paths[i].clone(), poly.area());
-        }
+        let polygon_uids: Vec<crate::UID> = scene.polygons.iter().map(|p| p.uid.clone()).collect();
+        let areas_m2: Vec<f64> = scene.polygons.iter().map(|p| p.area()).collect();
 
         // Generate sensor grids if configured
         let mut sensor_map = HashMap::new();
@@ -90,7 +88,8 @@ impl LightingSimulation {
             diffuse_reflectance,
             specular_reflectance,
             transmittance,
-            areas,
+            polygon_uids,
+            areas_m2,
             sensor_map,
             sensor_grids,
             sensor_area,
@@ -146,7 +145,7 @@ impl LightingSimulation {
             }
         }
 
-        result.compute_illuminance(&self.areas);
+        result.finalize(&self.polygon_uids, &self.areas_m2);
         result
     }
 
@@ -170,7 +169,7 @@ impl LightingSimulation {
 
             if let Some((idx, dist)) = self.scene.find_target_surface_global(pos, dir) {
                 // Record hit
-                result.record_hit(&self.scene.paths[idx], e);
+                result.record_hit_index(idx, e);
 
                 // Record sensor hit if this polygon has a sensor grid
                 if let Some(&grid_idx) = self.sensor_map.get(&idx) {
@@ -302,8 +301,11 @@ fn random_point_on_bbox_face(scene: &FlatScene, direction: Vector, rng: &mut imp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::index::SurfaceIndex;
+    use crate::sim::lighting::sources::DirectionalLight;
     use crate::sim::lighting::sources::PointLight;
     use crate::{Solid, Zone};
+    use rand::SeedableRng;
 
     #[test]
     fn test_lighting_simulation_basic() {
@@ -361,7 +363,9 @@ mod tests {
         let mut floor_flux = 0.0;
         let mut ceiling_flux = 0.0;
 
-        for (path, flux) in &result.incident_flux {
+        let index = SurfaceIndex::new(&building);
+        for (polygon_uid, flux) in &result.incident_flux {
+            let path = index.path_by_polygon_uid(polygon_uid).unwrap_or("");
             let total = flux[0] + flux[1] + flux[2];
             if path.contains("floor") {
                 floor_flux += total;
@@ -397,6 +401,91 @@ mod tests {
         let result = sim.run();
 
         assert!(result.hit_count.is_empty(), "No lights means no hits");
+    }
+
+    #[test]
+    fn test_random_unit_vector_is_unit_length() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(123);
+        let v = random_unit_vector(&mut rng);
+        let len = v.length();
+        assert!((len - 1.0).abs() < 1e-10, "len={len}");
+    }
+
+    #[test]
+    fn test_random_point_on_bbox_face_spawns_on_expected_face() {
+        let s0 = Solid::from_box(2.0, 3.0, 4.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+        let scene = FlatScene::new(&building, 0.5, false);
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(999);
+
+        // Z-dominant: negative dz -> spawn on top (max.z + margin).
+        let p = random_point_on_bbox_face(&scene, Vector::new(0.0, 0.0, -1.0), &mut rng);
+        assert!(p.z > scene.bbox_max.z);
+
+        // Y-dominant: positive dy -> spawn on min.y - margin.
+        let p = random_point_on_bbox_face(&scene, Vector::new(0.0, 2.0, 0.0), &mut rng);
+        assert!(p.y < scene.bbox_min.y);
+
+        // X-dominant: negative dx -> spawn on max.x + margin.
+        let p = random_point_on_bbox_face(&scene, Vector::new(-3.0, 0.0, 0.0), &mut rng);
+        assert!(p.x > scene.bbox_max.x);
+    }
+
+    #[test]
+    fn test_directional_light_zero_direction_is_skipped() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = LightingConfig::new();
+        config.num_rays = 100;
+        config.max_bounces = 1;
+        config.directional_lights.push(DirectionalLight::new(
+            Vector::new(0.0, 0.0, 0.0),
+            [100.0; 3],
+        ));
+
+        let sim = LightingSimulation::new(&building, config).unwrap();
+        let result = sim.run();
+        assert!(result.hit_count.is_empty());
+    }
+
+    #[test]
+    fn test_sensor_grids_receive_hits_from_directional_light() {
+        let s0 = Solid::from_box(4.0, 4.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = LightingConfig::new();
+        config.num_rays = 500;
+        config.max_bounces = 1;
+        config.default_reflectance = [0.0; 3];
+        config.sensor_spacing = Some(1.0);
+        config.sensor_patterns = vec!["floor".to_string()];
+        config.directional_lights.push(DirectionalLight::new(
+            Vector::new(0.0, 0.0, 1.0),
+            [300.0; 3],
+        ));
+
+        let sim = LightingSimulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        assert!(
+            !result.sensor_grids.is_empty(),
+            "Expected at least one generated sensor grid"
+        );
+        let total_sensor_hits: usize = result
+            .sensor_grids
+            .iter()
+            .flat_map(|g| g.sensors.iter())
+            .map(|s| s.hit_count)
+            .sum();
+        assert!(
+            total_sensor_hits > 0,
+            "Expected at least one sensor hit from directional rays"
+        );
     }
 
     // ── Physics verification tests ──────────────────────────────────────

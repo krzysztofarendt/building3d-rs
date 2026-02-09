@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::Building;
+use crate::sim::index::SurfaceIndex;
 use crate::sim::lighting::result::LightingResult;
 use crate::sim::lighting::solar::SolarPosition;
 use crate::sim::materials::MaterialLibrary;
@@ -76,6 +77,7 @@ impl Default for SolarBridgeConfig {
 ///   Q_solar = incident_flux_total / luminous_efficacy * SHGC
 pub fn lighting_to_solar_gains(
     lighting_result: &LightingResult,
+    surface_index: &SurfaceIndex,
     config: &SolarBridgeConfig,
 ) -> f64 {
     if config.luminous_efficacy <= 0.0 {
@@ -84,7 +86,10 @@ pub fn lighting_to_solar_gains(
 
     let mut total_gains = 0.0;
 
-    for (path, flux) in &lighting_result.incident_flux {
+    for (polygon_uid, flux) in &lighting_result.incident_flux {
+        let Some(path) = surface_index.path_by_polygon_uid(polygon_uid) else {
+            continue;
+        };
         if let Some(shgc) = config.resolve_shgc(path) {
             // Total luminous flux hitting this surface
             let total_flux = flux[0] + flux[1] + flux[2];
@@ -100,6 +105,7 @@ pub fn lighting_to_solar_gains(
 /// Returns per-surface solar gains in W.
 pub fn lighting_to_solar_gains_per_surface(
     lighting_result: &LightingResult,
+    surface_index: &SurfaceIndex,
     config: &SolarBridgeConfig,
 ) -> HashMap<String, f64> {
     if config.luminous_efficacy <= 0.0 {
@@ -108,11 +114,14 @@ pub fn lighting_to_solar_gains_per_surface(
 
     let mut gains = HashMap::new();
 
-    for (path, flux) in &lighting_result.incident_flux {
+    for (polygon_uid, flux) in &lighting_result.incident_flux {
+        let Some(path) = surface_index.path_by_polygon_uid(polygon_uid) else {
+            continue;
+        };
         if let Some(shgc) = config.resolve_shgc(path) {
             let total_flux = flux[0] + flux[1] + flux[2];
             let q = total_flux / config.luminous_efficacy * shgc;
-            gains.insert(path.clone(), q);
+            gains.insert(path.to_string(), q);
         }
     }
 
@@ -154,7 +163,7 @@ impl SolarGainConfig {
     /// 1. Exact match in `shgc` map
     /// 2. Material library `is_glazing` flag (if `material_library` provided)
     /// 3. Substring pattern match (fallback)
-    fn resolve_shgc_with_materials(
+    pub(crate) fn resolve_shgc_with_materials(
         &self,
         path: &str,
         material_library: Option<&MaterialLibrary>,
@@ -187,6 +196,7 @@ impl Default for SolarGainConfig {
 }
 
 /// Parameters describing the solar conditions for a single hour.
+#[derive(Debug, Clone, Copy)]
 pub struct SolarHourParams {
     /// Direct normal irradiance (W/m^2).
     pub direct_normal_irradiance: f64,
@@ -223,6 +233,18 @@ pub fn compute_solar_gains(
     config: &SolarGainConfig,
 ) -> f64 {
     compute_solar_gains_with_materials(building, params, config, None)
+}
+
+/// Computes solar gains per zone UID (W) from EPW radiation data and sun geometry.
+///
+/// This is the zone-resolved counterpart of [`compute_solar_gains`]. It is useful for
+/// multi-zone thermal simulations that need a reasonable default distribution of solar gains.
+pub fn compute_solar_gains_per_zone(
+    building: &Building,
+    params: &SolarHourParams,
+    config: &SolarGainConfig,
+) -> HashMap<crate::UID, f64> {
+    compute_solar_gains_per_zone_with_materials(building, params, config, None)
 }
 
 /// Like [`compute_solar_gains`], but also accepts a material library for
@@ -288,6 +310,70 @@ pub fn compute_solar_gains_with_materials(
     total_gains
 }
 
+/// Like [`compute_solar_gains_per_zone`], but also accepts a material library for
+/// `is_glazing`-based surface identification.
+pub fn compute_solar_gains_per_zone_with_materials(
+    building: &Building,
+    params: &SolarHourParams,
+    config: &SolarGainConfig,
+    material_library: Option<&MaterialLibrary>,
+) -> HashMap<crate::UID, f64> {
+    let solar_pos = SolarPosition::calculate(
+        params.latitude,
+        params.longitude,
+        params.day_of_year,
+        params.hour,
+    );
+    if !solar_pos.is_above_horizon() {
+        return compute_diffuse_only_per_zone(
+            building,
+            params.diffuse_horizontal_irradiance,
+            config,
+            material_library,
+        );
+    }
+
+    let sun_dir = solar_pos.to_direction();
+    let mut gains: HashMap<crate::UID, f64> = HashMap::new();
+
+    for zone in building.zones() {
+        let mut zone_gains = 0.0;
+        for solid in zone.solids() {
+            for wall in solid.walls() {
+                for polygon in wall.polygons() {
+                    let path = format!(
+                        "{}/{}/{}/{}",
+                        zone.name, solid.name, wall.name, polygon.name
+                    );
+                    let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
+                    else {
+                        continue;
+                    };
+
+                    let area = polygon.area();
+                    if area <= 0.0 {
+                        continue;
+                    }
+
+                    let normal = polygon.vn;
+                    let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                    let q_direct = params.direct_normal_irradiance * cos_incidence * area * shgc;
+
+                    let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+                    let q_diffuse = params.diffuse_horizontal_irradiance * sky_view * area * shgc;
+
+                    zone_gains += q_direct + q_diffuse;
+                }
+            }
+        }
+        if zone_gains != 0.0 {
+            gains.insert(zone.uid.clone(), zone_gains);
+        }
+    }
+
+    gains
+}
+
 /// Computes diffuse-only solar gains when the sun is below the horizon.
 fn compute_diffuse_only(
     building: &Building,
@@ -318,18 +404,82 @@ fn compute_diffuse_only(
     total
 }
 
+fn compute_diffuse_only_per_zone(
+    building: &Building,
+    diffuse_horizontal_irradiance: f64,
+    config: &SolarGainConfig,
+    material_library: Option<&MaterialLibrary>,
+) -> HashMap<crate::UID, f64> {
+    let mut gains: HashMap<crate::UID, f64> = HashMap::new();
+    for zone in building.zones() {
+        let mut zone_total = 0.0;
+        for solid in zone.solids() {
+            for wall in solid.walls() {
+                for polygon in wall.polygons() {
+                    let path = format!(
+                        "{}/{}/{}/{}",
+                        zone.name, solid.name, wall.name, polygon.name
+                    );
+                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
+                    {
+                        let area = polygon.area();
+                        let normal = polygon.vn;
+                        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+                        zone_total += diffuse_horizontal_irradiance * sky_view * area * shgc;
+                    }
+                }
+            }
+        }
+        if zone_total != 0.0 {
+            gains.insert(zone.uid.clone(), zone_total);
+        }
+    }
+    gains
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::materials::{Material, MaterialLibrary};
+    use crate::{Point, Polygon, Solid, Wall, Zone};
+
+    fn make_building_with_surfaces(wall_and_polygon_names: Vec<(&str, &str)>) -> Building {
+        let mut walls = Vec::new();
+        for (wall_name, polygon_name) in wall_and_polygon_names {
+            let poly = Polygon::new(
+                polygon_name,
+                vec![
+                    Point::new(0.0, 0.0, 0.0),
+                    Point::new(1.0, 0.0, 0.0),
+                    Point::new(1.0, 1.0, 0.0),
+                    Point::new(0.0, 1.0, 0.0),
+                ],
+                None,
+            )
+            .unwrap();
+            walls.push(Wall::new(wall_name, vec![poly]).unwrap());
+        }
+        let solid = Solid::new("room", walls).unwrap();
+        let zone = Zone::new("zone", vec![solid]).unwrap();
+        Building::new("b", vec![zone]).unwrap()
+    }
 
     #[test]
     fn test_basic_solar_gains() {
+        let building = make_building_with_surfaces(vec![("window", "glass")]);
+        let index = SurfaceIndex::new(&building);
+        let polygon_uid = index
+            .polygon_uid_by_path("zone/room/window/glass")
+            .unwrap()
+            .clone();
+
         let mut result = LightingResult::new();
-        // Simulate light hitting a window surface
-        result.record_hit("zone/room/window/glass", [1200.0, 1200.0, 1200.0]);
+        result
+            .incident_flux
+            .insert(polygon_uid, [1200.0, 1200.0, 1200.0]);
 
         let config = SolarBridgeConfig::new();
-        let gains = lighting_to_solar_gains(&result, &config);
+        let gains = lighting_to_solar_gains(&result, &index, &config);
 
         // Total flux = 3600 lm
         // Q = 3600 / 120 * 0.6 = 18.0 W
@@ -341,11 +491,20 @@ mod tests {
 
     #[test]
     fn test_non_glazing_surface_ignored() {
+        let building = make_building_with_surfaces(vec![("wall", "concrete")]);
+        let index = SurfaceIndex::new(&building);
+        let polygon_uid = index
+            .polygon_uid_by_path("zone/room/wall/concrete")
+            .unwrap()
+            .clone();
+
         let mut result = LightingResult::new();
-        result.record_hit("zone/room/wall/concrete", [1000.0, 1000.0, 1000.0]);
+        result
+            .incident_flux
+            .insert(polygon_uid, [1000.0, 1000.0, 1000.0]);
 
         let config = SolarBridgeConfig::new();
-        let gains = lighting_to_solar_gains(&result, &config);
+        let gains = lighting_to_solar_gains(&result, &index, &config);
 
         assert!(
             gains.abs() < 1e-10,
@@ -355,15 +514,24 @@ mod tests {
 
     #[test]
     fn test_custom_shgc() {
+        let building = make_building_with_surfaces(vec![("special", "pane")]);
+        let index = SurfaceIndex::new(&building);
+        let polygon_uid = index
+            .polygon_uid_by_path("zone/room/special/pane")
+            .unwrap()
+            .clone();
+
         let mut result = LightingResult::new();
-        result.record_hit("zone/room/special/pane", [600.0, 600.0, 600.0]);
+        result
+            .incident_flux
+            .insert(polygon_uid, [600.0, 600.0, 600.0]);
 
         let mut config = SolarBridgeConfig::new();
         config
             .shgc
             .insert("zone/room/special/pane".to_string(), 0.3);
 
-        let gains = lighting_to_solar_gains(&result, &config);
+        let gains = lighting_to_solar_gains(&result, &index, &config);
         // Total flux = 1800 lm
         // Q = 1800 / 120 * 0.3 = 4.5 W
         assert!(
@@ -374,32 +542,52 @@ mod tests {
 
     #[test]
     fn test_per_surface_gains() {
+        let building = make_building_with_surfaces(vec![("window", "w1"), ("window2", "w2")]);
+        let index = SurfaceIndex::new(&building);
+        let uid1 = index
+            .polygon_uid_by_path("zone/room/window/w1")
+            .unwrap()
+            .clone();
+        let uid2 = index
+            .polygon_uid_by_path("zone/room/window2/w2")
+            .unwrap()
+            .clone();
+
         let mut result = LightingResult::new();
-        result.record_hit("zone/room/window/w1", [120.0, 120.0, 120.0]);
-        result.record_hit("zone/room/window/w2", [240.0, 240.0, 240.0]);
+        result.incident_flux.insert(uid1, [120.0, 120.0, 120.0]);
+        result.incident_flux.insert(uid2, [240.0, 240.0, 240.0]);
 
         let config = SolarBridgeConfig::new();
-        let per_surface = lighting_to_solar_gains_per_surface(&result, &config);
+        let per_surface = lighting_to_solar_gains_per_surface(&result, &index, &config);
 
         assert_eq!(per_surface.len(), 2);
         // w1: 360/120*0.6 = 1.8
         // w2: 720/120*0.6 = 3.6
         assert!((per_surface["zone/room/window/w1"] - 1.8).abs() < 0.1);
-        assert!((per_surface["zone/room/window/w2"] - 3.6).abs() < 0.1);
+        assert!((per_surface["zone/room/window2/w2"] - 3.6).abs() < 0.1);
     }
 
     #[test]
     fn test_zero_efficacy_guard() {
+        let building = make_building_with_surfaces(vec![("window", "w1")]);
+        let index = SurfaceIndex::new(&building);
+        let polygon_uid = index
+            .polygon_uid_by_path("zone/room/window/w1")
+            .unwrap()
+            .clone();
+
         let mut result = LightingResult::new();
-        result.record_hit("zone/room/window/w1", [120.0, 120.0, 120.0]);
+        result
+            .incident_flux
+            .insert(polygon_uid, [120.0, 120.0, 120.0]);
 
         let mut config = SolarBridgeConfig::new();
         config.luminous_efficacy = 0.0;
 
-        let gains = lighting_to_solar_gains(&result, &config);
+        let gains = lighting_to_solar_gains(&result, &index, &config);
         assert!(gains == 0.0);
 
-        let per_surface = lighting_to_solar_gains_per_surface(&result, &config);
+        let per_surface = lighting_to_solar_gains_per_surface(&result, &index, &config);
         assert!(per_surface.is_empty());
     }
 
@@ -455,5 +643,60 @@ mod tests {
         let gains = compute_solar_gains(&building, &params, &config);
 
         assert!(gains.abs() < 1e-10, "Zero radiation should give zero gains");
+    }
+
+    #[test]
+    fn test_compute_solar_gains_per_zone_sums_to_total() {
+        use crate::{Solid, Zone};
+
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((2.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
+
+        let params = SolarHourParams {
+            direct_normal_irradiance: 800.0,
+            diffuse_horizontal_irradiance: 100.0,
+            day_of_year: 81, // ~equinox
+            hour: 9.0,       // morning sun (east-ish)
+            latitude: 0.0,
+            longitude: 0.0,
+        };
+
+        let mut cfg = SolarGainConfig::new();
+        cfg.shgc.insert("z0/s0/wall_1/poly_1".to_string(), 1.0);
+        cfg.shgc.insert("z1/s1/wall_1/poly_1".to_string(), 1.0);
+
+        let total = compute_solar_gains(&building, &params, &cfg);
+        let by_zone = compute_solar_gains_per_zone(&building, &params, &cfg);
+        let sum: f64 = by_zone.values().sum();
+
+        assert!(
+            (sum - total).abs() < 1e-9,
+            "Per-zone sum should match total: sum={sum}, total={total}"
+        );
+        assert_eq!(by_zone.len(), 2);
+    }
+
+    #[test]
+    fn test_default_traits() {
+        let cfg: SolarBridgeConfig = Default::default();
+        assert!(cfg.luminous_efficacy > 0.0);
+        let cfg: SolarGainConfig = Default::default();
+        assert!(cfg.default_shgc > 0.0);
+    }
+
+    #[test]
+    fn test_resolve_shgc_with_materials_uses_is_glazing_flag() {
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("glass").with_glazing());
+        lib.assign("/", "glass");
+
+        let mut cfg = SolarGainConfig::new();
+        cfg.default_shgc = 0.75;
+
+        let shgc = cfg.resolve_shgc_with_materials("zone/room/wall/window_0", Some(&lib));
+        assert_eq!(shgc, Some(0.75));
     }
 }

@@ -1,7 +1,9 @@
 use crate::Building;
 
+use super::boundary::ThermalBoundaries;
 use super::config::ThermalConfig;
 use super::result::{ThermalResult, ZoneResult};
+use crate::sim::index::SurfaceIndex;
 
 /// Specific heat capacity of air in J/(kg*K).
 const AIR_SPECIFIC_HEAT: f64 = 1005.0;
@@ -16,6 +18,20 @@ const AIR_DENSITY: f64 = 1.2;
 ///   Q_gains = internal + solar
 ///   Q_net = Q_transmission + Q_infiltration - Q_gains
 pub fn calculate_heat_balance(building: &Building, config: &ThermalConfig) -> ThermalResult {
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+    calculate_heat_balance_with_boundaries(building, config, &boundaries)
+}
+
+/// Like [`calculate_heat_balance`], but accepts precomputed thermal boundaries.
+///
+/// This avoids rebuilding polygon-facing relationships when running many timesteps
+/// (e.g. annual hourly simulations).
+pub fn calculate_heat_balance_with_boundaries(
+    building: &Building,
+    config: &ThermalConfig,
+    boundaries: &ThermalBoundaries,
+) -> ThermalResult {
     let mut result = ThermalResult::new();
     let dt = config.indoor_temperature - config.outdoor_temperature;
 
@@ -28,6 +44,9 @@ pub fn calculate_heat_balance(building: &Building, config: &ThermalConfig) -> Th
         for solid in zone.solids() {
             for wall in solid.walls() {
                 for polygon in wall.polygons() {
+                    if !boundaries.is_exterior(&polygon.uid) {
+                        continue;
+                    }
                     let path = format!(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
@@ -82,6 +101,17 @@ pub fn calculate_heat_balance(building: &Building, config: &ThermalConfig) -> Th
 ///
 /// U_mean = sum(U_i * A_i) / sum(A_i)
 pub fn mean_u_value(building: &Building, config: &ThermalConfig) -> f64 {
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+    mean_u_value_with_boundaries(building, config, &boundaries)
+}
+
+/// Like [`mean_u_value`], but accepts precomputed thermal boundaries.
+pub fn mean_u_value_with_boundaries(
+    building: &Building,
+    config: &ThermalConfig,
+    boundaries: &ThermalBoundaries,
+) -> f64 {
     let mut sum_ua = 0.0;
     let mut sum_a = 0.0;
 
@@ -89,6 +119,9 @@ pub fn mean_u_value(building: &Building, config: &ThermalConfig) -> f64 {
         for solid in zone.solids() {
             for wall in solid.walls() {
                 for polygon in wall.polygons() {
+                    if !boundaries.is_exterior(&polygon.uid) {
+                        continue;
+                    }
                     let path = format!(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
@@ -144,6 +177,30 @@ mod tests {
         assert!(
             (result.cooling_demand - 0.0).abs() < 1e-10,
             "Should not need cooling"
+        );
+    }
+
+    #[test]
+    fn test_internal_interfaces_not_counted_as_exterior() {
+        // Two adjacent 1x1x1 cubes in the same zone form a 2x1x1 rectangular prism.
+        // The shared interface (area 1 m² on each cube) must not be counted as envelope.
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+        let zone = Zone::new("z", vec![s0, s1]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = ThermalConfig::new(); // dT = 20 - 0 = 20°C
+        let result = calculate_heat_balance(&building, &config);
+
+        // Surface area of 2x1x1 prism: 2*(2*1 + 2*1 + 1*1) = 10 m²
+        let expected_area = 10.0;
+        let dt = config.indoor_temperature - config.outdoor_temperature;
+        let expected_transmission = config.default_u_value * expected_area * dt;
+
+        assert!(
+            (result.transmission_loss - expected_transmission).abs() < 1.0,
+            "Transmission should only include exterior surfaces (~{expected_transmission}), got {}",
+            result.transmission_loss
         );
     }
 

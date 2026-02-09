@@ -5,6 +5,22 @@ pub type Rgba = (f32, f32, f32, f32);
 ///
 /// Controls session naming, entity prefixes, and default colors/sizes
 /// for drawing functions and simulation visualization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimRayColormap {
+    /// Linear interpolation between `sim_ray_color_low` and `sim_ray_color_high`.
+    Lerp,
+    /// HSV rainbow from red (high energy) to blue (low energy).
+    Rainbow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimRayEnergyScale {
+    /// Map colors from scalar energy linearly.
+    Linear,
+    /// Log-map colors from scalar energy for faster visual contrast.
+    Log,
+}
+
 pub struct RerunConfig {
     // Labels
     pub session_name: String,
@@ -24,8 +40,21 @@ pub struct RerunConfig {
     pub sim_source_radius: f32,
     pub sim_ray_color_high: Rgba,
     pub sim_ray_color_low: Rgba,
+    pub sim_ray_colormap: SimRayColormap,
+    pub sim_ray_energy_scale: SimRayEnergyScale,
+    /// Lower bound for log color mapping (energy <= this maps to the "low" end).
+    pub sim_ray_color_energy_min: f64,
+    /// Curve parameter for log color mapping: values < 1.0 shift colors earlier.
+    pub sim_ray_color_gamma: f64,
     pub sim_ray_radius: f32,
     pub sim_ray_energy_threshold: f64,
+    /// If > 0, logs ray frames on a duration timeline with this fixed per-frame spacing (seconds).
+    ///
+    /// This is purely a visualization/playback control for the Rerun viewer: it does not affect
+    /// the physics timestep used by the simulation.
+    ///
+    /// If set to 0, logs frames on a sequence timeline (one integer step per frame).
+    pub sim_playback_dt_s: f64,
 }
 
 impl RerunConfig {
@@ -46,8 +75,13 @@ impl RerunConfig {
             sim_source_radius: 0.02,
             sim_ray_color_high: (1.0, 0.0, 0.0, 0.8),
             sim_ray_color_low: (1.0, 1.0, 1.0, 0.1),
+            sim_ray_colormap: SimRayColormap::Lerp,
+            sim_ray_energy_scale: SimRayEnergyScale::Linear,
+            sim_ray_color_energy_min: 1e-2,
+            sim_ray_color_gamma: 0.5,
             sim_ray_radius: 0.04,
             sim_ray_energy_threshold: 1e-10,
+            sim_playback_dt_s: 0.0,
         }
     }
 }
@@ -70,6 +104,8 @@ mod tests {
         assert_eq!(config.face_color, (1.0, 1.0, 1.0, 0.2));
         assert_eq!(config.sim_ray_color_high, (1.0, 0.0, 0.0, 0.8));
         assert_eq!(config.sim_ray_color_low, (1.0, 1.0, 1.0, 0.1));
+        assert_eq!(config.sim_ray_colormap, SimRayColormap::Lerp);
+        assert_eq!(config.sim_ray_energy_scale, SimRayEnergyScale::Linear);
         assert_eq!(config.sim_ray_energy_threshold, 1e-10);
     }
 

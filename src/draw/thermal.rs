@@ -120,3 +120,67 @@ fn heat_loss_color(t: f32) -> (f32, f32, f32) {
         (1.0, 1.0 - s, 1.0 - s)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Solid, Zone};
+
+    fn buffered_session() -> rr::RecordingStream {
+        rr::RecordingStreamBuilder::new("test").buffered().unwrap()
+    }
+
+    #[test]
+    fn test_heat_loss_color_endpoints() {
+        assert_eq!(heat_loss_color(0.0), (0.0, 0.0, 1.0));
+        assert_eq!(heat_loss_color(0.5), (1.0, 1.0, 1.0));
+        assert_eq!(heat_loss_color(1.0), (1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn test_draw_heat_loss_heatmap_is_ok() {
+        let session = buffered_session();
+
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        // Build a result with per-surface path keys.
+        let mut result = ThermalResult::new();
+        for zone in building.zones() {
+            for solid in zone.solids() {
+                for wall in solid.walls() {
+                    for polygon in wall.polygons() {
+                        let path = format!(
+                            "{}/{}/{}/{}",
+                            zone.name, solid.name, wall.name, polygon.name
+                        );
+                        result.surface_heat_loss.insert(path, -10.0);
+                    }
+                }
+            }
+        }
+
+        draw_heat_loss_heatmap(&session, &result, &building).unwrap();
+
+        // Also exercise max_loss floor branch.
+        let result = ThermalResult::new();
+        draw_heat_loss_heatmap(&session, &result, &building).unwrap();
+    }
+
+    #[test]
+    fn test_draw_annual_timeline_is_ok() {
+        let session = buffered_session();
+        let result = AnnualResult {
+            hourly_heating: vec![0.0, 100.0, 200.0],
+            hourly_cooling: vec![50.0, 0.0, 25.0],
+            annual_heating_kwh: 0.0,
+            annual_cooling_kwh: 0.0,
+            peak_heating: 200.0,
+            peak_cooling: 50.0,
+            monthly_heating_kwh: [0.0; 12],
+            monthly_cooling_kwh: [0.0; 12],
+        };
+        draw_annual_timeline(&session, &result).unwrap();
+    }
+}

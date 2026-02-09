@@ -35,6 +35,10 @@ pub struct SimulationConfig {
     pub acoustic_mode: AcousticMode,
     pub material_library: Option<MaterialLibrary>,
     pub default_acoustic_material: Option<AcousticMaterial>,
+    /// If set (0..NUM_OCTAVE_BANDS), simulate a single octave band only.
+    ///
+    /// Intended mainly for visualization/debugging to reduce compute.
+    pub single_band_index: Option<usize>,
 
     // Air absorption
     pub enable_air_absorption: bool,
@@ -50,6 +54,12 @@ pub struct SimulationConfig {
     /// Required for `draw_simulation()` but uses ~800 MB for 5000 rays × 2000 steps.
     /// Set to `false` when you only need absorber hits (e.g. for acoustic metrics).
     pub store_ray_history: bool,
+    /// If `true` (and `store_ray_history=true`), store per-ray per-band energies
+    /// for frequency-dependent simulations.
+    ///
+    /// This is expensive and usually unnecessary for visualization (which only
+    /// needs scalar energies). Default: `false`.
+    pub store_ray_band_history: bool,
 }
 
 impl SimulationConfig {
@@ -70,9 +80,11 @@ impl SimulationConfig {
             acoustic_mode: AcousticMode::Scalar,
             material_library: None,
             default_acoustic_material: None,
+            single_band_index: None,
             enable_air_absorption: false,
             min_alive_fraction: 0.0,
             store_ray_history: false,
+            store_ray_band_history: false,
         }
     }
 

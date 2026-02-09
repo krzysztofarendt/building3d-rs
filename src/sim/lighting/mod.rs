@@ -1,7 +1,9 @@
 pub mod backward;
 pub mod config;
+pub mod module;
 pub mod result;
 pub mod sensor;
+pub mod shortwave;
 pub mod simulation;
 pub mod sky;
 pub mod solar;
