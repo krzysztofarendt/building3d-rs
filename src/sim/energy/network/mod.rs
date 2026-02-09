@@ -57,7 +57,7 @@ impl ThermalNetwork {
             if !boundaries.is_exterior(&surface.polygon_uid) {
                 continue;
             }
-            let u = config.resolve_u_value(&surface.path);
+            let u = config.resolve_u_value_for_surface(&surface.polygon_uid, &surface.path);
             *exterior_conductance_w_per_k
                 .entry(surface.zone_uid.clone())
                 .or_insert(0.0) += u * surface.area_m2;
@@ -95,8 +95,8 @@ impl ThermalNetwork {
                 continue;
             }
 
-            let u1 = config.resolve_u_value(path1);
-            let u2 = config.resolve_u_value(path2);
+            let u1 = config.resolve_u_value_for_surface(poly1_uid, path1);
+            let u2 = config.resolve_u_value_for_surface(poly2_uid, path2);
 
             let k = config.interzone_conductance_w_per_k(u1, u2, overlap_area);
             if k <= 0.0 {

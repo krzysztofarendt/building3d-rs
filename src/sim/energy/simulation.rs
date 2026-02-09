@@ -8,7 +8,8 @@ use super::hvac::{HvacIdealLoads, LumpedThermalModel};
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
 use super::solar_bridge::{
-    SolarGainConfig, SolarHourParams, compute_solar_gains, compute_solar_gains_per_zone,
+    SolarGainConfig, SolarHourParams, compute_solar_gains_per_zone_with_materials,
+    compute_solar_gains_with_materials,
 };
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance_with_boundaries;
@@ -111,7 +112,12 @@ pub fn run_annual_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains(building, &params, sc)
+                compute_solar_gains_with_materials(
+                    building,
+                    &params,
+                    sc,
+                    config.material_library.as_ref(),
+                )
             }
             None => 0.0,
         };
@@ -186,7 +192,7 @@ pub fn run_transient_simulation(
                             "{}/{}/{}/{}",
                             zone.name, solid.name, wall.name, polygon.name
                         );
-                        let u = base_config.resolve_u_value(&path);
+                        let u = base_config.resolve_u_value_for_surface(&polygon.uid, &path);
                         ua += u * polygon.area();
                     }
                 }
@@ -236,7 +242,12 @@ pub fn run_transient_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains(building, &params, sc)
+                compute_solar_gains_with_materials(
+                    building,
+                    &params,
+                    sc,
+                    base_config.material_library.as_ref(),
+                )
             }
             None => 0.0,
         };
@@ -348,7 +359,12 @@ pub fn run_multizone_transient_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains_per_zone(building, &params, sc)
+                compute_solar_gains_per_zone_with_materials(
+                    building,
+                    &params,
+                    sc,
+                    base_config.material_library.as_ref(),
+                )
             }
             None => std::collections::HashMap::new(),
         };
@@ -469,7 +485,12 @@ pub fn run_multizone_steady_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains_per_zone(building, &params, sc)
+                compute_solar_gains_per_zone_with_materials(
+                    building,
+                    &params,
+                    sc,
+                    base_config.material_library.as_ref(),
+                )
             }
             None => std::collections::HashMap::new(),
         };

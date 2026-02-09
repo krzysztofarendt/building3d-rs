@@ -7,3 +7,4 @@ pub mod index;
 pub mod lighting;
 pub mod materials;
 pub mod rays;
+pub mod surfaces;

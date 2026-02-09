@@ -51,7 +51,7 @@ pub fn calculate_heat_balance_with_boundaries(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    let u_value = config.resolve_u_value(&path);
+                    let u_value = config.resolve_u_value_for_surface(&polygon.uid, &path);
                     let area = polygon.area();
                     let q_surface = u_value * area * dt;
 
@@ -126,7 +126,7 @@ pub fn mean_u_value_with_boundaries(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    let u = config.resolve_u_value(&path);
+                    let u = config.resolve_u_value_for_surface(&polygon.uid, &path);
                     let a = polygon.area();
                     sum_ua += u * a;
                     sum_a += a;

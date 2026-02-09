@@ -1,5 +1,4 @@
 pub mod absorption;
-pub mod find_transparent;
 pub mod propagation;
 pub mod reflection;
 pub mod voxel_grid;
@@ -8,6 +7,8 @@ use std::collections::HashSet;
 
 use crate::geom::bboxes::bounding_box;
 use crate::geom::ray::intersect_triangles_tolerant;
+use crate::sim::index::SurfaceIndex;
+use crate::sim::surfaces::SurfaceSemantics;
 use crate::{Building, Point, Polygon, Vector};
 
 use self::voxel_grid::VoxelGrid;
@@ -52,12 +53,13 @@ impl FlatScene {
             }
         }
 
-        let transparent = if search_transparent {
-            let transparent_paths = find_transparent::find_transparent_polygons(building);
-            paths
+        let transparent: HashSet<usize> = if search_transparent {
+            let index = SurfaceIndex::new(building);
+            let semantics = SurfaceSemantics::classify(building, &index);
+            polygons
                 .iter()
                 .enumerate()
-                .filter(|(_, path)| transparent_paths.contains(*path))
+                .filter(|(_, p)| semantics.is_same_zone_interface(&p.uid))
                 .map(|(idx, _)| idx)
                 .collect()
         } else {

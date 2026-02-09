@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use super::construction::WallConstruction;
+use crate::UID;
+use crate::sim::materials::MaterialLibrary;
 
 /// Policy for computing inter-zone partition conductance from two assigned U-values.
 ///
@@ -24,6 +26,16 @@ pub struct ThermalConfig {
     /// Wall constructions assigned to polygon paths (pattern matching).
     /// Key is a path pattern, value is a WallConstruction.
     pub constructions: HashMap<String, WallConstruction>,
+    /// Optional shared material library used for thermal U-value/capacity resolution.
+    ///
+    /// When set, and when a surface is assigned a material that contains
+    /// `ThermalMaterial`, that material becomes the default source of truth for
+    /// U-values/capacities (unless overridden by exact per-surface overrides).
+    pub material_library: Option<MaterialLibrary>,
+    /// Exact U-value overrides keyed by polygon `UID` (W/(m^2*K)).
+    pub u_value_overrides_by_polygon_uid: HashMap<UID, f64>,
+    /// Exact envelope capacity overrides keyed by polygon `UID` (J/(m^2*K)).
+    pub envelope_capacity_overrides_j_per_m2_k_by_polygon_uid: HashMap<UID, f64>,
     /// Default U-value for surfaces without assigned construction (W/(m^2*K)).
     pub default_u_value: f64,
     /// Outdoor temperature in °C (for steady-state calculation).
@@ -49,6 +61,9 @@ impl ThermalConfig {
     pub fn new() -> Self {
         Self {
             constructions: HashMap::new(),
+            material_library: None,
+            u_value_overrides_by_polygon_uid: HashMap::new(),
+            envelope_capacity_overrides_j_per_m2_k_by_polygon_uid: HashMap::new(),
             default_u_value: 2.0,
             outdoor_temperature: 0.0,
             indoor_temperature: 20.0,
@@ -62,17 +77,105 @@ impl ThermalConfig {
 
     /// Resolves U-value for a polygon path.
     pub fn resolve_u_value(&self, path: &str) -> f64 {
-        // Check for exact match first
+        self.resolve_u_value_with_uid(None, path)
+    }
+
+    /// Resolves U-value for a specific polygon surface, enabling UID-keyed overrides.
+    pub fn resolve_u_value_for_surface(&self, polygon_uid: &UID, path: &str) -> f64 {
+        self.resolve_u_value_with_uid(Some(polygon_uid), path)
+    }
+
+    fn resolve_u_value_with_uid(&self, polygon_uid: Option<&UID>, path: &str) -> f64 {
+        // 1) Exact override by UID
+        if let Some(uid) = polygon_uid
+            && let Some(&u) = self.u_value_overrides_by_polygon_uid.get(uid)
+        {
+            return u;
+        }
+
+        // 2) Exact override by path via explicit construction entry
         if let Some(construction) = self.constructions.get(path) {
             return construction.u_value();
         }
-        // Check for partial match (path starts with pattern)
+
+        // 3) MaterialLibrary assignment (if provided and contains ThermalMaterial)
+        if let Some(lib) = self.material_library.as_ref()
+            && let Some(mat) = lib.lookup(path)
+            && let Some(t) = mat.thermal.as_ref()
+        {
+            return t.u_value;
+        }
+
+        // 4) Deterministic best-match construction pattern (fallback)
+        if let Some(construction) = self.best_matching_construction(path) {
+            return construction.u_value();
+        }
+
+        // 5) Default
+        self.default_u_value
+    }
+
+    /// Resolves envelope thermal capacity per unit area (J/(m²·K)) for a surface.
+    ///
+    /// Precedence:
+    /// 1) exact override by polygon UID
+    /// 2) exact path match in `constructions`
+    /// 3) material library ThermalMaterial capacity
+    /// 4) best-matching construction pattern
+    /// 5) provided fallback default
+    pub fn resolve_envelope_capacity_j_per_m2_k(
+        &self,
+        polygon_uid: Option<&UID>,
+        path: &str,
+        default_capacity_j_per_m2_k: f64,
+    ) -> f64 {
+        if let Some(uid) = polygon_uid
+            && let Some(&c) = self
+                .envelope_capacity_overrides_j_per_m2_k_by_polygon_uid
+                .get(uid)
+        {
+            return c.max(0.0);
+        }
+
+        if let Some(construction) = self.constructions.get(path) {
+            return construction.thermal_capacity().max(0.0);
+        }
+
+        if let Some(lib) = self.material_library.as_ref()
+            && let Some(mat) = lib.lookup(path)
+            && let Some(t) = mat.thermal.as_ref()
+        {
+            return t.thermal_capacity.max(0.0);
+        }
+
+        if let Some(construction) = self.best_matching_construction(path) {
+            return construction.thermal_capacity().max(0.0);
+        }
+
+        default_capacity_j_per_m2_k.max(0.0)
+    }
+
+    fn best_matching_construction(&self, path: &str) -> Option<&WallConstruction> {
+        let mut best: Option<(&str, &WallConstruction)> = None;
         for (pattern, construction) in &self.constructions {
-            if path.starts_with(pattern) || path.ends_with(pattern) || path.contains(pattern) {
-                return construction.u_value();
+            if pattern == path {
+                continue;
+            }
+            if !path.contains(pattern.as_str()) {
+                continue;
+            }
+            match best {
+                None => best = Some((pattern.as_str(), construction)),
+                Some((best_pat, _)) => {
+                    let better = pattern.len() > best_pat.len()
+                        || (pattern.len() == best_pat.len() && pattern.as_str() < best_pat);
+                    if better {
+                        best = Some((pattern.as_str(), construction));
+                    }
+                }
             }
         }
-        self.default_u_value
+        best.map(|(_, c)| c)
     }
 
     /// Computes an equivalent inter-zone conductance (W/K) for a partition.

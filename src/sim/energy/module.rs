@@ -39,7 +39,11 @@ pub struct EnergyModuleConfig {
     pub steady_state: bool,
     /// Selects the internal thermal network model.
     pub model_kind: EnergyModelKind,
-    /// Optional material library (used by RC envelope capacity estimation).
+    /// Optional material library (legacy convenience wiring).
+    ///
+    /// If `thermal.material_library` is not set, this is copied into it during `init()`.
+    /// Prefer setting `thermal.material_library` directly so U-values and capacities are
+    /// resolved consistently from one source of truth.
     pub material_library: Option<MaterialLibrary>,
     /// Fallback envelope capacity per exterior area [J/(m²·K)] for surfaces that
     /// do not have `ThermalMaterial.thermal_capacity` in the material library.
@@ -166,6 +170,12 @@ impl SimModule for EnergyModule {
     }
 
     fn init(&mut self, ctx: &SimContext, _bus: &mut Bus) -> Result<()> {
+        // Backward compatible wiring: allow the module-level material library field to
+        // populate `ThermalConfig.material_library` when the latter is unset.
+        if self.config.thermal.material_library.is_none() {
+            self.config.thermal.material_library = self.config.material_library.clone();
+        }
+
         let boundaries = ThermalBoundaries::classify(ctx.building, ctx.surface_index);
         self.boundaries = Some(boundaries.clone());
         let network = ThermalNetwork::build(
@@ -208,24 +218,21 @@ impl SimModule for EnergyModule {
                 self.config.thermal.indoor_temperature,
             )),
             EnergyModelKind::EnvelopeRc2R1C => {
-                let (default_env_cap, lib) = if self.config.steady_state {
-                    (0.0, None)
+                let default_env_cap = if self.config.steady_state {
+                    0.0
                 } else {
-                    (
-                        self.config.default_envelope_capacity_j_per_m2_k,
-                        self.config.material_library.as_ref(),
-                    )
+                    self.config.default_envelope_capacity_j_per_m2_k
                 };
 
-                EnergyModel::EnvelopeRc(MultiZoneEnvelopeRcModel::new(
+                EnergyModel::EnvelopeRc(MultiZoneEnvelopeRcModel::new_with_thermal_config(
                     ctx.building,
                     &network,
                     ctx.surface_index,
                     &boundaries,
+                    &self.config.thermal,
                     self.config.thermal.infiltration_ach,
                     cap,
                     default_env_cap,
-                    lib,
                     self.config.thermal.indoor_temperature,
                 ))
             }
