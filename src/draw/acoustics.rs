@@ -76,3 +76,33 @@ pub fn draw_impulse_response(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Point;
+
+    fn buffered_session() -> rr::RecordingStream {
+        rr::RecordingStreamBuilder::new("test").buffered().unwrap()
+    }
+
+    #[test]
+    fn test_draw_receivers_is_ok() {
+        let session = buffered_session();
+        let receivers = vec![Receiver::new(Point::new(0.0, 0.0, 0.0), 0.25, 0.001, 0.1)];
+        draw_receivers(&session, &receivers).unwrap();
+    }
+
+    #[test]
+    fn test_draw_impulse_response_is_ok() {
+        let session = buffered_session();
+
+        let mut receiver = Receiver::new(Point::new(0.0, 0.0, 0.0), 0.25, 0.001, 0.2);
+        // Add some energy early so Schroeder integration has non-zero values.
+        receiver.record_scalar_hit(0.001, 1.0);
+        receiver.record_scalar_hit(0.010, 0.2);
+        let ir = ImpulseResponse::from_receiver(&receiver);
+
+        draw_impulse_response(&session, &ir, "r0").unwrap();
+    }
+}

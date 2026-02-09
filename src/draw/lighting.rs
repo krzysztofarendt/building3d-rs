@@ -138,3 +138,128 @@ pub fn show_illuminance(result: &LightingResult, building: &Building) -> Result<
     draw_illuminance_heatmap(&session, result, building)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::lighting::result::LightingResult;
+    use crate::{Polygon, Solid, Wall, Zone};
+
+    fn buffered_session() -> rr::RecordingStream {
+        rr::RecordingStreamBuilder::new("test").buffered().unwrap()
+    }
+
+    #[test]
+    fn test_lux_to_color_endpoints() {
+        assert_eq!(lux_to_color(0.0), (0.0, 0.0, 1.0));
+        assert_eq!(lux_to_color(0.5), (0.0, 1.0, 0.0));
+        assert_eq!(lux_to_color(1.0), (1.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn test_draw_sensor_grid_empty_is_ok() {
+        let session = buffered_session();
+        let grid = SensorGrid {
+            sensors: Vec::new(),
+            polygon_path: "zone/room/floor/floor".to_string(),
+        };
+        draw_sensor_grid(&session, &grid, 100.0).unwrap();
+    }
+
+    #[test]
+    fn test_draw_sensor_grid_nonempty_is_ok() {
+        let session = buffered_session();
+
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        // Generate from an actual polygon so normals/positions are sensible.
+        let poly = building.zones()[0].solids()[0].walls()[0].polygons()[0];
+        let grid = SensorGrid::generate(poly, 0.5, "zone/room/floor/floor");
+
+        draw_sensor_grid(&session, &grid, 0.0).unwrap(); // exercises max_lux floor
+    }
+
+    #[test]
+    fn test_draw_illuminance_heatmap_is_ok() {
+        let session = buffered_session();
+
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let poly = building.zones()[0].solids()[0].walls()[0].polygons()[0];
+
+        let mut result = LightingResult::new();
+        result
+            .illuminance
+            .insert(poly.uid.clone(), [10.0, 20.0, 30.0]);
+        draw_illuminance_heatmap(&session, &result, &building).unwrap();
+
+        // Also exercise the max_lux floor branch (all zeros / empty map).
+        let result = LightingResult::new();
+        draw_illuminance_heatmap(&session, &result, &building).unwrap();
+    }
+
+    #[test]
+    fn test_draw_illuminance_heatmap_glass_alpha_branch() {
+        let session = buffered_session();
+
+        let glass = Polygon::new(
+            "glass_panel",
+            vec![
+                crate::Point::new(0.0, 0.0, 0.0),
+                crate::Point::new(1.0, 0.0, 0.0),
+                crate::Point::new(1.0, 1.0, 0.0),
+                crate::Point::new(0.0, 1.0, 0.0),
+            ],
+            None,
+        )
+        .unwrap();
+        let opaque = Polygon::new(
+            "opaque_panel",
+            vec![
+                crate::Point::new(0.0, 0.0, 1.0),
+                crate::Point::new(1.0, 0.0, 1.0),
+                crate::Point::new(1.0, 1.0, 1.0),
+                crate::Point::new(0.0, 1.0, 1.0),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let wall = Wall::new("w", vec![glass.clone(), opaque.clone()]).unwrap();
+        let solid = Solid::new("s", vec![wall]).unwrap();
+        let zone = Zone::new("z", vec![solid]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut result = LightingResult::new();
+        result
+            .illuminance
+            .insert(glass.uid.clone(), [10.0, 10.0, 10.0]);
+        result
+            .illuminance
+            .insert(opaque.uid.clone(), [10.0, 10.0, 10.0]);
+
+        draw_illuminance_heatmap(&session, &result, &building).unwrap();
+    }
+
+    #[test]
+    fn test_show_illuminance_is_ok_when_rerun_disabled() {
+        let prev = std::env::var("RERUN").ok();
+        unsafe { std::env::set_var("RERUN", "0") };
+
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+        let result = LightingResult::new();
+
+        show_illuminance(&result, &building).unwrap();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RERUN", v) },
+            None => unsafe { std::env::remove_var("RERUN") },
+        }
+    }
+}

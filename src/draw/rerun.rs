@@ -287,6 +287,8 @@ pub fn draw_simulation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::rays::SimulationConfig;
+    use crate::{Solid, Zone};
 
     #[test]
     fn test_lerp_color_zero() {
@@ -318,5 +320,164 @@ mod tests {
         let high = (1.0, 1.0, 1.0, 1.0);
         assert_eq!(lerp_color(low, high, -1.0), (0.0, 0.0, 0.0, 0.0));
         assert_eq!(lerp_color(low, high, 2.0), (1.0, 1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn test_hsv_to_rgba_wraps_hue() {
+        let c0 = hsv_to_rgba(0.0, 1.0, 1.0, 1.0);
+        let c360 = hsv_to_rgba(360.0, 1.0, 1.0, 1.0);
+        assert!((c0.0 - c360.0).abs() < 1e-6);
+        assert!((c0.1 - c360.1).abs() < 1e-6);
+        assert!((c0.2 - c360.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_energy_to_color_norm_log_handles_zero_thresholds() {
+        let mut cfg = RerunConfig::default();
+        cfg.sim_ray_energy_scale = SimRayEnergyScale::Log;
+        cfg.sim_ray_color_energy_min = 0.0;
+        cfg.sim_ray_energy_threshold = 0.0;
+        cfg.sim_ray_color_gamma = 2.0;
+
+        let t_low = energy_to_color_norm(0.0, &cfg);
+        let t_high = energy_to_color_norm(1.0, &cfg);
+        assert!(t_low >= 0.0 && t_low <= 1.0);
+        assert!(t_high >= 0.0 && t_high <= 1.0);
+        assert!(t_high >= t_low);
+    }
+
+    #[test]
+    fn test_draw_primitives_with_buffered_session() {
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0.clone()]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let session = rr::RecordingStreamBuilder::new("test").buffered().unwrap();
+        let cfg = RerunConfig::default();
+
+        draw_faces(&session, &s0, (0.2, 0.3, 0.4, 0.5), &cfg).unwrap();
+        draw_edges(&session, &s0, 0.01, (1.0, 0.0, 0.0, 1.0), &cfg).unwrap();
+        draw_points(&session, &s0, 0.02, (0.0, 1.0, 0.0, 1.0), &cfg).unwrap();
+
+        // Exercise draw_simulation + conversions.
+        let mut sim_cfg = SimulationConfig::new();
+        sim_cfg.source = Point::new(0.5, 0.5, 0.5);
+        sim_cfg.absorbers = vec![Point::new(0.2, 0.2, 0.2)];
+
+        let result = SimulationResult {
+            positions: vec![
+                vec![Point::new(0.5, 0.5, 0.5), Point::new(0.6, 0.5, 0.5)],
+                vec![Point::new(0.55, 0.5, 0.5), Point::new(0.65, 0.5, 0.5)],
+            ],
+            energies: vec![vec![1.0, 0.5], vec![0.9, 0.4]],
+            band_energies: None,
+            hits: vec![vec![0.0], vec![0.0]],
+            band_hits: None,
+            config: sim_cfg,
+        };
+
+        let _ = rr::Vec3D::from(Point::new(1.0, 2.0, 3.0));
+        let _ = rr::TriangleIndices::from(TriangleIndex(0, 1, 2));
+
+        draw_simulation(&session, &result, &building, &cfg).unwrap();
+    }
+
+    #[test]
+    fn test_hsv_to_rgba_covers_all_sextants() {
+        // Covers match arms 0..=5 in hsv_to_rgba.
+        let _ = hsv_to_rgba(0.0, 1.0, 1.0, 1.0);
+        let _ = hsv_to_rgba(60.0, 1.0, 1.0, 1.0);
+        let _ = hsv_to_rgba(120.0, 1.0, 1.0, 1.0);
+        let _ = hsv_to_rgba(180.0, 1.0, 1.0, 1.0);
+        let _ = hsv_to_rgba(240.0, 1.0, 1.0, 1.0);
+        let _ = hsv_to_rgba(300.0, 1.0, 1.0, 1.0);
+    }
+
+    #[test]
+    fn test_energy_to_color_norm_log_denom_zero_returns_clamped_energy() {
+        let mut cfg = RerunConfig::default();
+        cfg.sim_ray_energy_scale = SimRayEnergyScale::Log;
+        cfg.sim_ray_color_energy_min = 1.0;
+        cfg.sim_ray_energy_threshold = 0.0;
+
+        // min=1 => denom=0, should return clamped e.
+        assert!((energy_to_color_norm(0.5, &cfg) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_ray_color_rainbow_branch() {
+        let mut cfg = RerunConfig::default();
+        cfg.sim_ray_colormap = SimRayColormap::Rainbow;
+        let _ = ray_color(0.1, &cfg);
+        let _ = ray_color(0.9, &cfg);
+    }
+
+    #[test]
+    fn test_energy_full_scale_frequency_dependent() {
+        let mut sim_cfg = SimulationConfig::new();
+        sim_cfg.acoustic_mode = AcousticMode::FrequencyDependent;
+        sim_cfg.single_band_index = None;
+        let result = SimulationResult {
+            positions: vec![],
+            energies: vec![],
+            band_energies: None,
+            hits: vec![],
+            band_hits: None,
+            config: sim_cfg,
+        };
+        assert_eq!(energy_full_scale(&result), NUM_OCTAVE_BANDS as f64);
+
+        let mut sim_cfg = SimulationConfig::new();
+        sim_cfg.acoustic_mode = AcousticMode::FrequencyDependent;
+        sim_cfg.single_band_index = Some(0);
+        let result = SimulationResult {
+            positions: vec![],
+            energies: vec![],
+            band_energies: None,
+            hits: vec![],
+            band_hits: None,
+            config: sim_cfg,
+        };
+        assert_eq!(energy_full_scale(&result), 1.0);
+    }
+
+    #[test]
+    fn test_start_session_is_noop_when_rerun_disabled() {
+        // Avoid spawning any external viewer by forcing Rerun to be disabled.
+        let prev = std::env::var("RERUN").ok();
+        unsafe { std::env::set_var("RERUN", "0") };
+
+        let cfg = RerunConfig::default();
+        let _session = start_session(&cfg).unwrap();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RERUN", v) },
+            None => unsafe { std::env::remove_var("RERUN") },
+        }
+    }
+
+    #[test]
+    fn test_draw_simulation_uses_duration_timeline_when_dt_set() {
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let session = rr::RecordingStreamBuilder::new("test").buffered().unwrap();
+        let mut cfg = RerunConfig::default();
+        cfg.sim_playback_dt_s = 0.1;
+
+        let mut sim_cfg = SimulationConfig::new();
+        sim_cfg.source = Point::new(0.5, 0.5, 0.5);
+
+        let result = SimulationResult {
+            positions: vec![vec![Point::new(0.5, 0.5, 0.5)]],
+            energies: vec![vec![1.0]],
+            band_energies: None,
+            hits: vec![vec![]],
+            band_hits: None,
+            config: sim_cfg,
+        };
+
+        draw_simulation(&session, &result, &building, &cfg).unwrap();
     }
 }

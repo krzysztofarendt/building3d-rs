@@ -158,4 +158,39 @@ mod tests {
         let k_series = config.interzone_conductance_w_per_k(2.0, 2.0, 1.0);
         assert!((k_series - 1.0).abs() < 1e-12);
     }
+
+    #[test]
+    fn test_interzone_conductance_edge_cases() {
+        let mut config = ThermalConfig::new();
+
+        // Non-positive area -> 0.
+        assert_eq!(config.interzone_conductance_w_per_k(2.0, 2.0, 0.0), 0.0);
+        assert_eq!(config.interzone_conductance_w_per_k(2.0, 2.0, -1.0), 0.0);
+
+        // Mean policy: prefer finite U-values.
+        config.interzone_u_value_policy = InterZoneUValuePolicy::Mean;
+        let k = config.interzone_conductance_w_per_k(f64::NAN, 3.0, 2.0);
+        assert!((k - 6.0).abs() < 1e-12);
+        let k = config.interzone_conductance_w_per_k(4.0, f64::INFINITY, 2.0);
+        assert!((k - 8.0).abs() < 1e-12);
+        assert_eq!(
+            config.interzone_conductance_w_per_k(f64::NAN, f64::NAN, 2.0),
+            0.0
+        );
+
+        // Series policy: invalid/non-positive U-values -> 0.
+        config.interzone_u_value_policy = InterZoneUValuePolicy::Series;
+        assert_eq!(config.interzone_conductance_w_per_k(-1.0, 2.0, 1.0), 0.0);
+        assert_eq!(config.interzone_conductance_w_per_k(0.0, 2.0, 1.0), 0.0);
+        assert_eq!(
+            config.interzone_conductance_w_per_k(2.0, f64::NAN, 1.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let cfg: ThermalConfig = Default::default();
+        assert!((cfg.default_u_value - 2.0).abs() < 1e-12);
+    }
 }

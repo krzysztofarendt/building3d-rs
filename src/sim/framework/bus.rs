@@ -63,3 +63,35 @@ impl Bus {
             .map(|b| *b)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_put_get_get_mut_take() {
+        let mut bus = Bus::new();
+
+        assert!(bus.get::<i32>().is_none());
+        bus.put(123_i32);
+        assert_eq!(bus.get::<i32>(), Some(&123));
+
+        if let Some(v) = bus.get_mut::<i32>() {
+            *v += 1;
+        }
+        assert_eq!(bus.get::<i32>(), Some(&124));
+
+        assert_eq!(bus.take::<i32>(), Some(124));
+        assert!(bus.get::<i32>().is_none());
+        assert!(bus.take::<i32>().is_none());
+    }
+
+    #[test]
+    fn test_put_unique_enforces_single_producer() {
+        let mut bus = Bus::new();
+        bus.put_unique::<String>("first".to_string()).unwrap();
+        let err = bus.put_unique::<String>("second".to_string()).unwrap_err();
+        assert!(err.to_string().contains("already contains a value of type"));
+        assert_eq!(bus.get::<String>().map(|s| s.as_str()), Some("first"));
+    }
+}

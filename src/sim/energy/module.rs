@@ -277,6 +277,34 @@ mod tests {
     use crate::{Building, Solid, Zone};
 
     #[test]
+    fn test_energy_module_name() {
+        let module = EnergyModule::new(EnergyModuleConfig::default());
+        assert_eq!(module.name(), "energy");
+    }
+
+    #[test]
+    fn test_energy_module_config_default_trait() {
+        let cfg: EnergyModuleConfig = Default::default();
+        assert_eq!(cfg.model_kind, EnergyModelKind::AirOnly);
+        assert!((cfg.dt_s - 3600.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_energy_module_step_without_init_errors() {
+        let s = Solid::from_box(1.0, 1.0, 1.0, None, "s").unwrap();
+        let z = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![z]).unwrap();
+        let surface_index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &surface_index);
+        let mut bus = Bus::new();
+
+        let module_cfg: EnergyModuleConfig = Default::default();
+        let mut module = EnergyModule::new(module_cfg);
+        let err = module.step(&ctx, &mut bus).unwrap_err();
+        assert!(err.to_string().contains("not initialized"));
+    }
+
+    #[test]
     fn test_energy_module_consumes_shortwave_transmitted_per_zone() {
         // Two zones with no envelope loss and no coupling; shortwave in z0 should only heat z0.
         let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
@@ -321,6 +349,122 @@ mod tests {
         let out = bus.get::<MultiZoneStepResult>().unwrap();
         assert!(out.zone_temperatures_c[0] > 20.0);
         assert!((out.zone_temperatures_c[1] - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_gains_by_zone_split_routes_absorbed_shortwave_by_exteriority() {
+        // Two adjacent solids in the same zone => shared face is not exterior.
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+        let z = Zone::new("z", vec![s0, s1]).unwrap();
+        let building = Building::new("b", vec![z]).unwrap();
+
+        let surface_index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &surface_index);
+        let mut bus = Bus::new();
+
+        let mut thermal = ThermalConfig::new();
+        thermal.default_u_value = 0.0;
+        thermal.infiltration_ach = 0.0;
+        thermal.indoor_temperature = 20.0;
+        thermal.outdoor_temperature = 20.0;
+
+        let hvac = HvacIdealLoads::with_setpoints(-1e9, 1e9);
+        let mut module = EnergyModule::new(EnergyModuleConfig {
+            thermal,
+            hvac,
+            dt_s: 3600.0,
+            steady_state: false,
+            model_kind: EnergyModelKind::AirOnly,
+            material_library: None,
+            default_envelope_capacity_j_per_m2_k: 0.0,
+        });
+        module.init(&ctx, &mut bus).unwrap();
+
+        let interior = surface_index
+            .polygon_uid_by_path("z/s0/wall_1/poly_1")
+            .unwrap()
+            .clone();
+        let exterior = surface_index
+            .polygon_uid_by_path("z/s0/floor/floor")
+            .unwrap()
+            .clone();
+        let boundaries = module.boundaries.as_ref().unwrap();
+        assert!(!boundaries.is_exterior(&interior));
+        assert!(boundaries.is_exterior(&exterior));
+
+        let mut internal = InternalGainsWPerZone::default();
+        internal
+            .watts_by_zone_uid
+            .insert(module.zone_uids[0].clone(), 50.0);
+        bus.put(internal);
+
+        let mut transmitted = ShortwaveTransmittedWPerZone::default();
+        transmitted
+            .watts_by_zone_uid
+            .insert(module.zone_uids[0].clone(), 25.0);
+        bus.put(transmitted);
+
+        let mut absorbed = ShortwaveAbsorbedWPerPolygon::default();
+        absorbed.watts_by_polygon_uid.insert(interior, 100.0);
+        absorbed.watts_by_polygon_uid.insert(exterior, 200.0);
+        bus.put(absorbed);
+
+        let (air_gains, env_gains) = module.gains_by_zone_split(&bus);
+        assert_eq!(air_gains.len(), 1);
+        assert_eq!(env_gains.len(), 1);
+        assert!((air_gains[0] - (50.0 + 25.0 + 100.0)).abs() < 1e-12);
+        assert!((env_gains[0] - 200.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_gains_by_zone_split_internal_total_with_zero_total_volume_returns_zero() {
+        // Cover the defensive branch when `total_volume_m3` is effectively zero.
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((3.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
+
+        let surface_index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &surface_index);
+        let mut bus = Bus::new();
+
+        let mut module = EnergyModule::new(EnergyModuleConfig::default());
+        module.init(&ctx, &mut bus).unwrap();
+        assert!(module.total_volume_m3 > 1e-6);
+
+        // Force the "else { 0.0 }" internal gains branch.
+        module.total_volume_m3 = 0.0;
+        bus.put(InternalGainsWTotal(123.0));
+
+        let (air_gains, env_gains) = module.gains_by_zone_split(&bus);
+        assert_eq!(air_gains, vec![0.0, 0.0]);
+        assert_eq!(env_gains, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_energy_module_envelope_rc_steady_state_init_path() {
+        let s = Solid::from_box(2.0, 2.0, 2.0, None, "s").unwrap();
+        let z = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![z]).unwrap();
+
+        let surface_index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &surface_index);
+        let mut bus = Bus::new();
+
+        let cfg = EnergyModuleConfig {
+            model_kind: EnergyModelKind::EnvelopeRc2R1C,
+            steady_state: true,
+            ..EnergyModuleConfig::default()
+        };
+        let mut module = EnergyModule::new(cfg);
+        module.init(&ctx, &mut bus).unwrap();
+
+        match module.model.as_ref().unwrap() {
+            EnergyModel::EnvelopeRc(_) => {}
+            _ => panic!("expected EnvelopeRc model"),
+        }
     }
 
     #[test]

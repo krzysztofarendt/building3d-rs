@@ -533,4 +533,63 @@ mod tests {
             model.zone_temperature
         );
     }
+
+    #[test]
+    fn test_hvac_calculate_for_timestep_invalid_inputs() {
+        let hvac = HvacIdealLoads::new();
+        let (h, c, t) = hvac.calculate_for_timestep(10.0, 0.0, 3600.0);
+        assert_eq!((h, c, t), (0.0, 0.0, 10.0));
+
+        let (h, c, t) = hvac.calculate_for_timestep(10.0, 1000.0, 0.0);
+        assert_eq!((h, c, t), (0.0, 0.0, 10.0));
+    }
+
+    #[test]
+    fn test_lumped_model_edge_cases() {
+        // dt<=0 -> unchanged
+        let mut model = LumpedThermalModel::new(20.0, 100.0, 0.0, 1000.0);
+        let t = model.step(0.0, 0.0, 0.0, 0.0);
+        assert!((t - 20.0).abs() < 1e-12);
+
+        // zero thermal capacity -> steady-state formula
+        let mut model = LumpedThermalModel::new(20.0, 100.0, 20.0, 0.0);
+        let t = model.step(0.0, 200.0, 0.0, 3600.0);
+        // T = T_out + Q/K = 0 + 200/120
+        assert!((t - (200.0 / 120.0)).abs() < 1e-12);
+
+        // no losses (K<=0) -> pure integrator
+        let mut model = LumpedThermalModel::new(20.0, 0.0, 0.0, 1000.0);
+        let t = model.step(0.0, 100.0, 0.0, 10.0);
+        assert!((t - 21.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let hvac: HvacIdealLoads = Default::default();
+        assert!((hvac.heating_setpoint - 20.0).abs() < 1e-12);
+        assert!((hvac.cooling_setpoint - 26.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_hvac_capacity_limits_cooling_branch() {
+        let mut hvac = HvacIdealLoads::new();
+        hvac.max_cooling_capacity = 2.0; // W thermal
+
+        // Need 4 W thermal to drop 4 K in an hour with C=3600 J/K, but only 2 W available.
+        let (heating_elec, cooling_elec, temp) = hvac.calculate(30.0, 3600.0);
+        assert!(heating_elec.abs() < 1e-12);
+        // COP=3 -> electric == thermal/3
+        assert!((cooling_elec - (2.0 / 3.0)).abs() < 1e-12);
+        // Delivered deltaT = 2 W * 3600 s / 3600 J/K = 2 K
+        assert!((temp - 28.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_calculate_with_losses_invalid_dt_or_capacity_returns_zero() {
+        let hvac = HvacIdealLoads::new();
+        let (h, c) = hvac.calculate_with_losses(15.0, 0.0, 100.0, 0.0, 3600.0, 0.0);
+        assert_eq!((h, c), (0.0, 0.0));
+        let (h, c) = hvac.calculate_with_losses(15.0, 0.0, 100.0, 0.0, 0.0, 3600.0);
+        assert_eq!((h, c), (0.0, 0.0));
+    }
 }

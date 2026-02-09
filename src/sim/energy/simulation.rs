@@ -535,6 +535,7 @@ pub fn run_multizone_steady_simulation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::energy::weather::HourlyRecord;
     use crate::{Solid, Zone};
 
     #[test]
@@ -599,6 +600,131 @@ mod tests {
     }
 
     #[test]
+    fn test_day_of_year_basic() {
+        assert_eq!(day_of_year(1, 1), 1);
+        assert_eq!(day_of_year(3, 1), 60); // non-leap-year convention (Jan31+Feb28+1)
+        assert_eq!(day_of_year(12, 31), 365);
+    }
+
+    #[test]
+    fn test_annual_simulation_with_solar_config_small_weather() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let config = ThermalConfig::new();
+        let weather = WeatherData {
+            location: "Mini".to_string(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![
+                HourlyRecord {
+                    month: 3,
+                    day: 20,
+                    hour: 12,
+                    dry_bulb_temperature: 0.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 800.0,
+                    diffuse_horizontal_radiation: 100.0,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                },
+                HourlyRecord {
+                    month: 3,
+                    day: 20,
+                    hour: 1,
+                    dry_bulb_temperature: 0.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 0.0,
+                    diffuse_horizontal_radiation: 50.0,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                },
+            ],
+        };
+
+        let mut solar = SolarGainConfig::new();
+        solar.default_shgc = 1.0;
+        solar.glazing_patterns = vec!["floor".to_string()];
+
+        let no_solar = run_annual_simulation(&building, &config, &weather, None, None);
+        let with_solar = run_annual_simulation(&building, &config, &weather, None, Some(&solar));
+
+        assert_eq!(no_solar.hourly_heating.len(), 2);
+        assert_eq!(with_solar.hourly_heating.len(), 2);
+        assert!(
+            with_solar.hourly_heating[0] <= no_solar.hourly_heating[0],
+            "Solar gains should not increase heating demand"
+        );
+    }
+
+    #[test]
+    fn test_multizone_steady_simulation_hits_solar_per_zone_branch() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = ThermalConfig::new();
+        config.default_u_value = 1.0;
+        config.infiltration_ach = 0.0;
+        config.indoor_temperature = 20.0;
+        config.outdoor_temperature = 20.0;
+
+        let weather = WeatherData {
+            location: "Mini".to_string(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![HourlyRecord {
+                month: 6,
+                day: 1,
+                hour: 12,
+                dry_bulb_temperature: 20.0,
+                relative_humidity: 50.0,
+                global_horizontal_radiation: 0.0,
+                direct_normal_radiation: 0.0,
+                diffuse_horizontal_radiation: 200.0,
+                wind_speed: 0.0,
+                wind_direction: 0.0,
+            }],
+        };
+
+        let hvac = HvacIdealLoads::new();
+
+        let no_solar =
+            run_multizone_steady_simulation(&building, &config, &weather, &hvac, None, None)
+                .unwrap();
+
+        let mut solar = SolarGainConfig::new();
+        solar.default_shgc = 1.0;
+        solar.glazing_patterns = vec!["floor".to_string()];
+
+        let with_solar = run_multizone_steady_simulation(
+            &building,
+            &config,
+            &weather,
+            &hvac,
+            None,
+            Some(&solar),
+        )
+        .unwrap();
+
+        assert_eq!(no_solar.annual.hourly_heating.len(), 1);
+        assert_eq!(with_solar.annual.hourly_heating.len(), 1);
+        assert_eq!(no_solar.annual.hourly_cooling.len(), 1);
+        assert_eq!(with_solar.annual.hourly_cooling.len(), 1);
+        assert!(
+            with_solar.annual.hourly_cooling[0] > no_solar.annual.hourly_cooling[0],
+            "Solar gains should increase cooling demand in steady-state"
+        );
+    }
+
+    #[test]
     fn test_transient_simulation() {
         let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s]).unwrap();
@@ -624,6 +750,68 @@ mod tests {
     }
 
     #[test]
+    fn test_transient_simulation_dt_zero_fallback_ua_and_solar() {
+        let s = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = ThermalConfig::new();
+        config.indoor_temperature = 20.0;
+        config.outdoor_temperature = 20.0; // dt=0 -> triggers UA/infiltration fallback branches
+
+        let weather = WeatherData {
+            location: "Mini".to_string(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![
+                HourlyRecord {
+                    month: 6,
+                    day: 1,
+                    hour: 12,
+                    dry_bulb_temperature: 20.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 500.0,
+                    diffuse_horizontal_radiation: 50.0,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                },
+                HourlyRecord {
+                    month: 6,
+                    day: 1,
+                    hour: 1,
+                    dry_bulb_temperature: 20.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 0.0,
+                    diffuse_horizontal_radiation: 10.0,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                },
+            ],
+        };
+
+        let hvac = HvacIdealLoads::new();
+        let gains = InternalGainsProfile::office(100.0);
+        let mut solar = SolarGainConfig::new();
+        solar.default_shgc = 1.0;
+        solar.glazing_patterns = vec!["floor".to_string()];
+
+        let result = run_transient_simulation(
+            &building,
+            &config,
+            &weather,
+            &hvac,
+            Some(&gains),
+            Some(&solar),
+        );
+        assert_eq!(result.hourly_heating.len(), 2);
+        assert_eq!(result.hourly_cooling.len(), 2);
+    }
+
+    #[test]
     fn test_multizone_transient_simulation_basic() {
         let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
         let s1 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "s1").unwrap();
@@ -643,6 +831,71 @@ mod tests {
         assert_eq!(result.hourly_zone_temperatures_c.len(), 2);
         assert_eq!(result.hourly_zone_temperatures_c[0].len(), 8760);
         assert_eq!(result.annual.hourly_heating.len(), 8760);
+    }
+
+    #[test]
+    fn test_multizone_transient_with_solar_distribution() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(2.0, 2.0, 2.0, Some((2.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
+
+        let config = ThermalConfig::new();
+        let weather = WeatherData {
+            location: "Mini".to_string(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![
+                HourlyRecord {
+                    month: 6,
+                    day: 1,
+                    hour: 12,
+                    dry_bulb_temperature: 0.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 800.0,
+                    diffuse_horizontal_radiation: 100.0,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                },
+                HourlyRecord {
+                    month: 6,
+                    day: 1,
+                    hour: 1,
+                    dry_bulb_temperature: 0.0,
+                    relative_humidity: 50.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 0.0,
+                    diffuse_horizontal_radiation: 20.0,
+                    wind_speed: 0.0,
+                    wind_direction: 0.0,
+                },
+            ],
+        };
+        let hvac = HvacIdealLoads::new();
+        let gains = InternalGainsProfile::office(100.0);
+        let mut solar = SolarGainConfig::new();
+        solar.default_shgc = 1.0;
+        solar.glazing_patterns = vec!["floor".to_string()];
+
+        let result = run_multizone_transient_simulation(
+            &building,
+            &config,
+            &weather,
+            &hvac,
+            Some(&gains),
+            Some(&solar),
+        )
+        .unwrap();
+
+        assert_eq!(result.zone_names.len(), 2);
+        assert_eq!(result.hourly_zone_temperatures_c.len(), 2);
+        assert_eq!(result.hourly_zone_temperatures_c[0].len(), 2);
+        assert_eq!(result.annual.hourly_heating.len(), 2);
+        assert_eq!(result.annual.hourly_cooling.len(), 2);
     }
 
     #[test]

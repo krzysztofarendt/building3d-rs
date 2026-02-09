@@ -440,6 +440,7 @@ fn compute_diffuse_only_per_zone(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::materials::{Material, MaterialLibrary};
     use crate::{Point, Polygon, Solid, Wall, Zone};
 
     fn make_building_with_surfaces(wall_and_polygon_names: Vec<(&str, &str)>) -> Building {
@@ -676,5 +677,26 @@ mod tests {
             "Per-zone sum should match total: sum={sum}, total={total}"
         );
         assert_eq!(by_zone.len(), 2);
+    }
+
+    #[test]
+    fn test_default_traits() {
+        let cfg: SolarBridgeConfig = Default::default();
+        assert!(cfg.luminous_efficacy > 0.0);
+        let cfg: SolarGainConfig = Default::default();
+        assert!(cfg.default_shgc > 0.0);
+    }
+
+    #[test]
+    fn test_resolve_shgc_with_materials_uses_is_glazing_flag() {
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("glass").with_glazing());
+        lib.assign("/", "glass");
+
+        let mut cfg = SolarGainConfig::new();
+        cfg.default_shgc = 0.75;
+
+        let shgc = cfg.resolve_shgc_with_materials("zone/room/wall/window_0", Some(&lib));
+        assert_eq!(shgc, Some(0.75));
     }
 }

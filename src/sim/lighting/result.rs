@@ -135,6 +135,16 @@ impl Default for LightingResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Vector;
+    use crate::sim::lighting::sensor::{Sensor, SensorGrid};
+
+    #[test]
+    fn test_default_trait() {
+        let result: LightingResult = Default::default();
+        assert!(result.illuminance.is_empty());
+        assert!(result.incident_flux.is_empty());
+        assert!(result.hit_count.is_empty());
+    }
 
     #[test]
     fn test_record_and_finalize() {
@@ -153,5 +163,50 @@ mod tests {
 
         let hits = result.hit_count.get(&u0).unwrap();
         assert_eq!(*hits, 2);
+    }
+
+    #[test]
+    fn test_record_sensor_hit_updates_nearest_sensor() {
+        let mut result = LightingResult::new();
+        result.sensor_grids.push(SensorGrid {
+            polygon_path: "zone/room/floor/floor".to_string(),
+            sensors: vec![
+                Sensor {
+                    position: Point::new(0.0, 0.0, 0.0),
+                    normal: Vector::new(0.0, 0.0, 1.0),
+                    illuminance: [0.0; 3],
+                    hit_count: 0,
+                },
+                Sensor {
+                    position: Point::new(10.0, 0.0, 0.0),
+                    normal: Vector::new(0.0, 0.0, 1.0),
+                    illuminance: [0.0; 3],
+                    hit_count: 0,
+                },
+            ],
+        });
+
+        // Hit near the first sensor.
+        result.record_sensor_hit(0, Point::new(0.1, 0.0, 0.0), [3.0, 6.0, 9.0], 3.0);
+        let g = &result.sensor_grids[0];
+        assert_eq!(g.sensors[0].hit_count, 1);
+        assert!(g.sensors[1].hit_count == 0);
+        assert!((g.sensors[0].illuminance[0] - 1.0).abs() < 1e-12);
+        assert!((g.sensors[0].illuminance[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_average_illuminance_empty_and_nonempty() {
+        let result = LightingResult::new();
+        assert_eq!(result.average_illuminance(), [0.0; 3]);
+
+        let u0 = UID::from("poly-0");
+        let u1 = UID::from("poly-1");
+        let mut result = LightingResult::new();
+        result.illuminance.insert(u0, [1.0, 2.0, 3.0]);
+        result.illuminance.insert(u1, [3.0, 4.0, 5.0]);
+        let avg = result.average_illuminance();
+        assert!((avg[0] - 2.0).abs() < 1e-12);
+        assert!((avg[2] - 4.0).abs() < 1e-12);
     }
 }
