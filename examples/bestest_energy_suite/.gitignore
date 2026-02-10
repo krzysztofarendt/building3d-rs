@@ -1,3 +1,6 @@
 /data/*.epw
 /results.csv
 /results.png
+/diagnostics.csv
+/diagnostics_monthly.csv
+/solar_effect.png

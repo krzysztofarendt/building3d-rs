@@ -46,6 +46,21 @@ pub struct SolarGainConfig {
     pub include_incidence_angle_modifier: bool,
     /// IAM shape coefficient `a` (typical: ~0.05–0.2).
     pub incidence_angle_modifier_a: f64,
+    /// If true, include exterior longwave exchange to sky/ground in the
+    /// sol-air coupling term for opaque surfaces.
+    pub include_exterior_longwave_exchange: bool,
+    /// Effective longwave emissivity of exterior opaque surfaces (0..1).
+    pub exterior_opaque_emissivity: f64,
+    /// Effective longwave emissivity of the ground (0..1).
+    pub ground_emissivity: f64,
+    /// If true, compute `h_out` from wind speed (instead of a constant).
+    pub use_wind_speed_for_h_out: bool,
+    /// Wind-model base term for `h_out` in W/(m²·K).
+    pub h_out_base_w_per_m2_k: f64,
+    /// Wind-model slope for `h_out` in W/(m²·K) per (m/s).
+    pub h_out_wind_coeff_w_per_m2_k_per_m_s: f64,
+    /// Optional tilt scaling applied to `h_out`: `h_out *= 1 + tilt_scale*|n_z|`.
+    pub h_out_tilt_scale: f64,
 }
 
 impl SolarGainConfig {
@@ -66,6 +81,13 @@ impl SolarGainConfig {
             ground_reflectance: DEFAULT_GROUND_REFLECTANCE,
             include_incidence_angle_modifier: false,
             incidence_angle_modifier_a: DEFAULT_INC_ANGLE_MODIFIER_A,
+            include_exterior_longwave_exchange: false,
+            exterior_opaque_emissivity: 0.9,
+            ground_emissivity: 0.95,
+            use_wind_speed_for_h_out: false,
+            h_out_base_w_per_m2_k: 5.0,
+            h_out_wind_coeff_w_per_m2_k_per_m_s: 4.0,
+            h_out_tilt_scale: 0.0,
         }
     }
 
@@ -110,12 +132,18 @@ impl Default for SolarGainConfig {
 /// Parameters describing the solar conditions for a single hour.
 #[derive(Debug, Clone, Copy)]
 pub struct SolarHourParams {
+    /// Outdoor air temperature (°C).
+    pub outdoor_air_temperature_c: f64,
     /// Global horizontal irradiance (W/m^2).
     pub global_horizontal_irradiance: f64,
     /// Direct normal irradiance (W/m^2).
     pub direct_normal_irradiance: f64,
     /// Diffuse horizontal irradiance (W/m^2).
     pub diffuse_horizontal_irradiance: f64,
+    /// Horizontal infrared radiation intensity from sky (W/m^2).
+    pub horizontal_infrared_radiation: f64,
+    /// Wind speed (m/s).
+    pub wind_speed: f64,
     /// Day of year (1-365).
     pub day_of_year: u16,
     /// Solar hour (0-24).
@@ -367,9 +395,12 @@ mod tests {
 
         // At solar noon in summer (day 172), latitude 45N
         let params = SolarHourParams {
+            outdoor_air_temperature_c: 20.0,
             global_horizontal_irradiance: 700.0,
             direct_normal_irradiance: 500.0,
             diffuse_horizontal_irradiance: 200.0,
+            horizontal_infrared_radiation: 300.0,
+            wind_speed: 3.0,
             day_of_year: 172,
             local_time_hours: 12.0,
             latitude: 45.0,
@@ -395,9 +426,12 @@ mod tests {
         let config = SolarGainConfig::new();
 
         let params = SolarHourParams {
+            outdoor_air_temperature_c: 20.0,
             global_horizontal_irradiance: 0.0,
             direct_normal_irradiance: 0.0,
             diffuse_horizontal_irradiance: 0.0,
+            horizontal_infrared_radiation: 300.0,
+            wind_speed: 3.0,
             day_of_year: 172,
             local_time_hours: 12.0,
             latitude: 45.0,
@@ -418,9 +452,12 @@ mod tests {
         let building = Building::new("b", vec![z0, z1]).unwrap();
 
         let params = SolarHourParams {
+            outdoor_air_temperature_c: 20.0,
             global_horizontal_irradiance: 900.0,
             direct_normal_irradiance: 800.0,
             diffuse_horizontal_irradiance: 100.0,
+            horizontal_infrared_radiation: 300.0,
+            wind_speed: 3.0,
             day_of_year: 81,       // ~equinox
             local_time_hours: 9.0, // morning sun (east-ish)
             latitude: 0.0,

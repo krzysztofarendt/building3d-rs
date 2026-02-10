@@ -232,6 +232,9 @@ fn solar_cfg() -> SolarGainConfig {
     solar.incidence_angle_modifier_a = 0.1;
     solar.include_exterior_opaque_absorption = true;
     solar.default_opaque_absorptance = 0.6;
+    // Phase 2.2 refinements (optional): exterior longwave exchange + wind-based h_out.
+    solar.include_exterior_longwave_exchange = false;
+    solar.use_wind_speed_for_h_out = false;
     solar
 }
 
@@ -348,9 +351,10 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     let mut cfg = make_cfg(&building);
     cfg.thermal_capacity_j_per_m3_k *= 8.0;
     cfg.two_node_mass_fraction = 0.95;
-    cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+    cfg.interior_heat_transfer_coeff_w_per_m2_k = 8.0;
     cfg.solar_gains_to_mass_fraction = 0.9;
     cfg.internal_gains_to_mass_fraction = 0.0;
+    cfg.two_node_envelope_to_mass = true;
 
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
     let solar = solar_cfg();

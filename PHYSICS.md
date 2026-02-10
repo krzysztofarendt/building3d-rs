@@ -1740,8 +1740,13 @@ Phase 1 — window model (remove the biggest “hidden UA” issue):
 Phase 2 — exterior surface balance (address cooling under-prediction):
 1. **DONE (first-order)**: Implemented an unshaded **sol-air coupling** for opaque exterior surfaces
    (DNI/DHI + orientation, absorptance, tunable `h_out`, coupled inward as a sol-air style gain).
-2. **NEXT (refinement)**: Add longwave sky exchange (sky temperature, emissivity) and improve `h_out`
-   (wind speed, surface tilt/orientation).
+2. **IMPLEMENTED (experimental)**: Added optional **exterior longwave exchange** (from EPW “Horizontal
+   Infrared Radiation Intensity from Sky”) and a **wind-based `h_out`** model.
+   - controlled via `SolarGainConfig.include_exterior_longwave_exchange` and
+     `SolarGainConfig.use_wind_speed_for_h_out`
+   - currently **disabled in BESTEST harness defaults** because the envelope is still modeled by
+     steady ISO 6946-style U-values that include film resistances; enabling explicit longwave terms
+     can introduce **double-counting / model inconsistency** without a full exterior surface balance.
 3. **DONE (first-order)**: Added a ground boundary knob for “floor-like” exterior surfaces.
    Current transient solver uses a coarse `Q_ground = UA_ground * (T_ground - T_out)` correction.
 
@@ -1749,6 +1754,9 @@ Phase 3 — solar distribution + thermal mass (required for 900):
 1. **PARTIAL**: Two-node model supports routing a fraction of transmitted solar to the mass node,
    but the distribution is still a single “solar-to-mass fraction” knob (not surface-aware).
 2. **DONE**: Added a stable implicit **2R2C** (air + mass) option.
+   - added an additional 2R2C variant (`ThermalConfig.two_node_envelope_to_mass`) where envelope
+     conduction attaches to the **mass** node and infiltration remains on the **air** node; this
+     improves heavyweight BESTEST behavior when paired with a higher interior `h` (e.g. ~8 W/(m²·K)).
 3. **NEXT**: Add an interior-surface-aware distribution (floor-first / area-weighted), and (optionally)
    a coarse envelope node so exterior absorbed solar affects indoor loads with realistic lag.
 

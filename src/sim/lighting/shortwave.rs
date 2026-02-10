@@ -297,9 +297,12 @@ impl SimModule for SolarEpwModule {
         let record = &self.config.weather.records[hour_index];
 
         let params = SolarHourParams {
+            outdoor_air_temperature_c: record.dry_bulb_temperature,
             global_horizontal_irradiance: record.global_horizontal_radiation,
             direct_normal_irradiance: record.direct_normal_radiation,
             diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+            horizontal_infrared_radiation: record.horizontal_infrared_radiation,
+            wind_speed: record.wind_speed,
             day_of_year: day_of_year(record.month, record.day),
             local_time_hours: record.hour as f64 - 0.5,
             latitude: self.config.weather.latitude,
@@ -679,9 +682,12 @@ impl SimModule for SolarShortwaveStepModule {
         bus.put(OutdoorAirTemperatureC(record.dry_bulb_temperature));
 
         let params = SolarHourParams {
+            outdoor_air_temperature_c: record.dry_bulb_temperature,
             global_horizontal_irradiance: record.global_horizontal_radiation,
             direct_normal_irradiance: record.direct_normal_radiation,
             diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+            horizontal_infrared_radiation: record.horizontal_infrared_radiation,
+            wind_speed: record.wind_speed,
             day_of_year: day_of_year(record.month, record.day),
             local_time_hours: record.hour as f64 - 0.5,
             latitude: self.config.weather.latitude,
@@ -1132,9 +1138,12 @@ mod tests {
         let ctx = SimContext::new(&building, &index);
 
         let params = SolarHourParams {
+            outdoor_air_temperature_c: 20.0,
             global_horizontal_irradiance: 900.0,
             direct_normal_irradiance: 500.0,
             diffuse_horizontal_irradiance: 200.0,
+            horizontal_infrared_radiation: 300.0,
+            wind_speed: 0.0,
             day_of_year: 80, // ~equinox
             local_time_hours: 12.0,
             latitude: 0.0,
@@ -1180,9 +1189,12 @@ mod tests {
         };
 
         let params = SolarHourParams {
+            outdoor_air_temperature_c: 20.0,
             global_horizontal_irradiance: 1000.0,
             direct_normal_irradiance: 800.0,
             diffuse_horizontal_irradiance: 200.0,
+            horizontal_infrared_radiation: 300.0,
+            wind_speed: 0.0,
             day_of_year: 80,
             local_time_hours: 12.0,
             latitude: 0.0,
@@ -1436,6 +1448,7 @@ mod tests {
                     hour: 7, // near sunrise at equator: sun dir ~ +X
                     dry_bulb_temperature: 20.0,
                     relative_humidity: 50.0,
+                    horizontal_infrared_radiation: 300.0,
                     global_horizontal_radiation: dni + dhi,
                     direct_normal_radiation: dni,
                     diffuse_horizontal_radiation: dhi,
@@ -1547,6 +1560,7 @@ mod tests {
                     hour: 7, // near sunrise at equator: sun dir ~ +X
                     dry_bulb_temperature: 20.0,
                     relative_humidity: 50.0,
+                    horizontal_infrared_radiation: 300.0,
                     global_horizontal_radiation: dni + dhi,
                     direct_normal_radiation: dni,
                     diffuse_horizontal_radiation: dhi,
@@ -1659,6 +1673,7 @@ mod tests {
                     hour: 12,
                     dry_bulb_temperature: 20.0,
                     relative_humidity: 50.0,
+                    horizontal_infrared_radiation: 300.0,
                     global_horizontal_radiation: dni + dhi,
                     direct_normal_radiation: dni,
                     diffuse_horizontal_radiation: dhi,

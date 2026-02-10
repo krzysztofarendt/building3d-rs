@@ -314,6 +314,9 @@ fn solar_config_for_case_600() -> SolarGainConfig {
     solar.incidence_angle_modifier_a = 0.1;
     solar.include_exterior_opaque_absorption = true;
     solar.default_opaque_absorptance = 0.6;
+    // Phase 2.2 refinements: exterior longwave exchange + wind-based h_out.
+    solar.include_exterior_longwave_exchange = false;
+    solar.use_wind_speed_for_h_out = false;
     solar
 }
 
@@ -596,9 +599,12 @@ fn compute_case_diagnostics(
     for record in &weather.records {
         let month_idx = (record.month as usize).saturating_sub(1).min(11);
         let params = SolarHourParams {
+            outdoor_air_temperature_c: record.dry_bulb_temperature,
             global_horizontal_irradiance: record.global_horizontal_radiation,
             direct_normal_irradiance: record.direct_normal_radiation,
             diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+            horizontal_infrared_radiation: record.horizontal_infrared_radiation,
+            wind_speed: record.wind_speed,
             day_of_year: day_of_year(record.month, record.day),
             local_time_hours: record.hour as f64 - 0.5,
             latitude: weather.latitude,
@@ -765,7 +771,7 @@ fn main() -> Result<()> {
     let interior_h_900: f64 = std::env::var("BESTEST_900_INTERIOR_H_W_PER_M2_K")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3.0);
+        .unwrap_or(8.0);
 
     let suite = vec![
         CaseSpec {
@@ -843,6 +849,7 @@ fn main() -> Result<()> {
             cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_900;
             cfg.solar_gains_to_mass_fraction = solar_to_mass_900;
             cfg.internal_gains_to_mass_fraction = 0.0;
+            cfg.two_node_envelope_to_mass = true;
         }
         if enable_two_node_600 && spec.name.starts_with("600") {
             cfg.two_node_mass_fraction = two_node_mass_fraction_600;
