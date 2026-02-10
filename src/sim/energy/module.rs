@@ -119,7 +119,7 @@ impl EnergyModule {
             .map(|g| &g.watts_by_zone_uid);
 
         // Apply internal + transmitted shortwave to the air node.
-        for i in 0..n {
+        for (i, air_gain) in air_gains.iter_mut().enumerate() {
             let uid = &self.zone_uids[i];
 
             let internal_i = if let Some(map) = internal_by_zone {
@@ -134,7 +134,7 @@ impl EnergyModule {
                 .and_then(|map| map.get(uid).cloned())
                 .unwrap_or(0.0);
 
-            air_gains[i] += internal_i + solar_i;
+            *air_gain += internal_i + solar_i;
         }
 
         // Per-polygon absorbed shortwave: split between envelope (exterior) and air (non-exterior).

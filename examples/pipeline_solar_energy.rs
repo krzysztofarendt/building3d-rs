@@ -35,7 +35,6 @@ fn main() -> Result<()> {
     let solar = SolarShortwaveStepModule::new(solar_step_cfg);
 
     let mut energy_cfg = EnergyModuleConfig::default();
-    energy_cfg.dt_s = 3600.0;
     energy_cfg.thermal.outdoor_temperature = 15.0;
 
     let energy = EnergyModule::new(energy_cfg);

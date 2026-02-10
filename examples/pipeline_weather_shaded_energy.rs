@@ -56,7 +56,6 @@ fn main() -> Result<()> {
     let gains_profile = Arc::new(InternalGainsProfile::office(0.0));
 
     let mut energy_cfg = EnergyModuleConfig::default();
-    energy_cfg.dt_s = 3600.0;
     // For this demo, isolate the solar coupling effect.
     energy_cfg.thermal.default_u_value = 0.0;
     energy_cfg.thermal.infiltration_ach = 0.0;

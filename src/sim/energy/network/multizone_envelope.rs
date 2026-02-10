@@ -262,7 +262,7 @@ impl MultiZoneEnvelopeRcModel {
         let mut neighbors: Vec<Vec<(usize, f64)>> = vec![vec![]; nn];
 
         // Build air rows.
-        for i in 0..n {
+        for (i, &air_gain_w) in air_gains_w.iter().enumerate() {
             let c_air = self.air_capacity_j_per_k[i].max(0.0);
             let c_over_dt = if c_air > 0.0 { c_air / dt_s } else { 0.0 };
             let k_inf = self.infiltration_k_w_per_k[i];
@@ -274,7 +274,7 @@ impl MultiZoneEnvelopeRcModel {
 
             diag[idx_air] = c_over_dt + k_inf + k_air_env + self.sum_interzone_k[i];
             rhs_base[idx_air] =
-                c_over_dt * self.air_temperatures_c[i] + k_inf * outdoor_temp_c + air_gains_w[i];
+                c_over_dt * self.air_temperatures_c[i] + k_inf * outdoor_temp_c + air_gain_w;
 
             // Air ↔ envelope coupling.
             if k_air_env > 0.0 {
@@ -290,7 +290,7 @@ impl MultiZoneEnvelopeRcModel {
         }
 
         // Build envelope rows.
-        for i in 0..n {
+        for (i, &envelope_gain_w) in envelope_gains_w.iter().enumerate() {
             let c_env = self.env_capacity_j_per_k[i].max(0.0);
             let c_over_dt = if c_env > 0.0 { c_env / dt_s } else { 0.0 };
             let k_env = self.exterior_k_w_per_k[i].max(0.0);
@@ -303,7 +303,7 @@ impl MultiZoneEnvelopeRcModel {
             diag[idx_env] = c_over_dt + k_air_env + k_env_out;
             rhs_base[idx_env] = c_over_dt * self.env_temperatures_c[i]
                 + k_env_out * outdoor_temp_c
-                + envelope_gains_w[i];
+                + envelope_gain_w;
 
             if k_air_env > 0.0 {
                 neighbors[idx_env].push((idx_air, k_air_env));
@@ -312,8 +312,8 @@ impl MultiZoneEnvelopeRcModel {
 
         // Guard against ill-posed air nodes (e.g., steady-state + zero conductances).
         // Envelope nodes may be degenerate (no exterior surfaces); those are fixed in the solver.
-        for i in 0..n {
-            anyhow::ensure!(diag[i] > 0.0, "Ill-posed RC system: air diag[{i}] == 0");
+        for (i, &d) in diag[..n].iter().enumerate() {
+            anyhow::ensure!(d > 0.0, "Ill-posed RC system: air diag[{i}] == 0");
         }
 
         let mut control = vec![Control::None; n];
@@ -415,10 +415,8 @@ impl MultiZoneEnvelopeRcModel {
                     }
                 }
 
-                for i in 0..n {
-                    self.air_temperatures_c[i] = final_temps[i];
-                    self.env_temperatures_c[i] = final_temps[n + i];
-                }
+                self.air_temperatures_c[..n].copy_from_slice(&final_temps[..n]);
+                self.env_temperatures_c[..n].copy_from_slice(&final_temps[n..(2 * n)]);
 
                 return Ok(MultiZoneStepResult {
                     zone_uids: self.zone_uids.clone(),

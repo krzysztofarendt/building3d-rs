@@ -288,8 +288,8 @@ impl Simulation {
             all_hits.push(step_hits);
 
             let steps_done = all_hits.len();
-            let should_report =
-                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let should_report = report_every > 0
+                && (steps_done.is_multiple_of(report_every) || steps_done == num_steps);
             let needs_stats = should_report || min_alive_fraction > 0.0;
 
             if needs_stats {
@@ -559,8 +559,8 @@ impl Simulation {
             all_band_hits.push(step_band_hits);
 
             let steps_done = all_hits.len();
-            let should_report =
-                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let should_report = report_every > 0
+                && (steps_done.is_multiple_of(report_every) || steps_done == num_steps);
             let needs_stats = should_report || min_alive_fraction > 0.0;
 
             if needs_stats {
@@ -810,8 +810,8 @@ impl Simulation {
             all_band_hits.push(step_band_hits);
 
             let steps_done = all_hits.len();
-            let should_report =
-                report_every > 0 && (steps_done % report_every == 0 || steps_done == num_steps);
+            let should_report = report_every > 0
+                && (steps_done.is_multiple_of(report_every) || steps_done == num_steps);
             let needs_stats = should_report || min_alive_fraction > 0.0;
 
             if needs_stats {

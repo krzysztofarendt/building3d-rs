@@ -20,8 +20,8 @@ pub fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>> {
         // Pivot selection
         let mut pivot_row = col;
         let mut pivot_val = a[col][col].abs();
-        for r in (col + 1)..n {
-            let v = a[r][col].abs();
+        for (r, row) in a.iter_mut().enumerate().skip(col + 1) {
+            let v = row[col].abs();
             if v > pivot_val {
                 pivot_val = v;
                 pivot_row = r;
@@ -56,8 +56,8 @@ pub fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>> {
     let mut x = vec![0.0; n];
     for i in (0..n).rev() {
         let mut rhs = b[i];
-        for j in (i + 1)..n {
-            rhs -= a[i][j] * x[j];
+        for (&a_ij, &x_j) in a[i].iter().skip(i + 1).zip(x.iter().skip(i + 1)) {
+            rhs -= a_ij * x_j;
         }
         x[i] = rhs / a[i][i];
     }

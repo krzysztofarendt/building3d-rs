@@ -333,16 +333,18 @@ mod tests {
 
     #[test]
     fn test_energy_to_color_norm_log_handles_zero_thresholds() {
-        let mut cfg = RerunConfig::default();
-        cfg.sim_ray_energy_scale = SimRayEnergyScale::Log;
-        cfg.sim_ray_color_energy_min = 0.0;
-        cfg.sim_ray_energy_threshold = 0.0;
-        cfg.sim_ray_color_gamma = 2.0;
+        let cfg = RerunConfig {
+            sim_ray_energy_scale: SimRayEnergyScale::Log,
+            sim_ray_color_energy_min: 0.0,
+            sim_ray_energy_threshold: 0.0,
+            sim_ray_color_gamma: 2.0,
+            ..Default::default()
+        };
 
         let t_low = energy_to_color_norm(0.0, &cfg);
         let t_high = energy_to_color_norm(1.0, &cfg);
-        assert!(t_low >= 0.0 && t_low <= 1.0);
-        assert!(t_high >= 0.0 && t_high <= 1.0);
+        assert!((0.0..=1.0).contains(&t_low));
+        assert!((0.0..=1.0).contains(&t_high));
         assert!(t_high >= t_low);
     }
 
@@ -395,10 +397,12 @@ mod tests {
 
     #[test]
     fn test_energy_to_color_norm_log_denom_zero_returns_clamped_energy() {
-        let mut cfg = RerunConfig::default();
-        cfg.sim_ray_energy_scale = SimRayEnergyScale::Log;
-        cfg.sim_ray_color_energy_min = 1.0;
-        cfg.sim_ray_energy_threshold = 0.0;
+        let cfg = RerunConfig {
+            sim_ray_energy_scale: SimRayEnergyScale::Log,
+            sim_ray_color_energy_min: 1.0,
+            sim_ray_energy_threshold: 0.0,
+            ..Default::default()
+        };
 
         // min=1 => denom=0, should return clamped e.
         assert!((energy_to_color_norm(0.5, &cfg) - 1.0).abs() < 1e-12);
@@ -406,8 +410,10 @@ mod tests {
 
     #[test]
     fn test_ray_color_rainbow_branch() {
-        let mut cfg = RerunConfig::default();
-        cfg.sim_ray_colormap = SimRayColormap::Rainbow;
+        let cfg = RerunConfig {
+            sim_ray_colormap: SimRayColormap::Rainbow,
+            ..Default::default()
+        };
         let _ = ray_color(0.1, &cfg);
         let _ = ray_color(0.9, &cfg);
     }
@@ -463,8 +469,10 @@ mod tests {
         let building = Building::new("b", vec![zone]).unwrap();
 
         let session = rr::RecordingStreamBuilder::new("test").buffered().unwrap();
-        let mut cfg = RerunConfig::default();
-        cfg.sim_playback_dt_s = 0.1;
+        let cfg = RerunConfig {
+            sim_playback_dt_s: 0.1,
+            ..Default::default()
+        };
 
         let mut sim_cfg = SimulationConfig::new();
         sim_cfg.source = Point::new(0.5, 0.5, 0.5);
