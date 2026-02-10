@@ -158,14 +158,31 @@ available summary statistics are:
 The 2020 update significantly tightened results, reflecting 25 years of improved
 test specifications and corrected software errors.
 
-## ASHRAE 140-2020 acceptance ranges
+## BESTEST vs. ASHRAE 140 conformance
 
-These are the normative pass/fail ranges that simulation software must fall within:
+BESTEST and ASHRAE Standard 140 are related but distinct:
 
-| Case | Annual heating (MWh/yr) | Annual cooling (MWh/yr) |
-|------|-------------------------|-------------------------|
-| 600  | 3.75 -- 4.98            | 5.00 -- 6.83            |
-| 900  | 1.04 -- 2.28            | 2.35 -- 2.60            |
+- **BESTEST** (1995) is the diagnostic methodology -- the test cases, building
+  specs, and the idea of running multiple programs and comparing results. The
+  original report had no pass/fail criteria. It showed the spread across programs
+  and provided diagnostic flowcharts to help developers find bugs. It is
+  educational and diagnostic in nature.
+
+- **ASHRAE Standard 140** (2001+) codified BESTEST into a formal standard with
+  normative **acceptance ranges**. These ranges are deliberately wider than the
+  actual program spread to allow for legitimate modeling differences. A program
+  must fall within these ranges to "conform." ASHRAE 140 conformance is required
+  by energy codes such as ASHRAE 90.1 and IECC -- if a simulation tool does not
+  pass, it cannot be used for building permit compliance in the US.
+
+The acceptance ranges compared to the actual program spread (2020 round):
+
+| Case | Metric  | Program spread      | ASHRAE acceptance range |
+|------|---------|---------------------|-------------------------|
+| 600  | Heating | 3.99 -- 4.50 MWh    | 3.75 -- 4.98 MWh        |
+| 600  | Cooling | 5.43 -- 6.16 MWh    | 5.00 -- 6.83 MWh        |
+| 900  | Heating | 1.38 -- 1.81 MWh    | 1.04 -- 2.28 MWh        |
+| 900  | Cooling | 2.27 -- 2.71 MWh    | 2.35 -- 2.60 MWh        |
 
 ## building3d test tolerances
 
