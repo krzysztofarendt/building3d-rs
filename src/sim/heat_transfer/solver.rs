@@ -223,11 +223,14 @@ fn apply_bc(
             rhs[cell_idx] += heat_flux * wall_area;
         }
         BoundaryCondition::Convective { h, t_fluid } => {
-            // Convective: q = h * (T_fluid - T_surface)
-            // Contribution to cell: h * A * (T_fluid - T_cell)
+            // The path from fluid to cell centroid has two resistances in series:
+            //   1/(h*A)        — convective film
+            //   1/K_face       — half-cell conduction (K_face = k*A/half_dx)
+            // Effective conductance: K_eff = 1 / (1/(h*A) + 1/K_face)
             let h_a = h * wall_area;
-            diag[cell_idx] += h_a;
-            rhs[cell_idx] += h_a * t_fluid;
+            let k_eff = 1.0 / (1.0 / h_a + 1.0 / face_conductance);
+            diag[cell_idx] += k_eff;
+            rhs[cell_idx] += k_eff * t_fluid;
         }
     }
 }
