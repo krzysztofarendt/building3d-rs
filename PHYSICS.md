@@ -1421,7 +1421,7 @@ Keep the network API stable while swapping internal component models:
 1. **Steady U-value** (current baseline): partitions and envelope are pure conductances.
 2. **Low-order RC networks** (recommended next): 2R1C/3R2C per construction for dynamic
    surface temperatures and thermal mass effects.
-3. **1D FVM through wall layers** (planned, see `FVM.md`): Finite Volume Method with
+3. **1D FVM through wall layers** (next, see `FVM.md`): Finite Volume Method with
    implicit time stepping, one solver per exterior surface. Uses existing
    `WallConstruction` layers (k, ρ, c_p, thickness). Produces per-surface interior
    temperature and heat flux, replacing the steady-state `U*A*ΔT` calculation.
@@ -1429,6 +1429,13 @@ Keep the network API stable while swapping internal component models:
 4. **3D FVM on tetrahedral meshes** (future): couple to existing `TetrahedralMesh`
    infrastructure; reuses the same solver with a 3D mesh builder. Should still
    expose the same boundary heat-flow interface to the zone network.
+
+**Status (as of 2026-02-10)**:
+- The 1D FVM solver + mesh builder are implemented in `src/sim/heat_transfer/` (see `FVM.md`).
+- The next implementation steps are **Step 5** and **Step 6** from `FVM.md`:
+  - **Step 5**: integrate per-surface 1D conduction into the energy simulation (replace `U*A*ΔT`
+    with per-surface heat flux using convective boundary conditions and shortwave boundary fluxes).
+  - **Step 6**: rerun the BESTEST energy suite and evaluate monthly shapes + peaks.
 
 #### 4.9.4 Comfort outputs and radiant exchange (incremental)
 
