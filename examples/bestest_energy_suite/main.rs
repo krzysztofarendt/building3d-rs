@@ -444,6 +444,15 @@ fn main() -> Result<()> {
         let mut cfg = base_cfg.clone();
         cfg.thermal_capacity_j_per_m3_k *= spec.high_mass_capacity_scale.max(0.0);
 
+        // Heavy-mass case (900): enable a two-node air+mass transient model and route
+        // most transmitted solar into the mass node (floor/walls in the reference model).
+        if spec.name == "900" {
+            cfg.two_node_mass_fraction = 0.95;
+            cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+            cfg.solar_gains_to_mass_fraction = 0.9;
+            cfg.internal_gains_to_mass_fraction = 0.0;
+        }
+
         let solar = if spec.solar { Some(&solar_cfg) } else { None };
         let annual = run_transient_simulation(&building, &cfg, &weather, &hvac, None, solar);
 

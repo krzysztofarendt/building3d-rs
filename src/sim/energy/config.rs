@@ -62,6 +62,25 @@ pub struct ThermalConfig {
     /// Used by transient zone-air models to estimate total zone thermal capacity:
     /// `C_zone = V_zone * thermal_capacity_j_per_m3_k`.
     pub thermal_capacity_j_per_m3_k: f64,
+    /// Optional two-node (air + mass) thermal model enable knob.
+    ///
+    /// - `0.0` (default): use the historical 1R1C zone model.
+    /// - `> 0.0`: enable a 2R2C model by splitting the total thermal capacity
+    ///   into an air node and a mass node.
+    ///
+    /// Interpretation: fraction of total capacity assigned to the **mass** node.
+    pub two_node_mass_fraction: f64,
+    /// Interior heat transfer coefficient used to couple air ↔ mass (W/(m²·K)).
+    ///
+    /// This is a coarse aggregate that lumps convection+radiation exchange between
+    /// zone air and interior surfaces.
+    pub interior_heat_transfer_coeff_w_per_m2_k: f64,
+    /// Fraction (0..1) of **solar** gains applied to the mass node when the two-node
+    /// model is enabled. The remainder is applied to the air node.
+    pub solar_gains_to_mass_fraction: f64,
+    /// Fraction (0..1) of **internal** gains applied to the mass node when the two-node
+    /// model is enabled. The remainder is applied to the air node.
+    pub internal_gains_to_mass_fraction: f64,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -81,6 +100,10 @@ impl ThermalConfig {
             internal_gains: 0.0,
             solar_gains: 0.0,
             thermal_capacity_j_per_m3_k: 50_000.0,
+            two_node_mass_fraction: 0.0,
+            interior_heat_transfer_coeff_w_per_m2_k: 3.0,
+            solar_gains_to_mass_fraction: 0.0,
+            internal_gains_to_mass_fraction: 0.0,
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }
@@ -265,6 +288,10 @@ mod tests {
         assert!((config.default_u_value - 2.0).abs() < 1e-10);
         assert!((config.indoor_temperature - 20.0).abs() < 1e-10);
         assert!((config.thermal_capacity_j_per_m3_k - 50_000.0).abs() < 1e-10);
+        assert!((config.two_node_mass_fraction - 0.0).abs() < 1e-12);
+        assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
+        assert!((config.solar_gains_to_mass_fraction - 0.0).abs() < 1e-12);
+        assert!((config.internal_gains_to_mass_fraction - 0.0).abs() < 1e-12);
         assert_eq!(config.interzone_u_value_policy, InterZoneUValuePolicy::Mean);
     }
 

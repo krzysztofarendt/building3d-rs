@@ -4,7 +4,7 @@ use crate::sim::index::SurfaceIndex;
 
 use super::boundary::ThermalBoundaries;
 use super::config::ThermalConfig;
-use super::hvac::{HvacIdealLoads, LumpedThermalModel};
+use super::hvac::{HvacIdealLoads, LumpedThermalModel, TwoNodeThermalModel};
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
 use super::solar_bridge::{
@@ -236,6 +236,47 @@ fn compute_exterior_opaque_sol_air_gains_by_zone_w(
     gains
 }
 
+fn looks_like_glazing(
+    path: &str,
+    base_config: &ThermalConfig,
+    solar_config: Option<&SolarGainConfig>,
+) -> bool {
+    if let Some(sc) = solar_config
+        && sc
+            .resolve_shgc_with_materials(path, base_config.material_library.as_ref())
+            .is_some()
+    {
+        return true;
+    }
+    if let Some(lib) = base_config.material_library.as_ref()
+        && let Some(mat) = lib.lookup(path)
+        && mat.is_glazing
+    {
+        return true;
+    }
+    let p = path.to_ascii_lowercase();
+    p.contains("window") || p.contains("glazing") || p.contains("glass")
+}
+
+fn estimate_opaque_envelope_area_m2(
+    index: &SurfaceIndex,
+    boundaries: &ThermalBoundaries,
+    base_config: &ThermalConfig,
+    solar_config: Option<&SolarGainConfig>,
+) -> f64 {
+    let mut a = 0.0;
+    for s in &index.surfaces {
+        if !boundaries.is_exterior(&s.polygon_uid) {
+            continue;
+        }
+        if looks_like_glazing(&s.path, base_config, solar_config) {
+            continue;
+        }
+        a += s.area_m2.max(0.0);
+    }
+    a.max(0.0)
+}
+
 /// Runs an annual hourly energy simulation.
 ///
 /// For each hour:
@@ -402,12 +443,52 @@ pub fn run_transient_simulation(
     let volume: f64 = building.zones().iter().map(|z| z.volume()).sum();
     let thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
 
-    let mut model = LumpedThermalModel::new(
-        base_config.indoor_temperature,
-        ua_total,
-        infiltration_cond,
-        thermal_capacity,
-    );
+    let k_env = ua_total + infiltration_cond;
+    let dt_s = 3600.0;
+
+    let use_two_node = base_config.two_node_mass_fraction > 0.0
+        && base_config.interior_heat_transfer_coeff_w_per_m2_k > 0.0
+        && thermal_capacity > 0.0
+        && k_env.is_finite()
+        && k_env >= 0.0;
+
+    let opaque_area_m2 = if use_two_node {
+        estimate_opaque_envelope_area_m2(&index, &boundaries, base_config, solar_config)
+    } else {
+        0.0
+    };
+
+    let (mut model_1r1c, mut model_2r2c) = if use_two_node && opaque_area_m2 > 0.0 {
+        let f_mass = base_config.two_node_mass_fraction.clamp(0.0, 1.0);
+        let c_total = thermal_capacity;
+        let air_capacity_min = 1.2 * 1005.0 * volume; // rho*cp*V
+        let mut c_air = (1.0 - f_mass) * c_total;
+        c_air = c_air.max(air_capacity_min).min(c_total);
+        let c_mass = (c_total - c_air).max(0.0);
+
+        let k_am = base_config.interior_heat_transfer_coeff_w_per_m2_k.max(0.0) * opaque_area_m2;
+        (
+            None,
+            Some(TwoNodeThermalModel::new(
+                base_config.indoor_temperature,
+                base_config.indoor_temperature,
+                k_env,
+                k_am,
+                c_air,
+                c_mass.max(1.0),
+            )),
+        )
+    } else {
+        (
+            Some(LumpedThermalModel::new(
+                base_config.indoor_temperature,
+                ua_total,
+                infiltration_cond,
+                thermal_capacity,
+            )),
+            None,
+        )
+    };
 
     let mut annual_heating = 0.0;
     let mut annual_cooling = 0.0;
@@ -418,7 +499,7 @@ pub fn run_transient_simulation(
 
     for (hour_idx, record) in weather.records.iter().enumerate() {
         let gains = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
-        let solar = match solar_config {
+        let (solar_transmitted, solar_opaque_sol_air) = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
                     direct_normal_irradiance: record.direct_normal_radiation,
@@ -428,44 +509,89 @@ pub fn run_transient_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                let mut solar = compute_solar_gains_with_materials(
+                let transmitted = compute_solar_gains_with_materials(
                     building,
                     &params,
                     sc,
                     base_config.material_library.as_ref(),
                 );
-                if sc.include_exterior_opaque_absorption {
-                    solar += compute_exterior_opaque_sol_air_gain_total_w(
+                let opaque = if sc.include_exterior_opaque_absorption {
+                    compute_exterior_opaque_sol_air_gain_total_w(
                         building,
                         base_config,
                         &index,
                         &boundaries,
                         &params,
                         sc,
-                    );
-                }
-                solar
+                    )
+                } else {
+                    0.0
+                };
+                (transmitted, opaque)
             }
-            None => 0.0,
+            None => (0.0, 0.0),
         };
-        let total_gains = gains + solar;
+        let solar_total = solar_transmitted + solar_opaque_sol_air;
 
-        // Calculate HVAC power using implicit formula that accounts for
-        // concurrent envelope losses during the timestep.
-        let total_conductance = model.ua_total + model.infiltration_conductance;
-        let (heating_power, cooling_power) = hvac.calculate_with_losses(
-            model.zone_temperature,
-            record.dry_bulb_temperature,
-            total_conductance,
-            total_gains,
-            model.thermal_capacity,
-            3600.0,
-        );
+        let (heating_power, cooling_power) = if let Some(model) = model_2r2c.as_mut() {
+            let f_solar_mass = base_config.solar_gains_to_mass_fraction.clamp(0.0, 1.0);
+            let f_internal_mass = base_config.internal_gains_to_mass_fraction.clamp(0.0, 1.0);
 
-        let hvac_net = heating_power - cooling_power;
+            let gains_mass = gains * f_internal_mass + solar_transmitted * f_solar_mass;
+            let gains_air = gains * (1.0 - f_internal_mass)
+                + solar_opaque_sol_air
+                + solar_transmitted * (1.0 - f_solar_mass);
 
-        // Advance the thermal model
-        model.step(record.dry_bulb_temperature, total_gains, hvac_net, 3600.0);
+            let t_air = model.air_temperature_c;
+            let setpoint = hvac.active_setpoint(t_air);
+            let need_hvac = (setpoint - t_air).abs() > 1e-10;
+            let q_hvac = if need_hvac {
+                hvac.required_hvac_power_two_node(
+                    setpoint,
+                    t_air,
+                    model.mass_temperature_c,
+                    record.dry_bulb_temperature,
+                    model.envelope_conductance_w_per_k,
+                    model.air_mass_conductance_w_per_k,
+                    gains_air,
+                    gains_mass,
+                    model.air_capacity_j_per_k,
+                    model.mass_capacity_j_per_k,
+                    dt_s,
+                )
+            } else {
+                0.0
+            };
+
+            model.step(
+                record.dry_bulb_temperature,
+                gains_air,
+                gains_mass,
+                q_hvac,
+                dt_s,
+            );
+
+            (q_hvac.max(0.0), (-q_hvac).max(0.0))
+        } else {
+            let model = model_1r1c.as_mut().unwrap();
+            let total_gains = gains + solar_total;
+
+            // Calculate HVAC power using implicit formula that accounts for
+            // concurrent envelope losses during the timestep.
+            let total_conductance = model.ua_total + model.infiltration_conductance;
+            let (heating_power, cooling_power) = hvac.calculate_with_losses(
+                model.zone_temperature,
+                record.dry_bulb_temperature,
+                total_conductance,
+                total_gains,
+                model.thermal_capacity,
+                dt_s,
+            );
+
+            let hvac_net = heating_power - cooling_power;
+            model.step(record.dry_bulb_temperature, total_gains, hvac_net, dt_s);
+            (heating_power, cooling_power)
+        };
 
         hourly_heating.push(heating_power);
         hourly_cooling.push(cooling_power);

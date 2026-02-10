@@ -255,6 +255,169 @@ impl LumpedThermalModel {
     }
 }
 
+/// 2R2C lumped zone model: an air node coupled to an interior "mass" node.
+///
+/// State:
+/// - air temperature `T_air`
+/// - mass temperature `T_mass`
+///
+/// Conductances:
+/// - `k_env`: envelope + infiltration conductance from air → outdoor (W/K)
+/// - `k_am`: coupling conductance between air ↔ mass (W/K)
+///
+/// Capacitances:
+/// - `c_air`: effective air-side capacity (J/K)
+/// - `c_mass`: effective mass-side capacity (J/K)
+///
+/// Backward Euler integration solves a 2×2 linear system each step.
+#[derive(Debug, Clone)]
+pub struct TwoNodeThermalModel {
+    pub air_temperature_c: f64,
+    pub mass_temperature_c: f64,
+    pub envelope_conductance_w_per_k: f64,
+    pub air_mass_conductance_w_per_k: f64,
+    pub air_capacity_j_per_k: f64,
+    pub mass_capacity_j_per_k: f64,
+}
+
+impl TwoNodeThermalModel {
+    pub fn new(
+        initial_air_c: f64,
+        initial_mass_c: f64,
+        envelope_conductance_w_per_k: f64,
+        air_mass_conductance_w_per_k: f64,
+        air_capacity_j_per_k: f64,
+        mass_capacity_j_per_k: f64,
+    ) -> Self {
+        Self {
+            air_temperature_c: initial_air_c,
+            mass_temperature_c: initial_mass_c,
+            envelope_conductance_w_per_k: envelope_conductance_w_per_k.max(0.0),
+            air_mass_conductance_w_per_k: air_mass_conductance_w_per_k.max(0.0),
+            air_capacity_j_per_k: air_capacity_j_per_k.max(0.0),
+            mass_capacity_j_per_k: mass_capacity_j_per_k.max(0.0),
+        }
+    }
+
+    /// Advances the model by one timestep.
+    ///
+    /// - `outdoor_temp_c`: outdoor air temperature (°C)
+    /// - `gains_air_w`: gains applied directly to the air node (W)
+    /// - `gains_mass_w`: gains applied to the mass node (W)
+    /// - `hvac_power_w`: net HVAC thermal power into the air node (W)
+    /// - `dt_s`: timestep (s)
+    pub fn step(
+        &mut self,
+        outdoor_temp_c: f64,
+        gains_air_w: f64,
+        gains_mass_w: f64,
+        hvac_power_w: f64,
+        dt_s: f64,
+    ) -> (f64, f64) {
+        if dt_s <= 0.0 {
+            return (self.air_temperature_c, self.mass_temperature_c);
+        }
+
+        let ca = self.air_capacity_j_per_k;
+        let cm = self.mass_capacity_j_per_k;
+        let k_env = self.envelope_conductance_w_per_k;
+        let k_am = self.air_mass_conductance_w_per_k;
+
+        // Degenerate fallbacks: reduce to a single node if we cannot integrate.
+        if ca <= 0.0 || cm <= 0.0 || k_am <= 0.0 {
+            // Treat everything as a 1R1C air node with capacity ca+cm (if any).
+            let c = (ca + cm).max(0.0);
+            if c <= 0.0 {
+                let k = k_env.max(1e-12);
+                self.air_temperature_c =
+                    outdoor_temp_c + (gains_air_w + gains_mass_w + hvac_power_w) / k;
+                self.mass_temperature_c = self.air_temperature_c;
+                return (self.air_temperature_c, self.mass_temperature_c);
+            }
+            let k = k_env.max(0.0);
+            if k <= 0.0 {
+                self.air_temperature_c += dt_s / c * (gains_air_w + gains_mass_w + hvac_power_w);
+                self.mass_temperature_c = self.air_temperature_c;
+                return (self.air_temperature_c, self.mass_temperature_c);
+            }
+            let a = dt_s * k / c;
+            let numerator = self.air_temperature_c
+                + (dt_s / c) * (gains_air_w + gains_mass_w + hvac_power_w + k * outdoor_temp_c);
+            self.air_temperature_c = numerator / (1.0 + a);
+            self.mass_temperature_c = self.air_temperature_c;
+            return (self.air_temperature_c, self.mass_temperature_c);
+        }
+
+        // Backward Euler 2×2 solve.
+        let a11 = 1.0 + dt_s * (k_env + k_am) / ca;
+        let a12 = -dt_s * k_am / ca;
+        let b1 = self.air_temperature_c
+            + (dt_s / ca) * (gains_air_w + hvac_power_w + k_env * outdoor_temp_c);
+
+        let a21 = -dt_s * k_am / cm;
+        let a22 = 1.0 + dt_s * k_am / cm;
+        let b2 = self.mass_temperature_c + (dt_s / cm) * gains_mass_w;
+
+        let det = a11 * a22 - a12 * a21;
+        if det.abs() < 1e-16 {
+            return (self.air_temperature_c, self.mass_temperature_c);
+        }
+
+        let t_air = (b1 * a22 - a12 * b2) / det;
+        let t_mass = (a11 * b2 - b1 * a21) / det;
+
+        self.air_temperature_c = t_air;
+        self.mass_temperature_c = t_mass;
+        (t_air, t_mass)
+    }
+}
+
+impl HvacIdealLoads {
+    /// Required HVAC thermal power (W) to reach a target air temperature at the end of
+    /// a timestep for the two-node model.
+    ///
+    /// Returns net thermal power into the air node (positive = heating, negative = cooling).
+    pub fn required_hvac_power_two_node(
+        &self,
+        target_air_temp_c: f64,
+        air_temp_c: f64,
+        mass_temp_c: f64,
+        outdoor_temp_c: f64,
+        envelope_conductance_w_per_k: f64,
+        air_mass_conductance_w_per_k: f64,
+        gains_air_w: f64,
+        gains_mass_w: f64,
+        air_capacity_j_per_k: f64,
+        mass_capacity_j_per_k: f64,
+        dt_s: f64,
+    ) -> f64 {
+        if dt_s <= 0.0 {
+            return 0.0;
+        }
+        if air_capacity_j_per_k <= 0.0 || mass_capacity_j_per_k <= 0.0 {
+            return 0.0;
+        }
+
+        let k_env = envelope_conductance_w_per_k.max(0.0);
+        let k_am = air_mass_conductance_w_per_k.max(0.0);
+
+        // Mass node implicit update when T_air(t+dt) is forced to target.
+        let a = dt_s * k_am / mass_capacity_j_per_k;
+        let t_mass_next = if a > 0.0 {
+            (mass_temp_c + (dt_s / mass_capacity_j_per_k) * gains_mass_w + a * target_air_temp_c)
+                / (1.0 + a)
+        } else {
+            mass_temp_c + (dt_s / mass_capacity_j_per_k) * gains_mass_w
+        };
+
+        // Derived implicit HVAC requirement for the air node.
+        air_capacity_j_per_k * (target_air_temp_c - air_temp_c) / dt_s
+            + k_env * (target_air_temp_c - outdoor_temp_c)
+            + k_am * (target_air_temp_c - t_mass_next)
+            - gains_air_w
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +510,47 @@ mod tests {
         assert!(
             (temp - 20.0).abs() < 0.1,
             "Temp should stay ~20°C with balanced heating, got {temp}"
+        );
+    }
+
+    #[test]
+    fn test_two_node_required_hvac_hits_setpoint() {
+        let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
+
+        let mut model = TwoNodeThermalModel::new(
+            18.0,
+            18.0,
+            120.0,     // k_env
+            300.0,     // k_am
+            800_000.0, // c_air
+            5_000_000.0,
+        );
+
+        let dt_s = 3600.0;
+        let outdoor = 0.0;
+        let gains_air = 0.0;
+        let gains_mass = 0.0;
+        let target = 20.0;
+
+        let q_hvac = hvac.required_hvac_power_two_node(
+            target,
+            model.air_temperature_c,
+            model.mass_temperature_c,
+            outdoor,
+            model.envelope_conductance_w_per_k,
+            model.air_mass_conductance_w_per_k,
+            gains_air,
+            gains_mass,
+            model.air_capacity_j_per_k,
+            model.mass_capacity_j_per_k,
+            dt_s,
+        );
+
+        model.step(outdoor, gains_air, gains_mass, q_hvac, dt_s);
+        assert!(
+            (model.air_temperature_c - target).abs() < 1e-9,
+            "Expected air temperature to hit setpoint; got {}",
+            model.air_temperature_c
         );
     }
 
