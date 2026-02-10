@@ -209,6 +209,14 @@ fn make_cfg(_building: &Building) -> ThermalConfig {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
+    // Treat windows as a whole-window U-value (the layered "air gap as pure conduction"
+    // approximation is far too insulating).
+    cfg.u_value_overrides_by_path_pattern
+        .insert("window".to_string(), 1.8);
+
+    // BESTEST case floors are ground-coupled in the reference model.
+    cfg.ground_temperature_c = Some(10.0);
+
     // Keep a fixed deterministic thermal capacity for regression (J/(m3*K)).
     cfg.thermal_capacity_j_per_m3_k = 22_000.0;
     cfg
@@ -218,8 +226,15 @@ fn solar_cfg() -> SolarGainConfig {
     let mut solar = SolarGainConfig::new();
     solar.glazing_patterns = vec!["window".to_string()];
     solar.default_shgc = 0.86156;
+    solar.include_ground_reflection = true;
+    solar.ground_reflectance = 0.2;
+    solar.include_incidence_angle_modifier = true;
+    solar.incidence_angle_modifier_a = 0.1;
     solar.include_exterior_opaque_absorption = true;
     solar.default_opaque_absorptance = 0.6;
+    // Phase 2.2 refinements (optional): exterior longwave exchange + wind-based h_out.
+    solar.include_exterior_longwave_exchange = false;
+    solar.use_wind_speed_for_h_out = false;
     solar
 }
 
@@ -336,9 +351,10 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     let mut cfg = make_cfg(&building);
     cfg.thermal_capacity_j_per_m3_k *= 8.0;
     cfg.two_node_mass_fraction = 0.95;
-    cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+    cfg.interior_heat_transfer_coeff_w_per_m2_k = 8.0;
     cfg.solar_gains_to_mass_fraction = 0.9;
     cfg.internal_gains_to_mass_fraction = 0.0;
+    cfg.two_node_envelope_to_mass = true;
 
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
     let solar = solar_cfg();

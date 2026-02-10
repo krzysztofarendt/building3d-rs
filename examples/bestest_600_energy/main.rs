@@ -373,6 +373,12 @@ fn main() -> Result<()> {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
+    // BESTEST window conduction should be treated as a whole-window U-value.
+    // Using a layered construction with a still-air gap modeled as pure conduction
+    // is far too insulating (missing convection+radiation in the gap).
+    cfg.u_value_overrides_by_path_pattern
+        .insert("window".to_string(), 1.8);
+
     // BESTEST case floors are ground-coupled in the reference model.
     cfg.ground_temperature_c = Some(10.0);
 
@@ -393,6 +399,11 @@ fn main() -> Result<()> {
     solar.include_exterior_opaque_absorption = true;
     // BESTEST case surfaces are moderately absorptive; use a representative default.
     solar.default_opaque_absorptance = 0.6;
+    // Phase 2.2 refinements (optional): exterior longwave exchange + wind-based h_out.
+    // Leave disabled in this benchmark until the exterior surface balance is refactored
+    // to avoid double-counting with ISO 6946 film resistances.
+    solar.include_exterior_longwave_exchange = false;
+    solar.use_wind_speed_for_h_out = false;
 
     println!("BESTEST 600 energy benchmark (building3d vs OpenStudio/E+ reference)");
     println!(

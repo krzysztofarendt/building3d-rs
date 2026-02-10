@@ -92,6 +92,17 @@ pub struct ThermalConfig {
     /// Fraction (0..1) of **internal** gains applied to the mass node when the two-node
     /// model is enabled. The remainder is applied to the air node.
     pub internal_gains_to_mass_fraction: f64,
+    /// If true, attach the envelope conductance to the **mass** node (instead of the air node)
+    /// when the 2R2C model is enabled.
+    ///
+    /// Rationale: in heavyweight buildings (e.g. BESTEST 900), most of the thermal mass is
+    /// in the envelope and should be directly coupled to outdoors. The legacy 2R2C model
+    /// couples the air node directly to outdoors, which can distort lag/peak behavior.
+    ///
+    /// When enabled:
+    /// - `UA` (conduction) is connected mass ↔ outdoors
+    /// - infiltration remains air ↔ outdoors
+    pub two_node_envelope_to_mass: bool,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -117,6 +128,7 @@ impl ThermalConfig {
             interior_heat_transfer_coeff_w_per_m2_k: 3.0,
             solar_gains_to_mass_fraction: 0.0,
             internal_gains_to_mass_fraction: 0.0,
+            two_node_envelope_to_mass: false,
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }

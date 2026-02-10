@@ -47,6 +47,7 @@ fn main() -> Result<()> {
             global_horizontal_radiation: 1000.0,
             direct_normal_radiation: 1000.0,
             diffuse_horizontal_radiation: 0.0,
+            horizontal_infrared_radiation: 300.0,
             wind_speed: 0.0,
             wind_direction: 0.0,
         }],

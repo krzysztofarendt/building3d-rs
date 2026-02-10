@@ -13,6 +13,8 @@ pub struct HourlyRecord {
     pub dry_bulb_temperature: f64,
     /// Relative humidity in %.
     pub relative_humidity: f64,
+    /// Horizontal infrared radiation intensity from sky in W/m^2.
+    pub horizontal_infrared_radiation: f64,
     /// Global horizontal radiation in Wh/m^2.
     pub global_horizontal_radiation: f64,
     /// Direct normal radiation in Wh/m^2.
@@ -111,6 +113,10 @@ impl WeatherData {
                     .trim()
                     .parse()
                     .with_context(|| format!("Invalid RH at line {i}"))?,
+                horizontal_infrared_radiation: fields[12]
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("Invalid horizontal infrared at line {i}"))?,
                 global_horizontal_radiation: fields[13]
                     .trim()
                     .parse()
@@ -188,6 +194,7 @@ impl WeatherData {
                         hour: hour as u8,
                         dry_bulb_temperature: temp,
                         relative_humidity: 60.0,
+                        horizontal_infrared_radiation: 300.0,
                         global_horizontal_radiation: ghr,
                         direct_normal_radiation: ghr * 0.6,
                         diffuse_horizontal_radiation: ghr * 0.4,
