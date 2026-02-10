@@ -771,7 +771,7 @@ fn main() -> Result<()> {
     let interior_h_900: f64 = std::env::var("BESTEST_900_INTERIOR_H_W_PER_M2_K")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8.0);
+        .unwrap_or(5.0);
 
     let suite = vec![
         CaseSpec {
@@ -848,6 +848,8 @@ fn main() -> Result<()> {
             cfg.two_node_mass_fraction = 0.95;
             cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_900;
             cfg.solar_gains_to_mass_fraction = solar_to_mass_900;
+            cfg.use_surface_aware_solar_distribution = true;
+            cfg.transmitted_solar_to_air_fraction = 0.0;
             cfg.internal_gains_to_mass_fraction = 0.0;
             cfg.two_node_envelope_to_mass = true;
         }

@@ -100,8 +100,13 @@ def main():
 
     solar_cases = [("600", "600_no_solar"), ("900", "900_no_solar")]
     fig, axes = plt.subplots(len(solar_cases), len(metrics), figsize=(12, 6), sharex=True)
-    fig.suptitle("BESTEST Energy Suite: solar effect (with solar − no solar)",
-                 fontsize=12, fontweight="bold", y=0.98)
+    fig.suptitle(
+        "BESTEST Energy Suite: solar effect on ideal loads\n"
+        "Δ = (with solar) − (no solar); negative Δ means solar reduces the load",
+        fontsize=12,
+        fontweight="bold",
+        y=0.98,
+    )
 
     for i, (case_solar, case_no_solar) in enumerate(solar_cases):
         for j, metric in enumerate(metrics):
@@ -114,7 +119,7 @@ def main():
             ax.axhline(0, color="black", linewidth=0.8)
 
             ax.set_title(f"Case {case_solar} — {metric}", fontsize=10, fontweight="bold")
-            ax.set_ylabel("kWh")
+            ax.set_ylabel(f"Δ {metric.title()} (kWh)")
             ax.grid(axis="y", alpha=0.3)
             ax.set_axisbelow(True)
             ax.set_xticks(x)

@@ -351,8 +351,10 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     let mut cfg = make_cfg(&building);
     cfg.thermal_capacity_j_per_m3_k *= 8.0;
     cfg.two_node_mass_fraction = 0.95;
-    cfg.interior_heat_transfer_coeff_w_per_m2_k = 8.0;
+    cfg.interior_heat_transfer_coeff_w_per_m2_k = 5.0;
     cfg.solar_gains_to_mass_fraction = 0.9;
+    cfg.use_surface_aware_solar_distribution = true;
+    cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.0;
     cfg.two_node_envelope_to_mass = true;
 
