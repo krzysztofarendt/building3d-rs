@@ -5,6 +5,10 @@ use super::sources::{DirectionalLight, PointLight, Rgb};
 /// Configuration for a lighting simulation.
 #[derive(Clone)]
 pub struct LightingConfig {
+    /// RNG seed used for all stochastic sampling in the lighting simulation.
+    ///
+    /// Rule: same inputs + same seed ⇒ same outputs.
+    pub seed: u64,
     /// Point light sources.
     pub point_lights: Vec<PointLight>,
     /// Directional light sources.
@@ -31,6 +35,7 @@ pub struct LightingConfig {
 impl LightingConfig {
     pub fn new() -> Self {
         Self {
+            seed: 0,
             point_lights: Vec::new(),
             directional_lights: Vec::new(),
             num_rays: 10000,
@@ -58,6 +63,7 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let config = LightingConfig::new();
+        assert_eq!(config.seed, 0);
         assert_eq!(config.num_rays, 10000);
         assert_eq!(config.max_bounces, 5);
         assert!(config.point_lights.is_empty());
