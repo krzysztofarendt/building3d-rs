@@ -1364,4 +1364,284 @@ mod tests {
         let (h, c) = hvac.calculate_with_losses(15.0, 0.0, 100.0, 0.0, 0.0, 3600.0);
         assert_eq!((h, c), (0.0, 0.0));
     }
+
+    #[test]
+    fn test_three_node_hvac_zero_capacities() {
+        let hvac = HvacIdealLoads::new();
+        // Zero air capacity -> returns 0
+        let q = hvac.required_hvac_power_three_node_envelope(
+            20.0,
+            18.0,
+            18.0,
+            10.0,
+            0.0,
+            50.0,
+            200.0,
+            100.0,
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0, // c_air = 0
+            2_000_000.0,
+            1_000_000.0,
+            3600.0,
+        );
+        assert_eq!(q, 0.0, "Zero air capacity should return 0");
+
+        // Zero surface capacity -> returns 0
+        let q = hvac.required_hvac_power_three_node_envelope(
+            20.0,
+            18.0,
+            18.0,
+            10.0,
+            0.0,
+            50.0,
+            200.0,
+            100.0,
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            80_000.0,
+            0.0, // c_surface = 0
+            1_000_000.0,
+            3600.0,
+        );
+        assert_eq!(q, 0.0, "Zero surface capacity should return 0");
+
+        // Zero envelope capacity -> returns 0
+        let q = hvac.required_hvac_power_three_node_envelope(
+            20.0,
+            18.0,
+            18.0,
+            10.0,
+            0.0,
+            50.0,
+            200.0,
+            100.0,
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            80_000.0,
+            2_000_000.0,
+            0.0, // c_envelope = 0
+            3600.0,
+        );
+        assert_eq!(q, 0.0, "Zero envelope capacity should return 0");
+    }
+
+    #[test]
+    fn test_three_node_hvac_zero_dt() {
+        let hvac = HvacIdealLoads::new();
+        let q = hvac.required_hvac_power_three_node_envelope(
+            20.0,
+            18.0,
+            18.0,
+            10.0,
+            0.0,
+            50.0,
+            200.0,
+            100.0,
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            80_000.0,
+            2_000_000.0,
+            1_000_000.0,
+            0.0, // dt = 0
+        );
+        assert_eq!(q, 0.0, "Zero timestep should return 0");
+    }
+
+    #[test]
+    fn test_three_node_hvac_zero_conductances() {
+        let hvac = HvacIdealLoads::new();
+        // k_as = 0 -> returns 0
+        let q = hvac.required_hvac_power_three_node_envelope(
+            20.0,
+            18.0,
+            18.0,
+            10.0,
+            0.0,
+            50.0,
+            0.0, // k_as = 0
+            100.0,
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            80_000.0,
+            2_000_000.0,
+            1_000_000.0,
+            3600.0,
+        );
+        assert_eq!(q, 0.0, "Zero k_as should return 0");
+
+        // k_se = 0 -> returns 0
+        let q = hvac.required_hvac_power_three_node_envelope(
+            20.0,
+            18.0,
+            18.0,
+            10.0,
+            0.0,
+            50.0,
+            200.0,
+            0.0, // k_se = 0
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            80_000.0,
+            2_000_000.0,
+            1_000_000.0,
+            3600.0,
+        );
+        assert_eq!(q, 0.0, "Zero k_se should return 0");
+    }
+
+    #[test]
+    fn test_two_node_step_degenerate_zero_capacity() {
+        // Both capacities zero -> steady-state fallback
+        let mut model = TwoNodeThermalModel::new(20.0, 20.0, 100.0, 300.0, 0.0, 0.0);
+        let (ta, tm) = model.step(0.0, 200.0, 0.0, 0.0, 3600.0);
+        // T = T_out + Q/K = 0 + 200/100 = 2.0
+        assert!((ta - 2.0).abs() < 1e-10, "got ta={ta}");
+        assert!((tm - ta).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_two_node_step_degenerate_zero_k_env() {
+        // Positive capacity but k_env=0 and k_am=0 -> pure integrator
+        let mut model = TwoNodeThermalModel::new(20.0, 20.0, 0.0, 0.0, 1000.0, 0.0);
+        let (ta, _) = model.step(0.0, 100.0, 0.0, 0.0, 10.0);
+        // dT = dt/c * Q = 10/1000 * 100 = 1.0
+        assert!((ta - 21.0).abs() < 1e-10, "got ta={ta}");
+    }
+
+    #[test]
+    fn test_two_node_step_dt_zero() {
+        let mut model = TwoNodeThermalModel::new(20.0, 18.0, 100.0, 300.0, 800_000.0, 5_000_000.0);
+        let (ta, tm) = model.step(0.0, 0.0, 0.0, 0.0, 0.0);
+        assert!((ta - 20.0).abs() < 1e-12);
+        assert!((tm - 18.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_two_node_envelope_step_degenerate_zero_capacity() {
+        let mut model = TwoNodeEnvelopeThermalModel::new(20.0, 20.0, 20.0, 100.0, 300.0, 0.0, 0.0);
+        let (ta, tm) = model.step(0.0, 200.0, 0.0, 0.0, 3600.0);
+        // T = T_out + Q/K_total = 0 + 200/120 ≈ 1.667
+        assert!((ta - (200.0 / 120.0)).abs() < 1e-10, "got ta={ta}");
+        assert!((tm - ta).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_two_node_envelope_step_dt_zero() {
+        let mut model = TwoNodeEnvelopeThermalModel::new(
+            20.0,
+            18.0,
+            20.0,
+            100.0,
+            300.0,
+            800_000.0,
+            5_000_000.0,
+        );
+        let (ta, tm) = model.step(0.0, 0.0, 0.0, 0.0, 0.0);
+        assert!((ta - 20.0).abs() < 1e-12);
+        assert!((tm - 18.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_two_node_envelope_step_zero_k_total() {
+        // k_ao=0, k_mo=0, k_am=0 -> pure integrator fallback
+        let mut model = TwoNodeEnvelopeThermalModel::new(20.0, 20.0, 0.0, 0.0, 0.0, 1000.0, 0.0);
+        let (ta, _) = model.step(0.0, 100.0, 0.0, 0.0, 10.0);
+        assert!((ta - 21.0).abs() < 1e-10, "got ta={ta}");
+    }
+
+    #[test]
+    fn test_three_node_step_normal() {
+        // Normal case: all positive capacities and conductances
+        let mut model = ThreeNodeEnvelopeThermalModel::new(
+            20.0,
+            20.0,
+            10.0,
+            50.0,        // k_ao
+            200.0,       // k_as
+            100.0,       // k_se
+            60.0,        // k_eo
+            80_000.0,    // c_air
+            2_000_000.0, // c_surface
+            1_000_000.0, // c_envelope
+        );
+
+        // dt=0 -> unchanged
+        let (ta, ts, te) = model.step(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        assert!((ta - 20.0).abs() < 1e-12);
+        assert!((ts - 20.0).abs() < 1e-12);
+        assert!((te - 10.0).abs() < 1e-12);
+
+        // Normal step: outdoor=0, no gains, no hvac -> temperatures change
+        let (ta, ts, te) = model.step(0.0, 0.0, 0.0, 0.0, 0.0, 3600.0);
+        assert!(ta < 20.0, "Air should cool: ta={ta}");
+        assert!(ta > 0.0, "Air shouldn't overshoot outdoor: ta={ta}");
+        assert!(ts.is_finite(), "Surface temp should be finite: ts={ts}");
+        assert!(te.is_finite(), "Envelope temp should be finite: te={te}");
+    }
+
+    #[test]
+    fn test_three_node_step_degenerate_zero_capacity() {
+        // All capacities zero -> steady-state fallback
+        let mut model = ThreeNodeEnvelopeThermalModel::new(
+            20.0, 20.0, 10.0, 50.0, 0.0, 0.0, 60.0, 0.0, 0.0, 0.0,
+        );
+        let (ta, ts, te) = model.step(0.0, 200.0, 0.0, 0.0, 0.0, 3600.0);
+        // c=0, k=50+60=110 -> T = 0 + 200/110
+        let expected = 200.0 / 110.0;
+        assert!((ta - expected).abs() < 1e-10, "got ta={ta}");
+        assert!((ts - ta).abs() < 1e-10);
+        assert!((te - ta).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_three_node_step_degenerate_zero_k() {
+        // k_ao=0, k_eo=0 -> pure integrator
+        let mut model = ThreeNodeEnvelopeThermalModel::new(
+            20.0, 20.0, 20.0, 0.0, 0.0, 0.0, 0.0, 3000.0, 0.0, 0.0,
+        );
+        let (ta, _, _) = model.step(0.0, 300.0, 0.0, 0.0, 0.0, 10.0);
+        // dT = dt/c * Q = 10/3000 * 300 = 1.0
+        assert!((ta - 21.0).abs() < 1e-10, "got ta={ta}");
+    }
+
+    #[test]
+    fn test_three_node_step_steady_state_convergence() {
+        // With constant gains and no HVAC, the three-node model should
+        // converge to a steady state over many steps.
+        let mut model = ThreeNodeEnvelopeThermalModel::new(
+            0.0,
+            0.0,
+            0.0,
+            50.0,        // k_ao
+            200.0,       // k_as
+            100.0,       // k_se
+            60.0,        // k_eo
+            80_000.0,    // c_air
+            2_000_000.0, // c_surface
+            1_000_000.0, // c_envelope
+        );
+
+        let dt = 3600.0;
+        for _ in 0..500 {
+            model.step(0.0, 1000.0, 0.0, 0.0, 0.0, dt);
+        }
+
+        // At steady state, all net fluxes should be small
+        let ta = model.air_temperature_c;
+        assert!(ta > 0.0, "Should warm up with gains");
+        assert!(ta.is_finite(), "Should converge to finite temperature");
+    }
 }

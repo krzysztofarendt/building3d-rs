@@ -1722,4 +1722,130 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_opaque_absorptance_no_library() {
+        let a = opaque_absorptance_for_path("zone/solid/wall/poly", None);
+        assert!(
+            (a - DEFAULT_OPAQUE_ABSORPTANCE).abs() < 1e-12,
+            "No library should return default: got {}",
+            a
+        );
+    }
+
+    #[test]
+    fn test_opaque_absorptance_no_matching_material() {
+        let mut lib = MaterialLibrary::new();
+        lib.add(crate::sim::materials::Material::new("concrete"));
+        lib.assign("wall", "concrete");
+        // Path that doesn't match any assignment
+        let a = opaque_absorptance_for_path("unmatched/path", Some(&lib));
+        assert!(
+            (a - DEFAULT_OPAQUE_ABSORPTANCE).abs() < 1e-12,
+            "No matching material should return default: got {}",
+            a
+        );
+    }
+
+    #[test]
+    fn test_opaque_absorptance_no_optical() {
+        let mut lib = MaterialLibrary::new();
+        // Material with no optical properties
+        lib.add(crate::sim::materials::Material::new("mat"));
+        lib.assign("wall", "mat");
+        let a = opaque_absorptance_for_path("zone/solid/wall/poly", Some(&lib));
+        assert!(
+            (a - DEFAULT_OPAQUE_ABSORPTANCE).abs() < 1e-12,
+            "Material without optical should return default: got {}",
+            a
+        );
+    }
+
+    #[test]
+    fn test_opaque_absorptance_with_optical() {
+        let mut lib = MaterialLibrary::new();
+        let mut mat = crate::sim::materials::Material::new("dark");
+        mat.optical = Some(OpticalMaterial {
+            name: "dark".to_string(),
+            diffuse_reflectance: [0.1, 0.1, 0.1],
+            specular_reflectance: [0.0, 0.0, 0.0],
+            transmittance: [0.0, 0.0, 0.0],
+        });
+        lib.add(mat);
+        lib.assign("wall", "dark");
+        let a = opaque_absorptance_for_path("zone/solid/wall/poly", Some(&lib));
+        // absorptance = 1.0 - 0.1 - 0.0 - 0.0 = 0.9
+        assert!((a - 0.9).abs() < 1e-12, "Expected 0.9, got {}", a);
+    }
+
+    #[test]
+    fn test_solar_shortwave_step_module() -> Result<()> {
+        // Exercise the entirely untested SolarShortwaveStepModule
+        let poly = Polygon::new(
+            "glass",
+            vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(1.0, 1.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+            None,
+        )?;
+        let wall = Wall::new("window", vec![poly])?;
+        let solid = Solid::new("room", vec![wall])?;
+        let zone = Zone::new("z", vec![solid])?;
+        let building = Building::new("b", vec![zone])?;
+
+        let index = SurfaceIndex::new(&building);
+        let ctx = SimContext::new(&building, &index);
+
+        let weather = WeatherData {
+            location: "X".to_string(),
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![HourlyRecord {
+                month: 3,
+                day: 21,
+                hour: 12,
+                dry_bulb_temperature: 20.0,
+                relative_humidity: 50.0,
+                horizontal_infrared_radiation: 300.0,
+                global_horizontal_radiation: 900.0,
+                direct_normal_radiation: 500.0,
+                diffuse_horizontal_radiation: 200.0,
+                wind_speed: 0.0,
+                wind_direction: 0.0,
+            }],
+        };
+
+        let config = SolarShortwaveStepConfig::new(weather, SolarGainConfig::new());
+        let mut module = SolarShortwaveStepModule::new(config);
+        assert_eq!(module.hour_idx(), 0);
+
+        let mut bus = Bus::new();
+        module.init(&ctx, &mut bus)?;
+        module.step(&ctx, &mut bus)?;
+
+        assert_eq!(module.hour_idx(), 1);
+
+        let transmitted = bus.get::<ShortwaveTransmittedWPerZone>().unwrap();
+        let zone_uid = ctx.building.zones().first().unwrap().uid.clone();
+        let q = transmitted
+            .watts_by_zone_uid
+            .get(&zone_uid)
+            .cloned()
+            .unwrap_or(0.0);
+        assert!(q > 0.0, "Should have transmitted solar gains: q={q}");
+
+        // Absorbed payload should be published (even if empty for glazing-only building)
+        let absorbed = bus.get::<ShortwaveAbsorbedWPerPolygon>();
+        assert!(absorbed.is_some(), "Absorbed payload should be published");
+
+        let outdoor_t = bus.get::<OutdoorAirTemperatureC>().unwrap();
+        assert!((outdoor_t.0 - 20.0).abs() < 1e-10);
+
+        Ok(())
+    }
 }

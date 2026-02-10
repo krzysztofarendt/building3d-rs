@@ -108,4 +108,38 @@ mod tests {
         let g = sub.gain(Vector::new(-1.0, 0.0, 0.0), fwd);
         assert!((g - 0.5).abs() < 1e-10);
     }
+
+    #[test]
+    fn test_cardioid_zero_direction() {
+        let card = Cardioid;
+        let fwd = Vector::new(1.0, 0.0, 0.0);
+        // Zero direction vector -> 0.0 (normalize fails)
+        let g = card.gain(Vector::new(0.0, 0.0, 0.0), fwd);
+        assert!(g.abs() < 1e-10, "Zero direction should return 0.0");
+    }
+
+    #[test]
+    fn test_cardioid_zero_forward() {
+        let card = Cardioid;
+        let dir = Vector::new(1.0, 0.0, 0.0);
+        // Zero forward vector -> 1.0 (normalize fails)
+        let g = card.gain(dir, Vector::new(0.0, 0.0, 0.0));
+        assert!((g - 1.0).abs() < 1e-10, "Zero forward should return 1.0");
+    }
+
+    #[test]
+    fn test_subcardioid_zero_direction() {
+        let sub = SubCardioid;
+        let fwd = Vector::new(1.0, 0.0, 0.0);
+        let g = sub.gain(Vector::new(0.0, 0.0, 0.0), fwd);
+        assert!(g.abs() < 1e-10, "Zero direction should return 0.0");
+    }
+
+    #[test]
+    fn test_subcardioid_zero_forward() {
+        let sub = SubCardioid;
+        let dir = Vector::new(1.0, 0.0, 0.0);
+        let g = sub.gain(dir, Vector::new(0.0, 0.0, 0.0));
+        assert!((g - 1.0).abs() < 1e-10, "Zero forward should return 1.0");
+    }
 }

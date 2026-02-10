@@ -107,12 +107,8 @@ fn main() -> Result<()> {
     }
     // t should now equal t_in + q/h_int ≈ t_in - |q|/h_int
 
-    println!(
-        "  Boundary conditions: T_out = {t_out:.1} C, T_in = {t_in:.1} C"
-    );
-    println!(
-        "  h_ext = {h_ext:.0} W/(m2*K), h_int = {h_int:.1} W/(m2*K)"
-    );
+    println!("  Boundary conditions: T_out = {t_out:.1} C, T_in = {t_in:.1} C");
+    println!("  h_ext = {h_ext:.0} W/(m2*K), h_int = {h_int:.1} W/(m2*K)");
     println!();
     println!("  Analytical heat flux: {q_analytical:.4} W/m2");
     println!();
@@ -153,9 +149,7 @@ fn main() -> Result<()> {
 
     // Compare temperature profile
     // Build analytical cell-centroid temperatures by interpolating within layers
-    println!(
-        "  Temperature profile comparison (cell centroids):"
-    );
+    println!("  Temperature profile comparison (cell centroids):");
     println!(
         "    {:>4}  {:>12}  {:>12}  {:>8}",
         "Cell", "FVM [C]", "Exact [C]", "Err [C]"
@@ -163,13 +157,8 @@ fn main() -> Result<()> {
     println!("    {:-<44}", "");
 
     let temps = solver.temperatures();
-    let analytical_temps = analytical_cell_temperatures(
-        &construction,
-        q_analytical,
-        t_out,
-        h_ext,
-        wall_area,
-    );
+    let analytical_temps =
+        analytical_cell_temperatures(&construction, q_analytical, t_out, h_ext, wall_area);
 
     let mut max_temp_err = 0.0_f64;
     for i in 0..n_cells {
@@ -188,9 +177,7 @@ fn main() -> Result<()> {
     if pass_ss {
         println!("  PASS: steady-state flux error < 1%, temperature error < 0.15 C");
     } else {
-        println!(
-            "  FAIL: flux error = {q_err:.2}%, max temp error = {max_temp_err:.4} C"
-        );
+        println!("  FAIL: flux error = {q_err:.2}%, max temp error = {max_temp_err:.4} C");
     }
     println!();
 
@@ -213,13 +200,9 @@ fn main() -> Result<()> {
     let steps_per_hour = (3600.0 / dt) as usize;
     let output_start = warmup_days * 24;
 
-    println!(
-        "  Running {warmup_days} days warmup + 24h output (dt={dt:.0}s)"
-    );
+    println!("  Running {warmup_days} days warmup + 24h output (dt={dt:.0}s)");
     println!("  Indoor air:  {t_in:.1} C (constant)");
-    println!(
-        "  Outdoor air: sinusoidal, mean -5 C, amplitude 5 C"
-    );
+    println!("  Outdoor air: sinusoidal, mean -5 C, amplitude 5 C");
     println!();
 
     // Store results for the last 24 hours
@@ -262,9 +245,7 @@ fn main() -> Result<()> {
     );
     println!("  {:-<55}", "");
 
-    for (h, (t_outdoor, t_ext, t_int_s, q_int)) in
-        hourly_results.iter().enumerate()
-    {
+    for (h, (t_outdoor, t_ext, t_int_s, q_int)) in hourly_results.iter().enumerate() {
         println!(
             "  {:>4}  {:>7.1}  {:>7.2}  {:>7.2}  {:>9.2}  {:>9.1}",
             h,
@@ -283,21 +264,13 @@ fn main() -> Result<()> {
     let t_out_mean = -5.0;
     let q_mean_analytical = (t_out_mean - t_in) / r_total;
     let q_mean_fvm: f64 =
-        hourly_results.iter().map(|(_, _, _, q)| q).sum::<f64>()
-            / hourly_results.len() as f64;
-    let q_mean_err =
-        ((q_mean_fvm - q_mean_analytical) / q_mean_analytical * 100.0).abs();
+        hourly_results.iter().map(|(_, _, _, q)| q).sum::<f64>() / hourly_results.len() as f64;
+    let q_mean_err = ((q_mean_fvm - q_mean_analytical) / q_mean_analytical * 100.0).abs();
 
     println!("  Periodic verification:");
-    println!(
-        "    Mean outdoor temp:       {t_out_mean:.1} C"
-    );
-    println!(
-        "    Analytical mean flux:    {q_mean_analytical:.4} W/m2"
-    );
-    println!(
-        "    FVM mean flux (day 2):   {q_mean_fvm:.4} W/m2"
-    );
+    println!("    Mean outdoor temp:       {t_out_mean:.1} C");
+    println!("    Analytical mean flux:    {q_mean_analytical:.4} W/m2");
+    println!("    FVM mean flux (day 2):   {q_mean_fvm:.4} W/m2");
     println!("    Error:                   {q_mean_err:.2}%");
     println!();
 
@@ -321,13 +294,9 @@ fn main() -> Result<()> {
     let decrement_factor = q_amplitude_fvm / q_amplitude_no_lag;
 
     println!("    Forcing flux amplitude:  {q_amplitude_no_lag:.4} W/m2");
-    println!(
-        "    Interior flux amplitude: {q_amplitude_fvm:.4} W/m2"
-    );
+    println!("    Interior flux amplitude: {q_amplitude_fvm:.4} W/m2");
     println!("    Decrement factor:        {decrement_factor:.4}");
-    println!(
-        "    (df < 1 confirms thermal mass attenuates the signal)"
-    );
+    println!("    (df < 1 confirms thermal mass attenuates the signal)");
     println!();
 
     // Find phase lag: hour of max outdoor temp vs hour of max interior flux
@@ -335,7 +304,7 @@ fn main() -> Result<()> {
     let hour_max_q = hourly_results
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1 .3.partial_cmp(&b.1 .3).unwrap())
+        .max_by(|a, b| a.1.3.partial_cmp(&b.1.3).unwrap())
         .map(|(i, _)| i)
         .unwrap();
     // q is negative (heat loss), so "max" flux = least negative = warmest hour
@@ -345,25 +314,15 @@ fn main() -> Result<()> {
         hour_max_q + 24 - hour_max_tout
     };
 
-    println!(
-        "    Peak outdoor temp at:    hour {hour_max_tout}"
-    );
-    println!(
-        "    Peak interior flux at:   hour {hour_max_q}"
-    );
-    println!(
-        "    Phase lag:               {phase_lag} hours"
-    );
-    println!(
-        "    (positive lag confirms thermal inertia delays the response)"
-    );
+    println!("    Peak outdoor temp at:    hour {hour_max_tout}");
+    println!("    Peak interior flux at:   hour {hour_max_q}");
+    println!("    Phase lag:               {phase_lag} hours");
+    println!("    (positive lag confirms thermal inertia delays the response)");
     println!();
 
     let pass_periodic = q_mean_err < 2.0 && decrement_factor < 1.0 && phase_lag > 0;
     if pass_periodic {
-        println!(
-            "  PASS: mean flux error < 2%, df < 1, phase lag > 0h"
-        );
+        println!("  PASS: mean flux error < 2%, df < 1, phase lag > 0h");
     } else {
         println!("  FAIL: check results above");
     }

@@ -190,4 +190,62 @@ mod tests {
             .count();
         assert_eq!(same_zone_count, 0);
     }
+
+    #[test]
+    fn test_inter_zone_interface_classification() {
+        // Two adjacent boxes in different zones — shared face should be InterZoneInterface.
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(1.0, 1.0, 1.0, Some((1.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
+
+        let index = SurfaceIndex::new(&building);
+        let sem = SurfaceSemantics::classify(&building, &index);
+
+        let inter_zone_count = index
+            .surfaces
+            .iter()
+            .filter(|s| sem.kind(&s.polygon_uid) == SurfaceKind::InterZoneInterface)
+            .count();
+        assert_eq!(
+            inter_zone_count, 2,
+            "Two facing polygons between zones should be InterZoneInterface"
+        );
+
+        let exterior_count = index
+            .surfaces
+            .iter()
+            .filter(|s| sem.kind(&s.polygon_uid) == SurfaceKind::Exterior)
+            .count();
+        // 2 solids * 6 faces - 2 inter-zone = 10 exterior
+        assert_eq!(exterior_count, 10);
+
+        // Verify the facing_pairs list has at least one entry
+        assert!(
+            !sem.facing_pairs.is_empty(),
+            "Should have facing pairs for adjacent solids"
+        );
+    }
+
+    #[test]
+    fn test_exterior_only_building() {
+        // Single solid, single zone — all faces should be exterior.
+        let s0 = Solid::from_box(1.0, 1.0, 1.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let index = SurfaceIndex::new(&building);
+        let sem = SurfaceSemantics::classify(&building, &index);
+
+        for s in &index.surfaces {
+            assert_eq!(
+                sem.kind(&s.polygon_uid),
+                SurfaceKind::Exterior,
+                "All faces should be exterior for a single solid"
+            );
+            assert!(sem.is_exterior(&s.polygon_uid));
+        }
+        assert!(sem.facing_pairs.is_empty());
+    }
 }

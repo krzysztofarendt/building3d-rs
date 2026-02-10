@@ -1214,6 +1214,216 @@ mod tests {
     }
 
     #[test]
+    fn test_scalar_min_alive_fraction_early_termination() {
+        // With very high absorption (0.99) and min_alive_fraction = 0.99,
+        // simulation should terminate early because rays die quickly.
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10_000;
+        config.num_rays = 50;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.default_absorption = 0.99;
+        config.min_alive_fraction = 0.99;
+        config.store_ray_history = false;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        // Should have terminated early (well before 10_000 steps)
+        assert!(
+            result.hits.len() < 10_000,
+            "Should terminate early: ran {} steps",
+            result.hits.len()
+        );
+    }
+
+    #[test]
+    fn test_frequency_dependent_with_progress_callback() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "s0").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("mat").with_acoustic(AcousticMaterial::new(
+            "mat",
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            [0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+        )));
+        lib.assign("/", "mat");
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10;
+        config.num_rays = 5;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.material_library = Some(lib);
+        config.store_ray_history = false;
+
+        let mut calls: usize = 0;
+        let sim = Simulation::new(&building, config).unwrap();
+        let _result = sim.run_with_progress(5, |_p| {
+            calls += 1;
+        });
+
+        // Called at start (0), then at steps 5 and 10.
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn test_frequency_dependent_min_alive_fraction_early_termination() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("hi_abs").with_acoustic(AcousticMaterial::new(
+            "hi_abs",
+            [0.99, 0.99, 0.99, 0.99, 0.99, 0.99],
+            [0.0; 6],
+        )));
+        lib.assign("/", "hi_abs");
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10_000;
+        config.num_rays = 50;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.material_library = Some(lib);
+        config.min_alive_fraction = 0.99;
+        config.store_ray_history = false;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        assert!(
+            result.hits.len() < 10_000,
+            "Should terminate early: ran {} steps",
+            result.hits.len()
+        );
+        assert!(result.band_hits.is_some());
+    }
+
+    #[test]
+    fn test_single_band_with_air_absorption() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config_no_air = SimulationConfig::new();
+        config_no_air.num_steps = 100;
+        config_no_air.num_rays = 20;
+        config_no_air.source = Point::new(1.0, 1.0, 1.0);
+        config_no_air.acoustic_mode = AcousticMode::FrequencyDependent;
+        config_no_air.single_band_index = Some(5);
+        config_no_air.enable_air_absorption = false;
+        config_no_air.store_ray_history = true;
+
+        let mut config_air = SimulationConfig::new();
+        config_air.num_steps = 100;
+        config_air.num_rays = 20;
+        config_air.source = Point::new(1.0, 1.0, 1.0);
+        config_air.acoustic_mode = AcousticMode::FrequencyDependent;
+        config_air.single_band_index = Some(5);
+        config_air.enable_air_absorption = true;
+        config_air.store_ray_history = true;
+
+        let sim_no_air = Simulation::new(&building, config_no_air).unwrap();
+        let result_no_air = sim_no_air.run();
+
+        let sim_air = Simulation::new(&building, config_air).unwrap();
+        let result_air = sim_air.run();
+
+        let energy_no_air: f64 = result_no_air.energies.last().unwrap().iter().sum();
+        let energy_air: f64 = result_air.energies.last().unwrap().iter().sum();
+
+        assert!(
+            energy_air <= energy_no_air + 1e-10,
+            "Air absorption should reduce or maintain energy: \
+             no_air={energy_no_air:.6}, air={energy_air:.6}"
+        );
+    }
+
+    #[test]
+    fn test_single_band_with_progress_and_early_termination() {
+        let s0 = Solid::from_box(2.0, 2.0, 2.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("hi_abs").with_acoustic(AcousticMaterial::new(
+            "hi_abs",
+            [0.99, 0.99, 0.99, 0.99, 0.99, 0.99],
+            [0.0; 6],
+        )));
+        lib.assign("/", "hi_abs");
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 10_000;
+        config.num_rays = 50;
+        config.source = Point::new(1.0, 1.0, 1.0);
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.single_band_index = Some(3);
+        config.material_library = Some(lib);
+        config.min_alive_fraction = 0.99;
+        config.store_ray_history = true;
+        config.store_ray_band_history = true;
+
+        let mut report_count: usize = 0;
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run_with_progress(5, |_p| {
+            report_count += 1;
+        });
+
+        // Should terminate early
+        assert!(
+            result.hits.len() < 10_000,
+            "Should terminate early: ran {} steps",
+            result.hits.len()
+        );
+        assert!(report_count > 0, "Should have reported at least once");
+        assert!(result.band_hits.is_some());
+        assert!(result.band_energies.is_some());
+    }
+
+    #[test]
+    fn test_single_band_absorber_records_only_target_band() {
+        let s0 = Solid::from_box(3.0, 3.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = SimulationConfig::new();
+        config.num_steps = 500;
+        config.num_rays = 500;
+        config.source = Point::new(1.5, 1.5, 1.5);
+        config.absorbers = vec![Point::new(0.5, 0.5, 0.5)];
+        config.absorber_radius = 0.8;
+        config.acoustic_mode = AcousticMode::FrequencyDependent;
+        config.single_band_index = Some(2);
+        config.store_ray_history = false;
+
+        let sim = Simulation::new(&building, config).unwrap();
+        let result = sim.run();
+
+        let band_hits = result.band_hits.as_ref().unwrap();
+        let total_hit: f64 = result.hits.iter().map(|h| h[0]).sum();
+        assert!(total_hit > 0.0, "Should have absorber hits");
+
+        // Only band 2 should have non-zero hits
+        for step_hits in band_hits {
+            for absorber_bh in step_hits {
+                for (b, &h) in absorber_bh.iter().enumerate() {
+                    if b != 2 {
+                        assert!(h.abs() < 1e-15, "Band {b} should have zero hits, got {h}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_frequency_dependent_decay_ordering() {
         // With frequency-dependent absorption [0.05, 0.10, 0.20, 0.35, 0.50, 0.70],
         // higher bands should have less remaining energy after many steps.

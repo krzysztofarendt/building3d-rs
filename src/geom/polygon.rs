@@ -952,4 +952,80 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_polygon_with_hole_centroid() -> Result<()> {
+        // 4x4 outer with 1x1 hole offset to lower-left.
+        // The centroid should shift away from the hole.
+        let outer = vec![
+            Point::new(0., 0., 0.),
+            Point::new(4., 0., 0.),
+            Point::new(4., 4., 0.),
+            Point::new(0., 4., 0.),
+        ];
+        let hole = vec![
+            Point::new(0.5, 0.5, 0.),
+            Point::new(0.5, 1.5, 0.),
+            Point::new(1.5, 1.5, 0.),
+            Point::new(1.5, 0.5, 0.),
+        ];
+        let poly = Polygon::with_holes("holed", outer, vec![hole], None)?;
+        let c = poly.centroid();
+        // Centroid should be valid (finite coordinates)
+        assert!(c.x.is_finite() && c.y.is_finite() && c.z.is_finite());
+        // Should be within the outer boundary
+        assert!(c.x > 0.0 && c.x < 4.0);
+        assert!(c.y > 0.0 && c.y < 4.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_polygon_non_coplanar_rejection() {
+        // 4 points not on the same plane -> should fail
+        let pts = vec![
+            Point::new(0., 0., 0.),
+            Point::new(1., 0., 0.),
+            Point::new(1., 1., 0.),
+            Point::new(0., 1., 1.),
+        ];
+        assert!(Polygon::new("bad", pts, None).is_err());
+    }
+
+    #[test]
+    fn test_polygon_too_few_points() {
+        let pts = vec![Point::new(0., 0., 0.), Point::new(1., 0., 0.)];
+        assert!(Polygon::new("bad", pts, None).is_err());
+    }
+
+    #[test]
+    fn test_polygon_with_multiple_holes_area() -> Result<()> {
+        // 6x6 outer (area=36) with two 1x1 holes (area=1 each)
+        let outer = vec![
+            Point::new(0., 0., 0.),
+            Point::new(6., 0., 0.),
+            Point::new(6., 6., 0.),
+            Point::new(0., 6., 0.),
+        ];
+        let hole1 = vec![
+            Point::new(1.0, 1.0, 0.),
+            Point::new(1.0, 2.0, 0.),
+            Point::new(2.0, 2.0, 0.),
+            Point::new(2.0, 1.0, 0.),
+        ];
+        let hole2 = vec![
+            Point::new(4.0, 4.0, 0.),
+            Point::new(4.0, 5.0, 0.),
+            Point::new(5.0, 5.0, 0.),
+            Point::new(5.0, 4.0, 0.),
+        ];
+        let poly = Polygon::with_holes("two_holes", outer, vec![hole1, hole2], None)?;
+        let area = poly.area();
+        assert!(
+            (area - 34.0).abs() < 0.1,
+            "Area should be 36 - 2 = 34, got {}",
+            area
+        );
+        assert_eq!(poly.holes().len(), 2);
+        Ok(())
+    }
 }

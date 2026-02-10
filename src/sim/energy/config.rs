@@ -445,4 +445,44 @@ mod tests {
         let cfg: ThermalConfig = Default::default();
         assert!((cfg.default_u_value - 2.0).abs() < 1e-12);
     }
+
+    #[test]
+    fn test_resolve_envelope_capacity_precedence() {
+        let uid = crate::UID::new();
+        let mut config = ThermalConfig::new();
+        let fallback = 50_000.0;
+
+        // Default fallback
+        let c = config.resolve_envelope_capacity_j_per_m2_k(
+            Some(&uid),
+            "zone/solid/wall/poly",
+            fallback,
+        );
+        assert!((c - fallback).abs() < 1e-12);
+
+        // Construction match wins over default
+        let wall = insulated_wall();
+        // insulated_wall() has layers -> thermal_capacity() returns their sum
+        let expected_cap = wall.thermal_capacity();
+        config.constructions.insert("wall".to_string(), wall);
+        let c = config.resolve_envelope_capacity_j_per_m2_k(None, "zone/solid/wall/poly", fallback);
+        assert!(
+            (c - expected_cap.max(0.0)).abs() < 1e-6,
+            "Construction should win: got {c}, expected {expected_cap}"
+        );
+
+        // UID override wins over construction
+        config
+            .envelope_capacity_overrides_j_per_m2_k_by_polygon_uid
+            .insert(uid.clone(), 99_999.0);
+        let c = config.resolve_envelope_capacity_j_per_m2_k(
+            Some(&uid),
+            "zone/solid/wall/poly",
+            fallback,
+        );
+        assert!(
+            (c - 99_999.0).abs() < 1e-12,
+            "UID override should win: got {c}"
+        );
+    }
 }

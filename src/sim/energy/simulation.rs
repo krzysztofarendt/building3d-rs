@@ -1959,4 +1959,317 @@ mod tests {
             "U=0.5 should use well under half the energy of U=3.0"
         );
     }
+
+    #[test]
+    fn test_transient_two_node_model() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
+        let hvac = HvacIdealLoads::new();
+
+        // Baseline: lumped (1R1C)
+        let config_lumped = ThermalConfig::new();
+        let result_lumped =
+            run_transient_simulation(&building, &config_lumped, &weather, &hvac, None, None);
+
+        // Two-node model: split capacity between air and mass
+        let mut config_2n = ThermalConfig::new();
+        config_2n.two_node_mass_fraction = 0.8;
+        config_2n.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+        let result_2n =
+            run_transient_simulation(&building, &config_2n, &weather, &hvac, None, None);
+
+        assert_eq!(result_2n.hourly_heating.len(), 8760);
+        assert!(result_2n.annual_heating_kwh > 0.0);
+        // Two-node should differ from lumped due to thermal mass lag
+        assert!(
+            (result_2n.annual_heating_kwh - result_lumped.annual_heating_kwh).abs() > 0.1,
+            "Two-node should differ from lumped: 2n={}, lumped={}",
+            result_2n.annual_heating_kwh,
+            result_lumped.annual_heating_kwh
+        );
+    }
+
+    #[test]
+    fn test_transient_three_node_envelope() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
+        let hvac = HvacIdealLoads::new();
+
+        let mut config = ThermalConfig::new();
+        config.two_node_mass_fraction = 0.8;
+        config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+        config.two_node_envelope_to_mass = true;
+        config.three_node_envelope_mass_fraction = 0.5;
+
+        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, None);
+
+        assert_eq!(result.hourly_heating.len(), 8760);
+        assert!(
+            result.annual_heating_kwh > 0.0,
+            "Should need heating: {}",
+            result.annual_heating_kwh
+        );
+        // Energy conservation check
+        let sum_h: f64 = result.hourly_heating.iter().sum();
+        assert!(
+            (sum_h / 1000.0 - result.annual_heating_kwh).abs() < 0.01,
+            "Three-node hourly sum should match annual kWh"
+        );
+    }
+
+    #[test]
+    fn test_opaque_solar_gains() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData {
+            location: "Solar".to_string(),
+            latitude: 30.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![HourlyRecord {
+                month: 6,
+                day: 21,
+                hour: 12,
+                dry_bulb_temperature: 0.0,
+                relative_humidity: 50.0,
+                horizontal_infrared_radiation: 300.0,
+                global_horizontal_radiation: 0.0,
+                direct_normal_radiation: 800.0,
+                diffuse_horizontal_radiation: 200.0,
+                wind_speed: 0.0,
+                wind_direction: 0.0,
+            }],
+        };
+        let hvac = HvacIdealLoads::new();
+
+        // Without opaque solar
+        let config = ThermalConfig::new();
+        let result_no_opaque =
+            run_transient_simulation(&building, &config, &weather, &hvac, None, None);
+
+        // With opaque solar absorption
+        let mut solar = SolarGainConfig::new();
+        solar.include_exterior_opaque_absorption = true;
+        solar.default_opaque_absorptance = 0.9;
+        let result_opaque =
+            run_transient_simulation(&building, &config, &weather, &hvac, None, Some(&solar));
+
+        // Opaque solar absorption should reduce heating demand
+        // (exterior solar heats the surfaces which conducts inward)
+        assert!(
+            result_opaque.hourly_heating[0] <= result_no_opaque.hourly_heating[0],
+            "Opaque solar should reduce heating: with={}, without={}",
+            result_opaque.hourly_heating[0],
+            result_no_opaque.hourly_heating[0]
+        );
+    }
+
+    #[test]
+    fn test_transient_with_warmup_hours() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
+        let hvac = HvacIdealLoads::new();
+
+        // Use two-node model so warmup affects mass temperature state
+        let mut config = ThermalConfig::new();
+        config.two_node_mass_fraction = 0.8;
+        config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+
+        let opts_warmup = TransientSimulationOptions { warmup_hours: 48 };
+
+        let result_warmup = run_transient_simulation_with_options(
+            &building,
+            &config,
+            &weather,
+            &hvac,
+            None,
+            None,
+            &opts_warmup,
+        );
+
+        // Should produce 8760 hours of results (warmup doesn't add to reported)
+        assert_eq!(result_warmup.hourly_heating.len(), 8760);
+        assert!(result_warmup.annual_heating_kwh > 0.0);
+    }
+
+    #[test]
+    fn test_transient_envelope_to_mass_model() {
+        // Exercises the TwoNodeVariant::EnvelopeToMass path
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
+        let hvac = HvacIdealLoads::new();
+
+        let mut config = ThermalConfig::new();
+        config.two_node_mass_fraction = 0.8;
+        config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+        config.two_node_envelope_to_mass = true;
+        // three_node_envelope_mass_fraction = 0 so we stay in EnvelopeToMass
+
+        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, None);
+
+        assert_eq!(result.hourly_heating.len(), 8760);
+        assert!(
+            result.annual_heating_kwh > 0.0,
+            "Envelope-to-mass model should need heating"
+        );
+        let sum_h: f64 = result.hourly_heating.iter().sum();
+        assert!(
+            (sum_h / 1000.0 - result.annual_heating_kwh).abs() < 0.01,
+            "Energy conservation check"
+        );
+    }
+
+    #[test]
+    fn test_transient_with_solar_and_opaque_absorption() {
+        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let weather = WeatherData {
+            location: "Solar".to_string(),
+            latitude: 30.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![
+                HourlyRecord {
+                    month: 6,
+                    day: 21,
+                    hour: 12,
+                    dry_bulb_temperature: 10.0,
+                    relative_humidity: 50.0,
+                    horizontal_infrared_radiation: 350.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 800.0,
+                    diffuse_horizontal_radiation: 200.0,
+                    wind_speed: 3.0,
+                    wind_direction: 0.0,
+                },
+                HourlyRecord {
+                    month: 6,
+                    day: 21,
+                    hour: 1,
+                    dry_bulb_temperature: 5.0,
+                    relative_humidity: 50.0,
+                    horizontal_infrared_radiation: 300.0,
+                    global_horizontal_radiation: 0.0,
+                    direct_normal_radiation: 0.0,
+                    diffuse_horizontal_radiation: 10.0,
+                    wind_speed: 1.0,
+                    wind_direction: 0.0,
+                },
+            ],
+        };
+        let hvac = HvacIdealLoads::new();
+        let config = ThermalConfig::new();
+
+        // Enable all sol-air features
+        let mut solar = SolarGainConfig::new();
+        solar.include_exterior_opaque_absorption = true;
+        solar.include_exterior_longwave_exchange = true;
+        solar.use_wind_speed_for_h_out = true;
+
+        let result =
+            run_transient_simulation(&building, &config, &weather, &hvac, None, Some(&solar));
+        assert_eq!(result.hourly_heating.len(), 2);
+    }
+
+    #[test]
+    fn test_multizone_transient_with_solar_per_zone_distribution() {
+        // Exercise compute_exterior_opaque_sol_air_gains_by_zone_w
+        let s0 = Solid::from_box(3.0, 3.0, 3.0, None, "s0").unwrap();
+        let s1 = Solid::from_box(3.0, 3.0, 3.0, Some((3.0, 0.0, 0.0)), "s1").unwrap();
+        let z0 = Zone::new("z0", vec![s0]).unwrap();
+        let z1 = Zone::new("z1", vec![s1]).unwrap();
+        let building = Building::new("b", vec![z0, z1]).unwrap();
+
+        let weather = WeatherData {
+            location: "S".to_string(),
+            latitude: 30.0,
+            longitude: 0.0,
+            timezone: 0.0,
+            elevation: 0.0,
+            records: vec![HourlyRecord {
+                month: 6,
+                day: 21,
+                hour: 12,
+                dry_bulb_temperature: 10.0,
+                relative_humidity: 50.0,
+                horizontal_infrared_radiation: 350.0,
+                global_horizontal_radiation: 0.0,
+                direct_normal_radiation: 800.0,
+                diffuse_horizontal_radiation: 200.0,
+                wind_speed: 2.0,
+                wind_direction: 0.0,
+            }],
+        };
+        let hvac = HvacIdealLoads::new();
+        let config = ThermalConfig::new();
+
+        let mut solar = SolarGainConfig::new();
+        solar.include_exterior_opaque_absorption = true;
+        solar.include_exterior_longwave_exchange = true;
+        solar.use_wind_speed_for_h_out = true;
+
+        let result = run_multizone_transient_simulation(
+            &building,
+            &config,
+            &weather,
+            &hvac,
+            None,
+            Some(&solar),
+        )
+        .unwrap();
+
+        assert_eq!(result.zone_names.len(), 2);
+        assert_eq!(result.hourly_zone_temperatures_c[0].len(), 1);
+    }
+
+    #[test]
+    fn test_opaque_absorptance_for_path_function() {
+        use crate::sim::materials::{Material, MaterialLibrary, OpticalMaterial};
+
+        // No library
+        let a = opaque_absorptance_for_path("z/s/w/p", None, 0.7);
+        assert!((a - 0.7).abs() < 1e-12);
+
+        // Library with no matching material
+        let mut lib = MaterialLibrary::new();
+        lib.add(Material::new("mat"));
+        lib.assign("wall", "mat");
+        let a = opaque_absorptance_for_path("unmatched", Some(&lib), 0.7);
+        assert!((a - 0.7).abs() < 1e-12);
+
+        // Library with matching material but no optical
+        let a = opaque_absorptance_for_path("z/s/wall/p", Some(&lib), 0.7);
+        assert!((a - 0.7).abs() < 1e-12);
+
+        // Library with optical properties
+        let mut mat = Material::new("dark");
+        mat.optical = Some(OpticalMaterial {
+            name: "dark".to_string(),
+            diffuse_reflectance: [0.2, 0.2, 0.2],
+            specular_reflectance: [0.0; 3],
+            transmittance: [0.0; 3],
+        });
+        lib.add(mat);
+        lib.assign("roof", "dark");
+        let a = opaque_absorptance_for_path("z/s/roof/p", Some(&lib), 0.7);
+        assert!((a - 0.8).abs() < 1e-12, "Expected 0.8, got {a}");
+    }
 }
