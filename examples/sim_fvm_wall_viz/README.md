@@ -23,6 +23,26 @@ Same 4-layer insulated exterior wall as `sim_fvm_wall`:
 | concrete     |            150 |      1.40 |
 | plaster_int  |             15 |      0.87 |
 
+## FVM discretization
+
+Each layer is subdivided into cells no thicker than 50 mm. This produces 7
+cells across the 285 mm wall:
+
+| Layer        | Thickness (mm) | Cells | Cell size (mm) |
+|--------------|---------------:|------:|---------------:|
+| plaster_ext  |             20 |     1 |             20 |
+| insulation   |            100 |     2 |             50 |
+| concrete     |            150 |     3 |             50 |
+| plaster_int  |             15 |     1 |             15 |
+
+Between each pair of adjacent cells there is a **face** carrying a precomputed
+conductance. At material interfaces the conductance uses the series-resistance
+formula `K = A / (half_dx_L/k_L + half_dx_R/k_R)` so that the jump in
+conductivity is handled correctly. The two boundary faces (exterior and
+interior) connect the outermost cells to the convective boundary conditions.
+
+Total: 7 cells, 6 interior faces, 2 boundary faces.
+
 ## Simulation parameters
 
 | Parameter        | Value              |
