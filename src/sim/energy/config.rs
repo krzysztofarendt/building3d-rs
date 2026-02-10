@@ -62,6 +62,17 @@ pub struct ThermalConfig {
     /// Used by transient zone-air models to estimate total zone thermal capacity:
     /// `C_zone = V_zone * thermal_capacity_j_per_m3_k`.
     pub thermal_capacity_j_per_m3_k: f64,
+    /// Optional ground temperature boundary for ground-coupled surfaces (°C).
+    ///
+    /// When set, surfaces matched by [`Self::ground_surface_patterns`] contribute an
+    /// extra conductance term to a "ground" boundary rather than outdoor air. The
+    /// transient solvers approximate this by adding a per-hour gain:
+    /// `Q_ground = UA_ground * (T_ground - T_outdoor)`.
+    pub ground_temperature_c: Option<f64>,
+    /// Path substring patterns identifying ground-coupled exterior surfaces.
+    ///
+    /// Default: `["floor"]`.
+    pub ground_surface_patterns: Vec<String>,
     /// Optional two-node (air + mass) thermal model enable knob.
     ///
     /// - `0.0` (default): use the historical 1R1C zone model.
@@ -100,6 +111,8 @@ impl ThermalConfig {
             internal_gains: 0.0,
             solar_gains: 0.0,
             thermal_capacity_j_per_m3_k: 50_000.0,
+            ground_temperature_c: None,
+            ground_surface_patterns: vec!["floor".to_string()],
             two_node_mass_fraction: 0.0,
             interior_heat_transfer_coeff_w_per_m2_k: 3.0,
             solar_gains_to_mass_fraction: 0.0,
@@ -288,6 +301,8 @@ mod tests {
         assert!((config.default_u_value - 2.0).abs() < 1e-10);
         assert!((config.indoor_temperature - 20.0).abs() < 1e-10);
         assert!((config.thermal_capacity_j_per_m3_k - 50_000.0).abs() < 1e-10);
+        assert!(config.ground_temperature_c.is_none());
+        assert_eq!(config.ground_surface_patterns, vec!["floor".to_string()]);
         assert!((config.two_node_mass_fraction - 0.0).abs() < 1e-12);
         assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
         assert!((config.solar_gains_to_mass_fraction - 0.0).abs() < 1e-12);

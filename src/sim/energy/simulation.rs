@@ -95,11 +95,12 @@ fn compute_exterior_opaque_sol_air_gain_total_w(
     params: &SolarHourParams,
     solar_config: &SolarGainConfig,
 ) -> f64 {
-    let solar_pos = SolarPosition::calculate(
+    let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
+        params.timezone,
         params.day_of_year,
-        params.hour,
+        params.local_time_hours,
     );
     let sun_above = solar_pos.is_above_horizon();
     let sun_dir = solar_pos.to_direction();
@@ -114,7 +115,7 @@ fn compute_exterior_opaque_sol_air_gain_total_w(
             continue;
         }
         if solar_config
-            .resolve_shgc_with_materials(&surface.path, base_config.material_library.as_ref())
+            .resolve_shgc(&surface.path, base_config.material_library.as_ref())
             .is_some()
         {
             continue; // glazing handled via transmitted-to-zone path
@@ -169,11 +170,12 @@ fn compute_exterior_opaque_sol_air_gains_by_zone_w(
     params: &SolarHourParams,
     solar_config: &SolarGainConfig,
 ) -> std::collections::HashMap<UID, f64> {
-    let solar_pos = SolarPosition::calculate(
+    let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
+        params.timezone,
         params.day_of_year,
-        params.hour,
+        params.local_time_hours,
     );
     let sun_above = solar_pos.is_above_horizon();
     let sun_dir = solar_pos.to_direction();
@@ -188,7 +190,7 @@ fn compute_exterior_opaque_sol_air_gains_by_zone_w(
             continue;
         }
         if solar_config
-            .resolve_shgc_with_materials(&surface.path, base_config.material_library.as_ref())
+            .resolve_shgc(&surface.path, base_config.material_library.as_ref())
             .is_some()
         {
             continue;
@@ -243,7 +245,7 @@ fn looks_like_glazing(
 ) -> bool {
     if let Some(sc) = solar_config
         && sc
-            .resolve_shgc_with_materials(path, base_config.material_library.as_ref())
+            .resolve_shgc(path, base_config.material_library.as_ref())
             .is_some()
     {
         return true;
@@ -321,12 +323,14 @@ pub fn run_annual_simulation(
         config.solar_gains = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
+                    global_horizontal_irradiance: record.global_horizontal_radiation,
                     direct_normal_irradiance: record.direct_normal_radiation,
                     diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
                     day_of_year: day_of_year(record.month, record.day),
-                    hour: record.hour as f64,
+                    local_time_hours: record.hour as f64 - 0.5,
                     latitude: weather.latitude,
                     longitude: weather.longitude,
+                    timezone: weather.timezone,
                 };
                 let mut solar = compute_solar_gains_with_materials(
                     building,
@@ -393,6 +397,43 @@ pub fn run_transient_simulation(
     gains_profile: Option<&InternalGainsProfile>,
     solar_config: Option<&SolarGainConfig>,
 ) -> AnnualResult {
+    run_transient_simulation_with_options(
+        building,
+        base_config,
+        weather,
+        hvac,
+        gains_profile,
+        solar_config,
+        &TransientSimulationOptions::default(),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TransientSimulationOptions {
+    /// Number of warmup hours to run before the reported simulation year.
+    ///
+    /// Warmup uses the first `warmup_hours` records of the provided weather data,
+    /// then restarts reporting from hour 0 with the warmed-up state (similar in
+    /// spirit to EnergyPlus warmup days).
+    pub warmup_hours: usize,
+}
+
+impl Default for TransientSimulationOptions {
+    fn default() -> Self {
+        Self { warmup_hours: 0 }
+    }
+}
+
+/// Like [`run_transient_simulation`], but supports an optional warmup period.
+pub fn run_transient_simulation_with_options(
+    building: &Building,
+    base_config: &ThermalConfig,
+    weather: &WeatherData,
+    hvac: &HvacIdealLoads,
+    gains_profile: Option<&InternalGainsProfile>,
+    solar_config: Option<&SolarGainConfig>,
+    options: &TransientSimulationOptions,
+) -> AnnualResult {
     let index = SurfaceIndex::new(building);
     let boundaries = ThermalBoundaries::classify(building, &index);
 
@@ -426,6 +467,33 @@ pub fn run_transient_simulation(
             }
         }
         ua
+    };
+
+    let ua_ground = if base_config.ground_temperature_c.is_some() {
+        let mut ua_g = 0.0;
+        for s in &index.surfaces {
+            if !boundaries.is_exterior(&s.polygon_uid) {
+                continue;
+            }
+            if !base_config
+                .ground_surface_patterns
+                .iter()
+                .any(|p| s.path.contains(p.as_str()))
+            {
+                continue;
+            }
+            let Some(poly) = building.get_polygon(&s.path) else {
+                continue;
+            };
+            if poly.vn.dz > -0.5 {
+                continue;
+            }
+            let u = base_config.resolve_u_value_for_surface(&s.polygon_uid, &s.path);
+            ua_g += u * s.area_m2;
+        }
+        ua_g.max(0.0)
+    } else {
+        0.0
     };
 
     let infiltration_cond = if dt.abs() > 1e-10 {
@@ -497,113 +565,161 @@ pub fn run_transient_simulation(
     let mut monthly_heating = [0.0; 12];
     let mut monthly_cooling = [0.0; 12];
 
-    for (hour_idx, record) in weather.records.iter().enumerate() {
-        let gains = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
-        let (solar_transmitted, solar_opaque_sol_air) = match solar_config {
-            Some(sc) => {
-                let params = SolarHourParams {
-                    direct_normal_irradiance: record.direct_normal_radiation,
-                    diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
-                    day_of_year: day_of_year(record.month, record.day),
-                    hour: record.hour as f64,
-                    latitude: weather.latitude,
-                    longitude: weather.longitude,
-                };
-                let transmitted = compute_solar_gains_with_materials(
-                    building,
-                    &params,
-                    sc,
-                    base_config.material_library.as_ref(),
-                );
-                let opaque = if sc.include_exterior_opaque_absorption {
-                    compute_exterior_opaque_sol_air_gain_total_w(
+    let warmup_hours = options.warmup_hours.min(num_hours);
+
+    let mut simulate_hour =
+        |hour_idx: usize, record: &super::weather::HourlyRecord, report: bool| {
+            let gains = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
+            let (solar_transmitted, solar_opaque_sol_air) = match solar_config {
+                Some(sc) => {
+                    let params = SolarHourParams {
+                        global_horizontal_irradiance: record.global_horizontal_radiation,
+                        direct_normal_irradiance: record.direct_normal_radiation,
+                        diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+                        day_of_year: day_of_year(record.month, record.day),
+                        local_time_hours: record.hour as f64 - 0.5,
+                        latitude: weather.latitude,
+                        longitude: weather.longitude,
+                        timezone: weather.timezone,
+                    };
+                    let transmitted = compute_solar_gains_with_materials(
                         building,
-                        base_config,
-                        &index,
-                        &boundaries,
                         &params,
                         sc,
-                    )
-                } else {
-                    0.0
-                };
-                (transmitted, opaque)
-            }
-            None => (0.0, 0.0),
-        };
-        let solar_total = solar_transmitted + solar_opaque_sol_air;
-
-        let (heating_power, cooling_power) = if let Some(model) = model_2r2c.as_mut() {
-            let f_solar_mass = base_config.solar_gains_to_mass_fraction.clamp(0.0, 1.0);
-            let f_internal_mass = base_config.internal_gains_to_mass_fraction.clamp(0.0, 1.0);
-
-            let gains_mass = gains * f_internal_mass + solar_transmitted * f_solar_mass;
-            let gains_air = gains * (1.0 - f_internal_mass)
-                + solar_opaque_sol_air
-                + solar_transmitted * (1.0 - f_solar_mass);
-
-            let t_air = model.air_temperature_c;
-            let setpoint = hvac.active_setpoint(t_air);
-            let need_hvac = (setpoint - t_air).abs() > 1e-10;
-            let q_hvac = if need_hvac {
-                hvac.required_hvac_power_two_node(
-                    setpoint,
-                    t_air,
-                    model.mass_temperature_c,
-                    record.dry_bulb_temperature,
-                    model.envelope_conductance_w_per_k,
-                    model.air_mass_conductance_w_per_k,
-                    gains_air,
-                    gains_mass,
-                    model.air_capacity_j_per_k,
-                    model.mass_capacity_j_per_k,
-                    dt_s,
-                )
+                        base_config.material_library.as_ref(),
+                    );
+                    let opaque = if sc.include_exterior_opaque_absorption {
+                        compute_exterior_opaque_sol_air_gain_total_w(
+                            building,
+                            base_config,
+                            &index,
+                            &boundaries,
+                            &params,
+                            sc,
+                        )
+                    } else {
+                        0.0
+                    };
+                    (transmitted, opaque)
+                }
+                None => (0.0, 0.0),
+            };
+            let solar_total = solar_transmitted + solar_opaque_sol_air;
+            let q_ground = if let Some(tg) = base_config.ground_temperature_c {
+                ua_ground * (tg - record.dry_bulb_temperature)
             } else {
                 0.0
             };
 
-            model.step(
-                record.dry_bulb_temperature,
-                gains_air,
-                gains_mass,
-                q_hvac,
-                dt_s,
-            );
+            let (heating_power, cooling_power) = if let Some(model) = model_2r2c.as_mut() {
+                let f_solar_mass = base_config.solar_gains_to_mass_fraction.clamp(0.0, 1.0);
+                let f_internal_mass = base_config.internal_gains_to_mass_fraction.clamp(0.0, 1.0);
 
-            (q_hvac.max(0.0), (-q_hvac).max(0.0))
-        } else {
-            let model = model_1r1c.as_mut().unwrap();
-            let total_gains = gains + solar_total;
+                let gains_mass = gains * f_internal_mass + solar_transmitted * f_solar_mass;
+                let gains_air = gains * (1.0 - f_internal_mass)
+                    + solar_opaque_sol_air
+                    + solar_transmitted * (1.0 - f_solar_mass);
+                let gains_air = gains_air + q_ground;
 
-            // Calculate HVAC power using implicit formula that accounts for
-            // concurrent envelope losses during the timestep.
-            let total_conductance = model.ua_total + model.infiltration_conductance;
-            let (heating_power, cooling_power) = hvac.calculate_with_losses(
-                model.zone_temperature,
-                record.dry_bulb_temperature,
-                total_conductance,
-                total_gains,
-                model.thermal_capacity,
-                dt_s,
-            );
+                let mut free = model.clone();
+                free.step(
+                    record.dry_bulb_temperature,
+                    gains_air,
+                    gains_mass,
+                    0.0,
+                    dt_s,
+                );
 
-            let hvac_net = heating_power - cooling_power;
-            model.step(record.dry_bulb_temperature, total_gains, hvac_net, dt_s);
-            (heating_power, cooling_power)
+                let t_free = free.air_temperature_c;
+                let q_hvac = if t_free < hvac.heating_setpoint {
+                    hvac.required_hvac_power_two_node(
+                        hvac.heating_setpoint,
+                        model.air_temperature_c,
+                        model.mass_temperature_c,
+                        record.dry_bulb_temperature,
+                        model.envelope_conductance_w_per_k,
+                        model.air_mass_conductance_w_per_k,
+                        gains_air,
+                        gains_mass,
+                        model.air_capacity_j_per_k,
+                        model.mass_capacity_j_per_k,
+                        dt_s,
+                    )
+                } else if t_free > hvac.cooling_setpoint {
+                    hvac.required_hvac_power_two_node(
+                        hvac.cooling_setpoint,
+                        model.air_temperature_c,
+                        model.mass_temperature_c,
+                        record.dry_bulb_temperature,
+                        model.envelope_conductance_w_per_k,
+                        model.air_mass_conductance_w_per_k,
+                        gains_air,
+                        gains_mass,
+                        model.air_capacity_j_per_k,
+                        model.mass_capacity_j_per_k,
+                        dt_s,
+                    )
+                } else {
+                    0.0
+                };
+
+                model.step(
+                    record.dry_bulb_temperature,
+                    gains_air,
+                    gains_mass,
+                    q_hvac,
+                    dt_s,
+                );
+
+                (q_hvac.max(0.0), (-q_hvac).max(0.0))
+            } else {
+                let model = model_1r1c.as_mut().unwrap();
+                let total_gains = gains + solar_total + q_ground;
+
+                let mut free = model.clone();
+                free.step(record.dry_bulb_temperature, total_gains, 0.0, dt_s);
+
+                let t_free = free.zone_temperature;
+                let total_conductance = model.ua_total + model.infiltration_conductance;
+                let q_hvac = if t_free < hvac.heating_setpoint {
+                    let setpoint = hvac.heating_setpoint;
+                    model.thermal_capacity * (setpoint - model.zone_temperature) / dt_s
+                        + total_conductance * (setpoint - record.dry_bulb_temperature)
+                        - total_gains
+                } else if t_free > hvac.cooling_setpoint {
+                    let setpoint = hvac.cooling_setpoint;
+                    model.thermal_capacity * (setpoint - model.zone_temperature) / dt_s
+                        + total_conductance * (setpoint - record.dry_bulb_temperature)
+                        - total_gains
+                } else {
+                    0.0
+                };
+
+                model.step(record.dry_bulb_temperature, total_gains, q_hvac, dt_s);
+                (q_hvac.max(0.0), (-q_hvac).max(0.0))
+            };
+
+            if report {
+                hourly_heating.push(heating_power);
+                hourly_cooling.push(cooling_power);
+
+                annual_heating += heating_power;
+                annual_cooling += cooling_power;
+                peak_heating = peak_heating.max(heating_power);
+                peak_cooling = peak_cooling.max(cooling_power);
+
+                let month_idx = (record.month as usize).saturating_sub(1).min(11);
+                monthly_heating[month_idx] += heating_power;
+                monthly_cooling[month_idx] += cooling_power;
+            }
         };
 
-        hourly_heating.push(heating_power);
-        hourly_cooling.push(cooling_power);
-
-        annual_heating += heating_power;
-        annual_cooling += cooling_power;
-        peak_heating = peak_heating.max(heating_power);
-        peak_cooling = peak_cooling.max(cooling_power);
-
-        let month_idx = (record.month as usize).saturating_sub(1).min(11);
-        monthly_heating[month_idx] += heating_power;
-        monthly_cooling[month_idx] += cooling_power;
+    for hour_idx in 0..warmup_hours {
+        let record = &weather.records[hour_idx];
+        simulate_hour(hour_idx, record, false);
+    }
+    for (hour_idx, record) in weather.records.iter().enumerate() {
+        simulate_hour(hour_idx, record, true);
     }
 
     let to_kwh = 1.0 / 1000.0;
@@ -675,12 +791,14 @@ pub fn run_multizone_transient_simulation(
         let solar_by_zone = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
+                    global_horizontal_irradiance: record.global_horizontal_radiation,
                     direct_normal_irradiance: record.direct_normal_radiation,
                     diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
                     day_of_year: day_of_year(record.month, record.day),
-                    hour: record.hour as f64,
+                    local_time_hours: record.hour as f64 - 0.5,
                     latitude: weather.latitude,
                     longitude: weather.longitude,
+                    timezone: weather.timezone,
                 };
                 let mut solar = compute_solar_gains_per_zone_with_materials(
                     building,
@@ -815,12 +933,14 @@ pub fn run_multizone_steady_simulation(
         let solar_by_zone = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
+                    global_horizontal_irradiance: record.global_horizontal_radiation,
                     direct_normal_irradiance: record.direct_normal_radiation,
                     diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
                     day_of_year: day_of_year(record.month, record.day),
-                    hour: record.hour as f64,
+                    local_time_hours: record.hour as f64 - 0.5,
                     latitude: weather.latitude,
                     longitude: weather.longitude,
+                    timezone: weather.timezone,
                 };
                 compute_solar_gains_per_zone_with_materials(
                     building,

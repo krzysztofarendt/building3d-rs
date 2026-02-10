@@ -297,12 +297,14 @@ impl SimModule for SolarEpwModule {
         let record = &self.config.weather.records[hour_index];
 
         let params = SolarHourParams {
+            global_horizontal_irradiance: record.global_horizontal_radiation,
             direct_normal_irradiance: record.direct_normal_radiation,
             diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
             day_of_year: day_of_year(record.month, record.day),
-            hour: record.hour as f64,
+            local_time_hours: record.hour as f64 - 0.5,
             latitude: self.config.weather.latitude,
             longitude: self.config.weather.longitude,
+            timezone: self.config.weather.timezone,
         };
 
         let gains_by_zone = compute_solar_gains_per_zone_with_materials(
@@ -494,11 +496,12 @@ impl SimModule for SolarEpwShadedModule {
         let boundaries = self.boundaries.as_ref().expect("initialized");
 
         let record = &self.config.weather.records[hour_idx];
-        let solar_pos = SolarPosition::calculate(
+        let solar_pos = SolarPosition::calculate_from_local_time(
             self.config.weather.latitude,
             self.config.weather.longitude,
+            self.config.weather.timezone,
             day_of_year(record.month, record.day),
-            record.hour as f64,
+            record.hour as f64 - 0.5,
         );
 
         let (transmitted, absorbed) = compute_shaded_shortwave(
@@ -676,12 +679,14 @@ impl SimModule for SolarShortwaveStepModule {
         bus.put(OutdoorAirTemperatureC(record.dry_bulb_temperature));
 
         let params = SolarHourParams {
+            global_horizontal_irradiance: record.global_horizontal_radiation,
             direct_normal_irradiance: record.direct_normal_radiation,
             diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
             day_of_year: day_of_year(record.month, record.day),
-            hour: record.hour as f64,
+            local_time_hours: record.hour as f64 - 0.5,
             latitude: self.config.weather.latitude,
             longitude: self.config.weather.longitude,
+            timezone: self.config.weather.timezone,
         };
 
         let gains_by_zone = compute_solar_gains_per_zone_with_materials(
@@ -817,11 +822,12 @@ impl SimModule for SolarShortwaveShadedStepModule {
         let record = &self.config.weather.records[self.hour_idx];
         bus.put(OutdoorAirTemperatureC(record.dry_bulb_temperature));
 
-        let solar_pos = SolarPosition::calculate(
+        let solar_pos = SolarPosition::calculate_from_local_time(
             self.config.weather.latitude,
             self.config.weather.longitude,
+            self.config.weather.timezone,
             day_of_year(record.month, record.day),
-            record.hour as f64,
+            record.hour as f64 - 0.5,
         );
 
         let (transmitted, absorbed) = compute_shaded_shortwave(
@@ -857,11 +863,12 @@ fn compute_unshaded_opaque_absorbed(
     gain_config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
 ) -> ShortwaveAbsorbedWPerPolygon {
-    let solar_pos = SolarPosition::calculate(
+    let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
+        params.timezone,
         params.day_of_year,
-        params.hour,
+        params.local_time_hours,
     );
     let sun_dir = solar_pos.to_direction();
     let sun_above = solar_pos.is_above_horizon();
@@ -873,7 +880,7 @@ fn compute_unshaded_opaque_absorbed(
             continue;
         }
         if gain_config
-            .resolve_shgc_with_materials(&surface.path, material_library)
+            .resolve_shgc(&surface.path, material_library)
             .is_some()
         {
             continue; // glazing handled via transmitted-to-zone
@@ -940,7 +947,7 @@ fn compute_shaded_shortwave(
         }
 
         let shgc = gain_config
-            .resolve_shgc_with_materials(&surface.path, material_library)
+            .resolve_shgc(&surface.path, material_library)
             .map(|v| v.clamp(0.0, 1.0));
 
         let Some(&poly_idx) = polygon_idx_by_uid.get(&surface.polygon_uid) else {
@@ -1125,12 +1132,14 @@ mod tests {
         let ctx = SimContext::new(&building, &index);
 
         let params = SolarHourParams {
+            global_horizontal_irradiance: 900.0,
             direct_normal_irradiance: 500.0,
             diffuse_horizontal_irradiance: 200.0,
             day_of_year: 80, // ~equinox
-            hour: 12.0,
+            local_time_hours: 12.0,
             latitude: 0.0,
             longitude: 0.0,
+            timezone: 0.0,
         };
 
         let config = SolarShortwaveConfig {
@@ -1171,12 +1180,14 @@ mod tests {
         };
 
         let params = SolarHourParams {
+            global_horizontal_irradiance: 1000.0,
             direct_normal_irradiance: 800.0,
             diffuse_horizontal_irradiance: 200.0,
             day_of_year: 80,
-            hour: 12.0,
+            local_time_hours: 12.0,
             latitude: 0.0,
             longitude: 0.0,
+            timezone: 0.0,
         };
         let gain_cfg = SolarGainConfig::new();
 
