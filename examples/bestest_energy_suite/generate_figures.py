@@ -36,6 +36,12 @@ def series(rows, case: str, metric: str):
     return sim, ref
 
 
+def sim_series(rows, case: str, metric: str):
+    rs = [r for r in rows if r["case"] == case and r["metric"] == metric and r["month"] != "annual"]
+    rs.sort(key=lambda r: int(r["month"]))
+    return np.array([float(r["simulated_kwh"]) for r in rs])
+
+
 def annual_row(rows, case: str, metric: str):
     for r in rows:
         if r["case"] == case and r["metric"] == metric and r["month"] == "annual":
@@ -92,7 +98,34 @@ def main():
     plt.close(fig)
     print(f"Saved {out}")
 
+    solar_cases = [("600", "600_no_solar"), ("900", "900_no_solar")]
+    fig, axes = plt.subplots(len(solar_cases), len(metrics), figsize=(12, 6), sharex=True)
+    fig.suptitle("BESTEST Energy Suite: solar effect (with solar − no solar)",
+                 fontsize=12, fontweight="bold", y=0.98)
+
+    for i, (case_solar, case_no_solar) in enumerate(solar_cases):
+        for j, metric in enumerate(metrics):
+            ax = axes[i, j] if len(solar_cases) > 1 else axes[j]
+            sim_solar = sim_series(rows, case_solar, metric)
+            sim_no = sim_series(rows, case_no_solar, metric)
+            delta = sim_solar - sim_no
+
+            ax.bar(x, delta, width=0.6, color="#55A868")
+            ax.axhline(0, color="black", linewidth=0.8)
+
+            ax.set_title(f"Case {case_solar} — {metric}", fontsize=10, fontweight="bold")
+            ax.set_ylabel("kWh")
+            ax.grid(axis="y", alpha=0.3)
+            ax.set_axisbelow(True)
+            ax.set_xticks(x)
+            ax.set_xticklabels(MONTH_LABELS, fontsize=8)
+
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    out = SCRIPT_DIR / "solar_effect.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"Saved {out}")
+
 
 if __name__ == "__main__":
     main()
-
