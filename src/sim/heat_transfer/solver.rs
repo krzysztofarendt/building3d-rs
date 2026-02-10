@@ -1,5 +1,5 @@
 use crate::sim::heat_transfer::boundary::BoundaryCondition;
-use crate::sim::heat_transfer::mesh::{FvmMesh, BOUNDARY};
+use crate::sim::heat_transfer::mesh::{BOUNDARY, FvmMesh};
 
 /// 1D FVM wall solver implementing implicit (backward Euler) time stepping.
 ///
@@ -171,6 +171,9 @@ impl FvmWallSolver {
     ) -> f64 {
         match bc {
             BoundaryCondition::Convective { h, t_fluid } => {
+                if *h <= 0.0 {
+                    return 0.0;
+                }
                 // Series resistance: half-cell conduction + convective film.
                 // q = (T_centroid - T_fluid) / (half_dx/k + 1/h)
                 if let Some(fi) = face_idx {
@@ -189,7 +192,11 @@ impl FvmWallSolver {
                     0.0
                 }
             }
-            BoundaryCondition::Neumann { heat_flux } => *heat_flux,
+            BoundaryCondition::Neumann { heat_flux } => {
+                // Neumann BC is defined as positive into the wall domain.
+                // Reported heat fluxes are positive out of the wall.
+                -*heat_flux
+            }
         }
     }
 
@@ -228,7 +235,14 @@ fn apply_bc(
             //   1/K_face       — half-cell conduction (K_face = k*A/half_dx)
             // Effective conductance: K_eff = 1 / (1/(h*A) + 1/K_face)
             let h_a = h * wall_area;
-            let k_eff = 1.0 / (1.0 / h_a + 1.0 / face_conductance);
+            if h_a <= 0.0 {
+                return;
+            }
+            let k_eff = if face_conductance > 0.0 {
+                1.0 / (1.0 / h_a + 1.0 / face_conductance)
+            } else {
+                h_a
+            };
             diag[cell_idx] += k_eff;
             rhs[cell_idx] += k_eff * t_fluid;
         }
@@ -605,6 +619,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_neumann_flux_reporting_sign() {
+        let construction = WallConstruction::new(
+            "test",
+            vec![Layer {
+                name: "concrete".into(),
+                thickness: 0.05,
+                conductivity: 1.4,
+                density: 2300.0,
+                specific_heat: 880.0,
+            }],
+        );
+        let mesh = build_1d_mesh(&construction, 1.0);
+        let solver = FvmWallSolver::new(mesh, 20.0);
+
+        // Neumann is defined as positive into the wall (domain).
+        // Reported fluxes are positive out of the wall.
+        let q_in = 12.3;
+        let bc = BoundaryCondition::Neumann { heat_flux: q_in };
+
+        assert!((solver.interior_heat_flux(&bc) + q_in).abs() < 1e-12);
+        assert!((solver.exterior_heat_flux(&bc) + q_in).abs() < 1e-12);
+    }
+
     /// Complementary error function approximation (Abramowitz & Stegun 7.1.26).
     fn erfc(x: f64) -> f64 {
         if x < 0.0 {
@@ -613,8 +651,7 @@ mod tests {
         let t = 1.0 / (1.0 + 0.3275911 * x);
         let poly = t
             * (0.254829592
-                + t * (-0.284496736
-                    + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+                + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
         poly * (-x * x).exp()
     }
 }
