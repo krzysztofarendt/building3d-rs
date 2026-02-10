@@ -772,6 +772,11 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5.0);
+    let three_node_env_fraction_900: f64 =
+        std::env::var("BESTEST_900_THREE_NODE_ENV_MASS_FRACTION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
 
     let suite = vec![
         CaseSpec {
@@ -816,6 +821,7 @@ fn main() -> Result<()> {
     println!("High-mass capacity scale (900): {cap_scale_900}");
     println!("High-mass solar→mass fraction (900): {solar_to_mass_900}");
     println!("High-mass interior h (900): {interior_h_900} W/(m²·K)");
+    println!("High-mass 3-node env mass fraction (900): {three_node_env_fraction_900}");
     if enable_two_node_600 {
         println!(
             "Light-mass 2R2C enabled (600): mass_fraction={:.2}, solar→mass={:.2}, interior_h={:.2} W/(m²·K)",
@@ -852,6 +858,7 @@ fn main() -> Result<()> {
             cfg.transmitted_solar_to_air_fraction = 0.0;
             cfg.internal_gains_to_mass_fraction = 0.0;
             cfg.two_node_envelope_to_mass = true;
+            cfg.three_node_envelope_mass_fraction = three_node_env_fraction_900;
         }
         if enable_two_node_600 && spec.name.starts_with("600") {
             cfg.two_node_mass_fraction = two_node_mass_fraction_600;

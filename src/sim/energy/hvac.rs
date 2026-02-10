@@ -474,6 +474,187 @@ impl TwoNodeEnvelopeThermalModel {
     }
 }
 
+/// 3R3C coarse zone model: air node + interior surface node + envelope node.
+///
+/// Intended use:
+/// - transmitted solar heats interior surfaces (surface node) and is released to air via `k_as`
+/// - exterior absorbed solar heats the envelope node and reaches the room with lag via `k_se`
+///
+/// Conductances:
+/// - `k_ao`: air ↔ outdoor (infiltration + glazing)
+/// - `k_as`: air ↔ interior surfaces (convective+radiative aggregate)
+/// - `k_se`: interior surfaces ↔ envelope (opaque conduction, inner half)
+/// - `k_eo`: envelope ↔ outdoor (opaque conduction, outer half + exterior film)
+#[derive(Debug, Clone)]
+pub struct ThreeNodeEnvelopeThermalModel {
+    pub air_temperature_c: f64,
+    pub surface_temperature_c: f64,
+    pub envelope_temperature_c: f64,
+    pub air_outdoor_conductance_w_per_k: f64,
+    pub air_surface_conductance_w_per_k: f64,
+    pub surface_envelope_conductance_w_per_k: f64,
+    pub envelope_outdoor_conductance_w_per_k: f64,
+    pub air_capacity_j_per_k: f64,
+    pub surface_capacity_j_per_k: f64,
+    pub envelope_capacity_j_per_k: f64,
+}
+
+impl ThreeNodeEnvelopeThermalModel {
+    pub fn new(
+        initial_air_c: f64,
+        initial_surface_c: f64,
+        initial_envelope_c: f64,
+        air_outdoor_conductance_w_per_k: f64,
+        air_surface_conductance_w_per_k: f64,
+        surface_envelope_conductance_w_per_k: f64,
+        envelope_outdoor_conductance_w_per_k: f64,
+        air_capacity_j_per_k: f64,
+        surface_capacity_j_per_k: f64,
+        envelope_capacity_j_per_k: f64,
+    ) -> Self {
+        Self {
+            air_temperature_c: initial_air_c,
+            surface_temperature_c: initial_surface_c,
+            envelope_temperature_c: initial_envelope_c,
+            air_outdoor_conductance_w_per_k: air_outdoor_conductance_w_per_k.max(0.0),
+            air_surface_conductance_w_per_k: air_surface_conductance_w_per_k.max(0.0),
+            surface_envelope_conductance_w_per_k: surface_envelope_conductance_w_per_k.max(0.0),
+            envelope_outdoor_conductance_w_per_k: envelope_outdoor_conductance_w_per_k.max(0.0),
+            air_capacity_j_per_k: air_capacity_j_per_k.max(0.0),
+            surface_capacity_j_per_k: surface_capacity_j_per_k.max(0.0),
+            envelope_capacity_j_per_k: envelope_capacity_j_per_k.max(0.0),
+        }
+    }
+
+    pub fn step(
+        &mut self,
+        outdoor_temp_c: f64,
+        gains_air_w: f64,
+        gains_surface_w: f64,
+        gains_envelope_w: f64,
+        hvac_power_w: f64,
+        dt_s: f64,
+    ) -> (f64, f64, f64) {
+        if dt_s <= 0.0 {
+            return (
+                self.air_temperature_c,
+                self.surface_temperature_c,
+                self.envelope_temperature_c,
+            );
+        }
+
+        let ca = self.air_capacity_j_per_k;
+        let cs = self.surface_capacity_j_per_k;
+        let ce = self.envelope_capacity_j_per_k;
+        let k_ao = self.air_outdoor_conductance_w_per_k;
+        let k_as = self.air_surface_conductance_w_per_k;
+        let k_se = self.surface_envelope_conductance_w_per_k;
+        let k_eo = self.envelope_outdoor_conductance_w_per_k;
+
+        if ca <= 0.0 || cs <= 0.0 || ce <= 0.0 || k_as <= 0.0 || k_se <= 0.0 {
+            // Degenerate fallback: treat as a single air node.
+            let c = (ca + cs + ce).max(0.0);
+            let k = (k_ao + k_eo).max(0.0);
+            if c <= 0.0 {
+                let k = k.max(1e-12);
+                self.air_temperature_c = outdoor_temp_c
+                    + (gains_air_w + gains_surface_w + gains_envelope_w + hvac_power_w) / k;
+                self.surface_temperature_c = self.air_temperature_c;
+                self.envelope_temperature_c = self.air_temperature_c;
+                return (
+                    self.air_temperature_c,
+                    self.surface_temperature_c,
+                    self.envelope_temperature_c,
+                );
+            }
+            if k <= 0.0 {
+                self.air_temperature_c +=
+                    dt_s / c * (gains_air_w + gains_surface_w + gains_envelope_w + hvac_power_w);
+                self.surface_temperature_c = self.air_temperature_c;
+                self.envelope_temperature_c = self.air_temperature_c;
+                return (
+                    self.air_temperature_c,
+                    self.surface_temperature_c,
+                    self.envelope_temperature_c,
+                );
+            }
+            let a = dt_s * k / c;
+            let numerator = self.air_temperature_c
+                + (dt_s / c)
+                    * (gains_air_w
+                        + gains_surface_w
+                        + gains_envelope_w
+                        + hvac_power_w
+                        + k * outdoor_temp_c);
+            self.air_temperature_c = numerator / (1.0 + a);
+            self.surface_temperature_c = self.air_temperature_c;
+            self.envelope_temperature_c = self.air_temperature_c;
+            return (
+                self.air_temperature_c,
+                self.surface_temperature_c,
+                self.envelope_temperature_c,
+            );
+        }
+
+        // Backward Euler 3×3 solve.
+        let a11 = 1.0 + dt_s * (k_ao + k_as) / ca;
+        let a12 = -dt_s * k_as / ca;
+        let a13 = 0.0;
+        let b1 = self.air_temperature_c
+            + (dt_s / ca) * (gains_air_w + hvac_power_w + k_ao * outdoor_temp_c);
+
+        let a21 = -dt_s * k_as / cs;
+        let a22 = 1.0 + dt_s * (k_as + k_se) / cs;
+        let a23 = -dt_s * k_se / cs;
+        let b2 = self.surface_temperature_c + (dt_s / cs) * gains_surface_w;
+
+        let a31 = 0.0;
+        let a32 = -dt_s * k_se / ce;
+        let a33 = 1.0 + dt_s * (k_se + k_eo) / ce;
+        let b3 =
+            self.envelope_temperature_c + (dt_s / ce) * (gains_envelope_w + k_eo * outdoor_temp_c);
+
+        // Solve via Gaussian elimination (since matrix is small and sparse).
+        let m21 = a21 / a11;
+        let m31 = a31 / a11;
+        let a22p = a22 - m21 * a12;
+        let a23p = a23 - m21 * a13;
+        let b2p = b2 - m21 * b1;
+        let a32p = a32 - m31 * a12;
+        let a33p = a33 - m31 * a13;
+        let b3p = b3 - m31 * b1;
+
+        if a22p.abs() < 1e-16 {
+            return (
+                self.air_temperature_c,
+                self.surface_temperature_c,
+                self.envelope_temperature_c,
+            );
+        }
+
+        let m32 = a32p / a22p;
+        let a33pp = a33p - m32 * a23p;
+        let b3pp = b3p - m32 * b2p;
+
+        if a33pp.abs() < 1e-16 {
+            return (
+                self.air_temperature_c,
+                self.surface_temperature_c,
+                self.envelope_temperature_c,
+            );
+        }
+
+        let t_env = b3pp / a33pp;
+        let t_surf = (b2p - a23p * t_env) / a22p;
+        let t_air = (b1 - a12 * t_surf - a13 * t_env) / a11;
+
+        self.air_temperature_c = t_air;
+        self.surface_temperature_c = t_surf;
+        self.envelope_temperature_c = t_env;
+        (t_air, t_surf, t_env)
+    }
+}
+
 impl HvacIdealLoads {
     /// Required HVAC thermal power (W) to reach a target air temperature at the end of
     /// a timestep for the two-node model.
@@ -569,6 +750,75 @@ impl HvacIdealLoads {
             - k_ao * outdoor_temp_c
             - k_am * t_mass_next
     }
+
+    /// Required HVAC thermal power (W) to reach a target air temperature at the end of
+    /// a timestep for the three-node envelope model.
+    pub fn required_hvac_power_three_node_envelope(
+        &self,
+        target_air_temp_c: f64,
+        air_temp_c: f64,
+        surface_temp_c: f64,
+        envelope_temp_c: f64,
+        outdoor_temp_c: f64,
+        air_outdoor_conductance_w_per_k: f64,
+        air_surface_conductance_w_per_k: f64,
+        surface_envelope_conductance_w_per_k: f64,
+        envelope_outdoor_conductance_w_per_k: f64,
+        gains_air_w: f64,
+        gains_surface_w: f64,
+        gains_envelope_w: f64,
+        air_capacity_j_per_k: f64,
+        surface_capacity_j_per_k: f64,
+        envelope_capacity_j_per_k: f64,
+        dt_s: f64,
+    ) -> f64 {
+        if dt_s <= 0.0 {
+            return 0.0;
+        }
+        if air_capacity_j_per_k <= 0.0
+            || surface_capacity_j_per_k <= 0.0
+            || envelope_capacity_j_per_k <= 0.0
+        {
+            return 0.0;
+        }
+
+        let k_ao = air_outdoor_conductance_w_per_k.max(0.0);
+        let k_as = air_surface_conductance_w_per_k.max(0.0);
+        let k_se = surface_envelope_conductance_w_per_k.max(0.0);
+        let k_eo = envelope_outdoor_conductance_w_per_k.max(0.0);
+
+        if k_as <= 0.0 || k_se <= 0.0 {
+            return 0.0;
+        }
+
+        // Solve (implicit) surface+envelope next temperatures with T_air_next forced to target.
+        let cs = surface_capacity_j_per_k;
+        let ce = envelope_capacity_j_per_k;
+
+        let a22 = 1.0 + dt_s * (k_as + k_se) / cs;
+        let a23 = -dt_s * k_se / cs;
+        let b2 =
+            surface_temp_c + (dt_s / cs) * gains_surface_w + (dt_s * k_as / cs) * target_air_temp_c;
+
+        let a32 = -dt_s * k_se / ce;
+        let a33 = 1.0 + dt_s * (k_se + k_eo) / ce;
+        let b3 = envelope_temp_c + (dt_s / ce) * (gains_envelope_w + k_eo * outdoor_temp_c);
+
+        let det = a22 * a33 - a23 * a32;
+        if det.abs() < 1e-16 {
+            return 0.0;
+        }
+
+        let t_surf_next = (b2 * a33 - a23 * b3) / det;
+        let _t_env_next = (a22 * b3 - b2 * a32) / det;
+
+        // Air equation with implicit conductances.
+        // C_a*(T_next - T)/dt = k_ao*(T_out - T_next) + k_as*(T_surf_next - T_next) + gains + hvac
+        air_capacity_j_per_k * (target_air_temp_c - air_temp_c) / dt_s
+            + k_ao * (target_air_temp_c - outdoor_temp_c)
+            + k_as * (target_air_temp_c - t_surf_next)
+            - gains_air_w
+    }
 }
 
 #[cfg(test)]
@@ -631,6 +881,128 @@ mod tests {
         assert!((heating_elec - 2.0).abs() < 1e-10);
         // Delivered deltaT = 2 W * 3600 s / 3600 J/K = 2 K
         assert!((temp - 17.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_three_node_required_hvac_hits_setpoint_heating() {
+        let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
+        let mut model = ThreeNodeEnvelopeThermalModel::new(
+            18.0,
+            18.0,
+            10.0,
+            50.0,        // k_ao
+            200.0,       // k_as
+            100.0,       // k_se
+            60.0,        // k_eo
+            80_000.0,    // c_air
+            2_000_000.0, // c_surface
+            1_000_000.0, // c_envelope
+        );
+
+        let dt_s = 3600.0;
+        let outdoor = 0.0;
+        let gains_air = 50.0;
+        let gains_surface = 0.0;
+        let gains_envelope = 0.0;
+
+        let q_hvac = hvac.required_hvac_power_three_node_envelope(
+            hvac.heating_setpoint,
+            model.air_temperature_c,
+            model.surface_temperature_c,
+            model.envelope_temperature_c,
+            outdoor,
+            model.air_outdoor_conductance_w_per_k,
+            model.air_surface_conductance_w_per_k,
+            model.surface_envelope_conductance_w_per_k,
+            model.envelope_outdoor_conductance_w_per_k,
+            gains_air,
+            gains_surface,
+            gains_envelope,
+            model.air_capacity_j_per_k,
+            model.surface_capacity_j_per_k,
+            model.envelope_capacity_j_per_k,
+            dt_s,
+        );
+
+        model.step(
+            outdoor,
+            gains_air,
+            gains_surface,
+            gains_envelope,
+            q_hvac,
+            dt_s,
+        );
+
+        assert!(
+            (model.air_temperature_c - hvac.heating_setpoint).abs() < 1e-9,
+            "air temp should hit setpoint, got {}",
+            model.air_temperature_c
+        );
+        assert!(
+            q_hvac.is_finite() && q_hvac >= 0.0,
+            "heating hvac should be positive, got {q_hvac}"
+        );
+    }
+
+    #[test]
+    fn test_three_node_required_hvac_hits_setpoint_cooling() {
+        let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
+        let mut model = ThreeNodeEnvelopeThermalModel::new(
+            29.0,
+            27.0,
+            20.0,
+            50.0,        // k_ao
+            150.0,       // k_as
+            80.0,        // k_se
+            60.0,        // k_eo
+            80_000.0,    // c_air
+            2_000_000.0, // c_surface
+            1_000_000.0, // c_envelope
+        );
+
+        let dt_s = 3600.0;
+        let outdoor = 35.0;
+        let gains_air = 0.0;
+        let gains_surface = 100.0;
+        let gains_envelope = 0.0;
+
+        let q_hvac = hvac.required_hvac_power_three_node_envelope(
+            hvac.cooling_setpoint,
+            model.air_temperature_c,
+            model.surface_temperature_c,
+            model.envelope_temperature_c,
+            outdoor,
+            model.air_outdoor_conductance_w_per_k,
+            model.air_surface_conductance_w_per_k,
+            model.surface_envelope_conductance_w_per_k,
+            model.envelope_outdoor_conductance_w_per_k,
+            gains_air,
+            gains_surface,
+            gains_envelope,
+            model.air_capacity_j_per_k,
+            model.surface_capacity_j_per_k,
+            model.envelope_capacity_j_per_k,
+            dt_s,
+        );
+
+        model.step(
+            outdoor,
+            gains_air,
+            gains_surface,
+            gains_envelope,
+            q_hvac,
+            dt_s,
+        );
+
+        assert!(
+            (model.air_temperature_c - hvac.cooling_setpoint).abs() < 1e-9,
+            "air temp should hit setpoint, got {}",
+            model.air_temperature_c
+        );
+        assert!(
+            q_hvac.is_finite() && q_hvac <= 0.0,
+            "cooling hvac should be negative, got {q_hvac}"
+        );
     }
 
     #[test]

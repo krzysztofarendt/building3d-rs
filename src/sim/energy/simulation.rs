@@ -5,7 +5,8 @@ use crate::sim::index::SurfaceIndex;
 use super::boundary::ThermalBoundaries;
 use super::config::ThermalConfig;
 use super::hvac::{
-    HvacIdealLoads, LumpedThermalModel, TwoNodeEnvelopeThermalModel, TwoNodeThermalModel,
+    HvacIdealLoads, LumpedThermalModel, ThreeNodeEnvelopeThermalModel, TwoNodeEnvelopeThermalModel,
+    TwoNodeThermalModel,
 };
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
@@ -524,6 +525,7 @@ pub fn run_transient_simulation_with_options(
     enum TwoNodeVariant {
         AirToOutdoor(TwoNodeThermalModel),
         EnvelopeToMass(TwoNodeEnvelopeThermalModel),
+        ThreeNodeEnvelope(ThreeNodeEnvelopeThermalModel),
     }
 
     let index = SurfaceIndex::new(building);
@@ -587,6 +589,10 @@ pub fn run_transient_simulation_with_options(
         && k_env.is_finite()
         && k_env >= 0.0;
 
+    let use_three_node = use_two_node
+        && base_config.two_node_envelope_to_mass
+        && base_config.three_node_envelope_mass_fraction > 0.0;
+
     let opaque_area_m2 = if use_two_node {
         estimate_opaque_envelope_area_m2(&index, &boundaries, base_config, solar_config)
     } else {
@@ -599,10 +605,115 @@ pub fn run_transient_simulation_with_options(
         let air_capacity_min = 1.2 * 1005.0 * volume; // rho*cp*V
         let mut c_air = (1.0 - f_mass) * c_total;
         c_air = c_air.max(air_capacity_min).min(c_total);
-        let c_mass = (c_total - c_air).max(0.0);
+        let c_mass_total = (c_total - c_air).max(0.0);
 
         let k_am = base_config.interior_heat_transfer_coeff_w_per_m2_k.max(0.0) * opaque_area_m2;
-        if base_config.two_node_envelope_to_mass {
+        if use_three_node {
+            let mut k_se_total = 0.0;
+            let mut k_eo_total = 0.0;
+
+            for s in &index.surfaces {
+                if !boundaries.is_exterior(&s.polygon_uid) {
+                    continue;
+                }
+                if looks_like_glazing(&s.path, base_config, solar_config) {
+                    continue;
+                }
+
+                let area = s.area_m2.max(0.0);
+                if area <= 0.0 {
+                    continue;
+                }
+
+                let mut r_layers = 0.0;
+                let mut r_se = 0.04;
+                let mut r_si = 0.13;
+
+                if let Some(construction) = base_config.resolve_construction(&s.path) {
+                    r_se = construction.r_se.max(0.0);
+                    r_si = construction.r_si.max(0.0);
+                    r_layers = construction
+                        .layers
+                        .iter()
+                        .map(|l| {
+                            if l.conductivity > 0.0 {
+                                l.thickness / l.conductivity
+                            } else {
+                                0.0
+                            }
+                        })
+                        .sum::<f64>()
+                        .max(0.0);
+                } else {
+                    let u = base_config.resolve_u_value_for_surface(&s.polygon_uid, &s.path);
+                    if u.is_finite() && u > 0.0 {
+                        let r_total = 1.0 / u;
+                        r_layers = (r_total - r_se - r_si).max(0.0);
+                    }
+                }
+
+                if r_layers <= 0.0 {
+                    continue;
+                }
+
+                // Opaque envelope split: surface ↔ envelope uses the inner half of the layer
+                // resistance (including interior film); envelope ↔ outdoor uses the outer half
+                // plus exterior film.
+                let r_inner = r_si + 0.5 * r_layers;
+                let r_outer = r_se + 0.5 * r_layers;
+                if r_inner > 0.0 {
+                    k_se_total += area / r_inner;
+                }
+                if r_outer > 0.0 {
+                    k_eo_total += area / r_outer;
+                }
+            }
+
+            let f_env = base_config
+                .three_node_envelope_mass_fraction
+                .clamp(0.0, 0.95);
+            let c_envelope = (f_env * c_mass_total).max(1.0);
+            let c_surface = (c_mass_total - c_envelope).max(1.0);
+
+            if k_se_total > 0.0
+                && k_eo_total > 0.0
+                && c_surface.is_finite()
+                && c_envelope.is_finite()
+            {
+                (
+                    None,
+                    Some(TwoNodeVariant::ThreeNodeEnvelope(
+                        ThreeNodeEnvelopeThermalModel::new(
+                            base_config.indoor_temperature,
+                            base_config.indoor_temperature,
+                            base_config.indoor_temperature,
+                            infiltration_cond + ua_glazing,
+                            k_am,
+                            k_se_total,
+                            k_eo_total,
+                            c_air,
+                            c_surface,
+                            c_envelope,
+                        ),
+                    )),
+                )
+            } else {
+                (
+                    None,
+                    Some(TwoNodeVariant::EnvelopeToMass(
+                        TwoNodeEnvelopeThermalModel::new(
+                            base_config.indoor_temperature,
+                            base_config.indoor_temperature,
+                            infiltration_cond + ua_glazing,
+                            ua_opaque,
+                            k_am,
+                            c_air,
+                            c_mass_total.max(1.0),
+                        ),
+                    )),
+                )
+            }
+        } else if base_config.two_node_envelope_to_mass {
             (
                 None,
                 Some(TwoNodeVariant::EnvelopeToMass(
@@ -613,7 +724,7 @@ pub fn run_transient_simulation_with_options(
                         ua_opaque,
                         k_am,
                         c_air,
-                        c_mass.max(1.0),
+                        c_mass_total.max(1.0),
                     ),
                 )),
             )
@@ -626,7 +737,7 @@ pub fn run_transient_simulation_with_options(
                     k_env,
                     k_am,
                     c_air,
-                    c_mass.max(1.0),
+                    c_mass_total.max(1.0),
                 ))),
             )
         }
@@ -834,6 +945,79 @@ pub fn run_transient_simulation_with_options(
                         record.dry_bulb_temperature,
                         gains_air,
                         gains_mass,
+                        q_hvac,
+                        dt_s,
+                    );
+
+                    (q_hvac.max(0.0), (-q_hvac).max(0.0))
+                }
+                TwoNodeVariant::ThreeNodeEnvelope(model) => {
+                    // Three-node policy:
+                    // - transmitted solar + (optionally) internal gains heat interior surfaces
+                    // - exterior absorbed solar + ground correction heat the envelope node and reach the
+                    //   room with lag through the surface↔envelope conductance.
+                    let gains_air = gains_air_internal + gains_air_solar;
+                    let gains_surface = gains_mass_internal + gains_mass_solar;
+                    let gains_envelope = solar_opaque_sol_air + q_ground;
+
+                    let mut free = model.clone();
+                    free.step(
+                        record.dry_bulb_temperature,
+                        gains_air,
+                        gains_surface,
+                        gains_envelope,
+                        0.0,
+                        dt_s,
+                    );
+
+                    let t_free = free.air_temperature_c;
+                    let q_hvac = if t_free < hvac.heating_setpoint {
+                        hvac.required_hvac_power_three_node_envelope(
+                            hvac.heating_setpoint,
+                            model.air_temperature_c,
+                            model.surface_temperature_c,
+                            model.envelope_temperature_c,
+                            record.dry_bulb_temperature,
+                            model.air_outdoor_conductance_w_per_k,
+                            model.air_surface_conductance_w_per_k,
+                            model.surface_envelope_conductance_w_per_k,
+                            model.envelope_outdoor_conductance_w_per_k,
+                            gains_air,
+                            gains_surface,
+                            gains_envelope,
+                            model.air_capacity_j_per_k,
+                            model.surface_capacity_j_per_k,
+                            model.envelope_capacity_j_per_k,
+                            dt_s,
+                        )
+                    } else if t_free > hvac.cooling_setpoint {
+                        hvac.required_hvac_power_three_node_envelope(
+                            hvac.cooling_setpoint,
+                            model.air_temperature_c,
+                            model.surface_temperature_c,
+                            model.envelope_temperature_c,
+                            record.dry_bulb_temperature,
+                            model.air_outdoor_conductance_w_per_k,
+                            model.air_surface_conductance_w_per_k,
+                            model.surface_envelope_conductance_w_per_k,
+                            model.envelope_outdoor_conductance_w_per_k,
+                            gains_air,
+                            gains_surface,
+                            gains_envelope,
+                            model.air_capacity_j_per_k,
+                            model.surface_capacity_j_per_k,
+                            model.envelope_capacity_j_per_k,
+                            dt_s,
+                        )
+                    } else {
+                        0.0
+                    };
+
+                    model.step(
+                        record.dry_bulb_temperature,
+                        gains_air,
+                        gains_surface,
+                        gains_envelope,
                         q_hvac,
                         dt_s,
                     );

@@ -115,6 +115,17 @@ pub struct ThermalConfig {
     /// - `UA` (conduction) is connected mass ↔ outdoors
     /// - infiltration remains air ↔ outdoors
     pub two_node_envelope_to_mass: bool,
+    /// Optional 3-node (air + interior surface + envelope) model enable knob.
+    ///
+    /// When `> 0.0` and when the 2R2C model is otherwise enabled, the transient solver
+    /// uses a coarse 3-node model:
+    /// - air node
+    /// - interior surface/mass node (receives most transmitted solar)
+    /// - envelope node (receives exterior absorbed solar / ground correction)
+    ///
+    /// Interpretation: fraction (0..1) of the total **mass-side** capacity assigned to the
+    /// envelope node. The remainder is assigned to the interior surface node.
+    pub three_node_envelope_mass_fraction: f64,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -143,8 +154,21 @@ impl ThermalConfig {
             transmitted_solar_to_air_fraction: 0.0,
             internal_gains_to_mass_fraction: 0.0,
             two_node_envelope_to_mass: false,
+            three_node_envelope_mass_fraction: 0.0,
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
+    }
+
+    /// Resolves a wall construction for a path (if any).
+    ///
+    /// Resolution is deterministic and mirrors U-value resolution for constructions:
+    /// - exact path match wins
+    /// - otherwise, the longest substring match wins (ties: lexicographic key order)
+    pub fn resolve_construction(&self, path: &str) -> Option<&WallConstruction> {
+        if let Some(c) = self.constructions.get(path) {
+            return Some(c);
+        }
+        self.best_matching_construction(path)
     }
 
     /// Resolves U-value for a polygon path.

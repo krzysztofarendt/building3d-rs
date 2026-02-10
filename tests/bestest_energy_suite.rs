@@ -357,6 +357,7 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.0;
     cfg.two_node_envelope_to_mass = true;
+    cfg.three_node_envelope_mass_fraction = 0.0;
 
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
     let solar = solar_cfg();
