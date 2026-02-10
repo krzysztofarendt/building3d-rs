@@ -1757,8 +1757,16 @@ Phase 3 — solar distribution + thermal mass (required for 900):
    - added an additional 2R2C variant (`ThermalConfig.two_node_envelope_to_mass`) where envelope
      conduction attaches to the **mass** node and infiltration remains on the **air** node; this
      improves heavyweight BESTEST behavior when paired with a higher interior `h` (e.g. ~8 W/(m²·K)).
-3. **NEXT**: Add an interior-surface-aware distribution (floor-first / area-weighted), and (optionally)
-   a coarse envelope node so exterior absorbed solar affects indoor loads with realistic lag.
+3. **DONE (first-order)**: Add an interior-surface-aware distribution and (optionally) a coarse
+   envelope node so exterior absorbed solar affects indoor loads with realistic lag.
+   - `ThermalConfig.use_surface_aware_solar_distribution` routes **transmitted** solar primarily to
+     the mass node (interior surfaces) with an optional direct-to-air fraction via
+     `ThermalConfig.transmitted_solar_to_air_fraction`.
+   - `ThermalConfig.two_node_envelope_to_mass` now uses a more physical UA split:
+     glazing conductance attaches to the **air** node; opaque conductance attaches to the **mass**
+     node (so windows don’t get “fake mass”).
+   - BESTEST suite default for 900 currently uses `two_node_envelope_to_mass=true` and an interior
+     `h` around ~5 W/(m²·K) (tunable via `BESTEST_900_INTERIOR_H_W_PER_M2_K`).
 
 Phase 4 — solar time correction (peak timing refinement): **DONE**
 1. EPW hour-ending handling uses a mid-hour timestamp (`hour - 0.5`) in the energy solar path.
