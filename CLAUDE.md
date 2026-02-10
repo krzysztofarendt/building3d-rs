@@ -24,7 +24,13 @@ cargo run --example ray_teapot
 cargo run --example bench_teapot
 cargo run --example sim_acoustics
 cargo run --example sim_lighting
+cargo run --example sim_lighting_heatmap
 cargo run --example sim_energy
+cargo run --example bestest_600_energy
+cargo run --example bestest_energy_suite
+cargo run --example bras_cr2
+cargo run --example pipeline_solar_energy
+cargo run --example pipeline_weather_shaded_energy
 
 # Check code without building
 cargo check
@@ -74,7 +80,36 @@ Each entity has:
 
 ### Simulation (src/sim/)
 
-The simulation layer provides ray-based and thermal simulation capabilities, sharing a common engine and material system.
+The simulation layer provides ray-based and thermal simulation capabilities, sharing a common engine, material system, and composable framework.
+
+#### Simulation Framework (`sim/framework/`)
+
+Domain-agnostic runtime for composing simulation modules:
+- **Bus**: typed message bus for inter-module communication (any `'static` type can be published/consumed)
+- **SimContext**: shared read-only context holding `&Building` and `&SurfaceIndex`
+- **SimModule**: trait for composable simulation modules (`init()` + `step()` lifecycle)
+- **Pipeline**: sequences `SimModule`s with shared `Bus` and `SimContext`
+
+#### Surface Index (`sim/index/`)
+
+- **SurfaceIndex**: domain-agnostic lookup table for polygon surfaces keyed by `UID`; provides path-based and UID-based access to `SurfaceRef` metadata (path, polygon UID, zone UID, area)
+- **SurfaceRef**: reference information for a polygon surface in the building hierarchy
+
+#### Surface Semantics (`sim/surfaces.rs`)
+
+Cross-domain surface classification using the polygon-facing graph:
+- **SurfaceKind**: `Exterior`, `SameZoneInterface`, `InterZoneInterface`, `UnknownInterface`
+- **SurfaceInterface**: tracks same-zone and cross-zone relationships
+- **SurfaceSemantics**: classifies all polygon surfaces; used by energy, lighting, and acoustics domains consistently
+
+#### Coupling Payloads (`sim/coupling.rs`)
+
+Stable contracts for inter-module communication via Bus (radiometric SI units):
+- **WeatherHourIndex**: step counter for weather datasets
+- **OutdoorAirTemperatureC**: outdoor air temperature [C]
+- **InternalGainsWPerZone** / **InternalGainsWTotal**: heat gains [W] keyed by zone UID
+- **ShortwaveAbsorbedWPerPolygon**: absorbed solar on surfaces [W]
+- **ShortwaveTransmittedWPerZone**: transmitted shortwave into zones [W]
 
 #### Materials (`sim/materials.rs`)
 
@@ -114,12 +149,19 @@ Shared infrastructure for ray-based simulations:
 
 - **LightingConfig**: point/directional lights, ray count, bounce limit, material library
 - **LightingSimulation**: forward ray tracing with RGB illuminance accumulation
+- **LightingModule**: `SimModule` wrapper for ray-tracing in composed pipelines
 - **Light sources**: `PointLight`, `DirectionalLight` via `LightSource` trait
 - **SensorGrid**: auto-generated sensor points on polygon surfaces
 - **Sky models**: `CIEOvercast`, `CIEClearSky` via `SkyModel` trait
 - **Solar**: `SolarPosition` calculation from latitude/longitude/time
 - **Backward ray tracing**: `BackwardTracer` for sensor-to-sky illuminance
-- **LightingResult**: per-polygon RGB illuminance map
+- **LightingResult**: per-polygon RGB illuminance map (UID-keyed)
+- **Shortwave coupling** (`shortwave.rs`): modules converting lighting/solar results to thermal coupling payloads:
+  - `LightingToShortwaveModule`: converts `LightingResult` to shortwave payloads
+  - `SolarShortwaveStepModule` / `SolarShortwaveModule`: deterministic SHGC-based solar (step-based or single-shot)
+  - `SolarShortwaveShadedStepModule`: adds direct-sun occlusion via FlatScene ray casting
+  - `SolarEpwModule` / `SolarEpwBusModule`: EPW-driven solar with bus integration
+  - `SolarEpwShadedModule` / `SolarEpwShadedBusModule`: EPW-driven solar with shadowing
 
 #### Energy (`sim/energy/`)
 
@@ -127,10 +169,22 @@ Shared infrastructure for ray-based simulations:
 - **WallConstruction**: layered wall constructions with R-value/U-value calculation
 - **WeatherData**: EPW (EnergyPlus Weather) file parser with hourly records
 - **InternalGainsProfile**: hourly/daily schedules for occupancy, equipment, lighting
-- **HvacIdealLoads** / **LumpedThermalModel**: simplified HVAC and thermal models
-- **SolarBridge**: coupling between lighting and energy simulations
+- **HvacIdealLoads**: simplified HVAC controller with heating/cooling setpoints
+- **SolarBridge**: coupling between lighting and energy simulations (legacy)
 - **run_annual_simulation()**: 8760-hour annual simulation producing heating/cooling demand, peak loads, monthly breakdown
 - **ThermalResult** / **AnnualResult**: simulation output types
+- **ThermalBoundaries** (`boundary.rs`): re-exports `SurfaceSemantics` as thermal-specific type alias
+- **EnergyModule** (`module.rs`): `SimModule` wrapper for step-based multi-zone thermal simulation
+  - `EnergyModelKind`: `AirOnly` or `EnvelopeRc2R1C`
+  - `EnergyModuleConfig`: combines ThermalConfig, HVAC, timestep, model selection
+- **WeatherModule** (`weather_module.rs`): publishes weather data to Bus per timestep
+- **InternalGainsModule** (`gains_module.rs`): publishes time-varying gains from profile to Bus
+- **MultiZoneRecorderData** (`recorder.rs`): buffer for annual simulation results
+- **Thermal Network** (`network/`): graph-based thermal representation
+  - `ThermalNetwork`: inter-zone and exterior conductances (W/K)
+  - `MultiZoneAirModel`: zone-air-only thermal model with Gaussian elimination solver
+  - `MultiZoneEnvelopeRcModel`: 2R1C envelope model (thermal mass in wall assemblies)
+  - `solve_dense()`: dense linear system solver
 
 ### Visualization (src/draw/)
 
@@ -148,6 +202,7 @@ Uses Rerun (localhost:9876). `RerunConfig` controls session name, entity prefix,
 - **B3D** (`b3d.rs`): Native JSON format, preserves full hierarchy and UIDs
 - **STL** (`stl.rs`): Triangulated mesh format (ASCII/Binary), loses hierarchy
 - **BIM** (`bim.rs`): dotbim JSON format for BIM interoperability
+- **AC3D** (`ac3d.rs`): AC3D `.ac` format reader; materials become Walls, surfaces become Polygons; supports Y-up and Z-up coordinate systems
 
 ### Module Layout
 
@@ -180,7 +235,6 @@ src/
 │   │   └── tetrahedralize.rs  # tetrahedralize_centroid()
 │   ├── projection.rs   # PlaneBasis for 3D ↔ 2D projection
 │   ├── segment.rs      # Line segment operations, intersections
-│   ├── distance.rs     # Point-to-line, point-to-polygon distances
 │   ├── triangles.rs    # Ear-clipping triangulation
 │   ├── rotation.rs     # Rodrigues rotation, rotate_points_to_plane()
 │   ├── ray.rs          # Ray struct, ray-polygon intersection
@@ -189,12 +243,21 @@ src/
 │   └── bboxes.rs       # Bounding box operations
 ├── sim/                # Simulation
 │   ├── materials.rs    # Material types, MaterialLibrary, presets
+│   ├── coupling.rs     # Cross-domain coupling payloads (Bus contracts)
+│   ├── surfaces.rs     # SurfaceSemantics, SurfaceKind, SurfaceInterface
+│   ├── framework/      # Domain-agnostic simulation runtime
+│   │   ├── mod.rs      # Re-exports Bus, SimContext, SimModule, Pipeline
+│   │   ├── bus.rs      # Typed message bus
+│   │   ├── context.rs  # SimContext (shared building + index)
+│   │   ├── module.rs   # SimModule trait
+│   │   └── pipeline.rs # Pipeline (module sequencer)
+│   ├── index/
+│   │   └── mod.rs      # SurfaceIndex, SurfaceRef
 │   ├── engine/
 │   │   ├── mod.rs      # FlatScene, RayBatch, RayState
 │   │   ├── absorption.rs   # AbsorptionModel trait + impls
 │   │   ├── reflection.rs   # ReflectionModel trait + impls
 │   │   ├── propagation.rs  # PropagationModel trait + impls
-│   │   ├── find_transparent.rs  # Transparent surface detection
 │   │   └── voxel_grid.rs   # Spatial hash grid
 │   ├── rays/
 │   │   ├── mod.rs      # Re-exports AcousticMode, SimulationConfig, Simulation, SimulationResult
@@ -213,27 +276,40 @@ src/
 │   ├── lighting/
 │   │   ├── config.rs   # LightingConfig
 │   │   ├── simulation.rs   # LightingSimulation (forward ray tracing)
+│   │   ├── module.rs   # LightingModule (SimModule wrapper)
+│   │   ├── shortwave.rs    # Solar/shortwave coupling modules
 │   │   ├── sources.rs  # PointLight, DirectionalLight, LightSource trait
 │   │   ├── sensor.rs   # SensorGrid
 │   │   ├── sky.rs      # CIEOvercast, CIEClearSky
 │   │   ├── solar.rs    # SolarPosition
 │   │   ├── backward.rs # BackwardTracer
-│   │   └── result.rs   # LightingResult
+│   │   └── result.rs   # LightingResult (UID-keyed)
 │   └── energy/
 │       ├── config.rs   # ThermalConfig
 │       ├── simulation.rs   # run_annual_simulation(), AnnualResult
+│       ├── module.rs   # EnergyModule, EnergyModuleConfig (SimModule wrapper)
+│       ├── boundary.rs # Re-exports SurfaceSemantics as ThermalBoundaries
 │       ├── construction.rs # WallConstruction, layer presets
 │       ├── weather.rs  # WeatherData, EPW parser
+│       ├── weather_module.rs # WeatherModule (publishes weather to Bus)
 │       ├── schedule.rs # InternalGainsProfile
-│       ├── hvac.rs     # HvacIdealLoads, LumpedThermalModel
-│       ├── solar_bridge.rs # Lighting-energy coupling
+│       ├── gains_module.rs  # InternalGainsModule (publishes gains to Bus)
+│       ├── hvac.rs     # HvacIdealLoads
+│       ├── solar_bridge.rs # Lighting-energy coupling (legacy)
 │       ├── zone.rs     # Zone-level heat balance
-│       └── result.rs   # ThermalResult
+│       ├── result.rs   # ThermalResult
+│       ├── recorder.rs # MultiZoneRecorderData
+│       └── network/    # Thermal network graph
+│           ├── mod.rs  # ThermalNetwork, InterZoneConductance
+│           ├── multizone.rs        # MultiZoneAirModel, MultiZoneStepResult
+│           ├── multizone_envelope.rs # MultiZoneEnvelopeRcModel (2R1C)
+│           └── solve.rs            # solve_dense() linear solver
 ├── io/
 │   ├── mod.rs          # I/O module exports
 │   ├── b3d.rs          # Native JSON format
 │   ├── stl.rs          # STL mesh format
-│   └── bim.rs          # dotbim BIM format
+│   ├── bim.rs          # dotbim BIM format
+│   └── ac3d.rs         # AC3D format reader
 └── draw/
     ├── config.rs       # RerunConfig struct
     ├── rerun.rs        # Rerun visualization (faces, edges, points, simulation)
@@ -254,6 +330,8 @@ src/
 - **Reverberation time**: Schroeder backward integration in `sim/acoustics/metrics.rs`
 - **Forward lighting**: RGB ray tracing with bounce accumulation in `sim/lighting/`
 - **Energy simulation**: Hourly steady-state heat balance in `sim/energy/`
+- **Multi-zone thermal network**: Gaussian elimination solver in `sim/energy/network/solve.rs`
+- **Solar shading**: Direct-sun occlusion via FlatScene ray casting in `sim/lighting/shortwave.rs`
 
 ### Conventions
 
@@ -263,6 +341,8 @@ src/
 - Tests are inline within modules (`#[cfg(test)] mod tests`)
 - Path-based access uses `/` separator: `"zone/solid/wall/polygon"`
 - Material assignment uses substring path matching via `MaterialLibrary`
+- Simulation modules communicate via `Bus` with UID-keyed payloads in SI units
+- Surface semantics (exterior/interior/inter-zone) come from `SurfaceSemantics`, not stored on geometry types
 
 ### Path-Based Access
 
