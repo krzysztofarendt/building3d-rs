@@ -29,18 +29,60 @@ bugs and outlier behavior, but does not guarantee a match to physical reality.
 BESTEST defines a series of carefully specified single-zone buildings that
 progress from simple to realistic. Each case isolates specific physical phenomena
 so that if a program disagrees with the reference range, a diagnostic logic flow
-can identify which algorithm is responsible.
+can identify which algorithm is responsible. All cases use the same 8 m x 6 m x
+2.7 m single-zone geometry with Denver (DRYCOLD) TMY weather.
 
-- **Case 600 series** -- lightweight (wood-frame) single-zone 8 m x 6 m x 2.7 m
-  building with south-facing windows. Denver (DRYCOLD) TMY weather. Thermostat
-  deadband: 20 C heating / 27 C cooling. Variants: 610 (overhang shading),
-  620 (east/west windows), 630 (east/west shading), 640 (night setback),
-  650 (night ventilation), 600FF (free-float, no HVAC).
+### Complete test case list
 
-- **Case 900 series** -- identical geometry but heavyweight construction (high
-  thermal mass). Key diagnostic: Case 900 heating is 34--38% of Case 600,
-  demonstrating the thermal mass effect. The free-float variant (900FF) shows
-  temperature swings of +/-6 C vs. +/-25 C for 600FF.
+The table below lists all thermal fabric test cases (ASHRAE 140 Section 5.2)
+and indicates which ones are covered by the building3d test suite.
+
+**Legend:** Y = covered, -- = not covered, diag = diagnostic-only (no external
+reference).
+
+| Case   | Status | Description                                           | Physics isolated                  |
+|--------|--------|-------------------------------------------------------|-----------------------------------|
+| 600    | Y      | Base case, lightweight, south windows, HVAC 20/27 C   | Envelope conduction, solar gains  |
+| 600FF  | --     | Case 600 without HVAC (free-floating temperature)     | Thermal response without HVAC     |
+| 610    | --     | Case 600 with south overhang shading                  | External shading devices          |
+| 620    | --     | Case 600 with east/west windows instead of south      | Window orientation, solar azimuth |
+| 630    | --     | Case 620 with overhang and side fins                  | Combined shading + orientation    |
+| 640    | --     | Case 600 with night setback (10 C night / 20 C day)   | Scheduled thermostat control      |
+| 650    | --     | Case 600 with night ventilation, cooling only, no heat| Scheduled ventilation             |
+| 650FF  | --     | Case 650 without HVAC (free-floating with ventilation)| Ventilation + free-float          |
+| 660    | --     | Case 600 with low-emissivity argon-filled windows     | Low-e glazing properties          |
+| 670    | --     | Case 600 with single-pane clear glass                 | Single-pane window model          |
+| 680    | --     | Case 600 with increased wall and roof insulation      | High-R envelope                   |
+| 680FF  | --     | Case 680 without HVAC (free-floating)                 | High-R envelope + free-float      |
+| 685    | --     | Case 600 with single setpoint (heating = cooling)     | Continuous HVAC control           |
+| 695    | --     | Case 680 with single setpoint (heating = cooling)     | High-R + continuous control       |
+| 900    | Y      | Case 600 with heavyweight construction                | Thermal mass effect               |
+| 900FF  | --     | Case 900 without HVAC (free-floating)                 | Thermal mass + free-float         |
+| 920    | --     | Case 900 with east/west windows                       | Mass + window orientation         |
+| 940    | --     | Case 900 with night setback (10 C night / 20 C day)   | Mass + scheduled thermostat       |
+| 950    | --     | Case 900 with night ventilation, cooling only, no heat| Mass + scheduled ventilation      |
+| 950FF  | --     | Case 950 without HVAC (free-floating with ventilation)| Mass + ventilation + free-float   |
+| 960    | --     | Two zones: unconditioned sunspace + conditioned room  | Multi-zone coupling               |
+
+**building3d also runs two diagnostic-only cases** (no ASHRAE reference values):
+
+| Case         | Status | Description                                      |
+|--------------|--------|--------------------------------------------------|
+| 600_no_solar | diag   | Case 600 with solar gains disabled               |
+| 900_no_solar | diag   | Case 900 with solar gains disabled               |
+
+**Coverage: 2 of 21 standard cases**, plus 2 diagnostic variants.
+
+### Feature requirements for uncovered cases
+
+| Feature needed              | Unlocks cases                     |
+|-----------------------------|-----------------------------------|
+| Already feasible            | 620, 600FF, 680, 680FF, 900FF     |
+| Scheduled thermostat        | 640, 685, 695, 940                |
+| Scheduled ventilation       | 650, 650FF, 950, 950FF            |
+| External shading geometry   | 610, 630                          |
+| Alternative glazing types   | 660, 670                          |
+| Multi-zone thermal coupling | 960                               |
 
 ---
 
@@ -158,14 +200,31 @@ available summary statistics are:
 The 2020 update significantly tightened results, reflecting 25 years of improved
 test specifications and corrected software errors.
 
-## ASHRAE 140-2020 acceptance ranges
+## BESTEST vs. ASHRAE 140 conformance
 
-These are the normative pass/fail ranges that simulation software must fall within:
+BESTEST and ASHRAE Standard 140 are related but distinct:
 
-| Case | Annual heating (MWh/yr) | Annual cooling (MWh/yr) |
-|------|-------------------------|-------------------------|
-| 600  | 3.75 -- 4.98            | 5.00 -- 6.83            |
-| 900  | 1.04 -- 2.28            | 2.35 -- 2.60            |
+- **BESTEST** (1995) is the diagnostic methodology -- the test cases, building
+  specs, and the idea of running multiple programs and comparing results. The
+  original report had no pass/fail criteria. It showed the spread across programs
+  and provided diagnostic flowcharts to help developers find bugs. It is
+  educational and diagnostic in nature.
+
+- **ASHRAE Standard 140** (2001+) codified BESTEST into a formal standard with
+  normative **acceptance ranges**. These ranges are deliberately wider than the
+  actual program spread to allow for legitimate modeling differences. A program
+  must fall within these ranges to "conform." ASHRAE 140 conformance is required
+  by energy codes such as ASHRAE 90.1 and IECC -- if a simulation tool does not
+  pass, it cannot be used for building permit compliance in the US.
+
+The acceptance ranges compared to the actual program spread (2020 round):
+
+| Case | Metric  | Program spread      | ASHRAE acceptance range |
+|------|---------|---------------------|-------------------------|
+| 600  | Heating | 3.99 -- 4.50 MWh    | 3.75 -- 4.98 MWh        |
+| 600  | Cooling | 5.43 -- 6.16 MWh    | 5.00 -- 6.83 MWh        |
+| 900  | Heating | 1.38 -- 1.81 MWh    | 1.04 -- 2.28 MWh        |
+| 900  | Cooling | 2.27 -- 2.71 MWh    | 2.35 -- 2.60 MWh        |
 
 ## building3d test tolerances
 

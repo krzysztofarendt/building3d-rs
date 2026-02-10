@@ -3,6 +3,7 @@ pub mod coupling;
 pub mod energy;
 pub mod engine;
 pub mod framework;
+pub mod heat_transfer;
 pub mod index;
 pub mod lighting;
 pub mod materials;
