@@ -287,6 +287,12 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
+    // BESTEST window conduction should be treated as a whole-window U-value.
+    // Using a layered construction with a still-air gap modeled as pure conduction
+    // is far too insulating (missing convection+radiation in the gap).
+    cfg.u_value_overrides_by_path_pattern
+        .insert("window".to_string(), 1.8);
+
     // BESTEST case floors are ground-coupled in the reference model.
     cfg.ground_temperature_c = Some(10.0);
 

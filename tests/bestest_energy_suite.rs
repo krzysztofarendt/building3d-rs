@@ -209,6 +209,14 @@ fn make_cfg(_building: &Building) -> ThermalConfig {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
+    // Treat windows as a whole-window U-value (the layered "air gap as pure conduction"
+    // approximation is far too insulating).
+    cfg.u_value_overrides_by_path_pattern
+        .insert("window".to_string(), 1.8);
+
+    // BESTEST case floors are ground-coupled in the reference model.
+    cfg.ground_temperature_c = Some(10.0);
+
     // Keep a fixed deterministic thermal capacity for regression (J/(m3*K)).
     cfg.thermal_capacity_j_per_m3_k = 22_000.0;
     cfg
@@ -218,6 +226,10 @@ fn solar_cfg() -> SolarGainConfig {
     let mut solar = SolarGainConfig::new();
     solar.glazing_patterns = vec!["window".to_string()];
     solar.default_shgc = 0.86156;
+    solar.include_ground_reflection = true;
+    solar.ground_reflectance = 0.2;
+    solar.include_incidence_angle_modifier = true;
+    solar.incidence_angle_modifier_a = 0.1;
     solar.include_exterior_opaque_absorption = true;
     solar.default_opaque_absorptance = 0.6;
     solar

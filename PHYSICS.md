@@ -1715,41 +1715,46 @@ validated on **monthly shapes + peaks**, not just annual totals.
 
 ##### Step-by-step implementation plan (BESTEST-first)
 
-Phase 0 — tighten the validation harness (before physics changes):
-1. Extend the BESTEST suite CSV to export diagnostics per case:
-   - `UA_total`, `UA_windows`, `UA_opaque`
-   - annual transmitted shortwave (glazing) and any new opaque shortwave terms
+Phase 0 — tighten the validation harness (before physics changes): **DONE**
+1. BESTEST suite now exports diagnostics:
+   - `UA_total`, `UA_windows`, `UA_opaque`, `UA_ground`
+   - monthly + annual transmitted shortwave (glazing), and opaque sol-air shortwave term
    - peak hour info (timestamp + value) for heating/cooling
-2. Keep CI tests “wide” but meaningful (avoid brittle exact matches); validate monotonic
+2. CI tests are “wide” but meaningful (avoid brittle exact matches); validate monotonic
    invariants (e.g. no-solar → heating up, cooling down) and guard against regressions.
+3. Transient sim supports an optional warmup window (not a “fix”, but helps sanity-check
+   whether discrepancies are cold-start-driven).
 
 Phase 1 — window model (remove the biggest “hidden UA” issue):
-1. Support **U-value overrides by path/pattern** for manufacturer-style glazing inputs.
-2. Add an optional “simple window” model that treats glazing as `U` + `SHGC` (+ later an
-   incidence-angle modifier curve), rather than forcing users to fake an air gap layer.
-3. Update BESTEST windows to use a representative whole-window `U` consistent with the
-   reference model assumptions.
+1. **DONE**: Support **U-value overrides by path/pattern** for manufacturer-style glazing inputs.
+2. **PARTIAL (practical)**: Glazing can already be modeled as `U` + `SHGC` by combining:
+   - `ThermalConfig.u_value_overrides_by_path_pattern` (conduction), and
+   - `SolarGainConfig` SHGC resolution (solar gains).
+   A simple incidence-angle modifier (IAM) knob exists for the solar path, but is still a
+   coarse approximation (not an ISO 15099 window model).
+3. **DONE (BESTEST harness)**: BESTEST windows now use a representative whole-window `U` (via the
+   override) instead of relying on a fake “air gap as pure conduction” layer.
+   - current harness value: `U_window = 1.8 W/(m²·K)` (tunable; revisit once we parse the
+     authoritative IDF/window definition directly).
 
 Phase 2 — exterior surface balance (address cooling under-prediction):
-1. Implement a first-order **sol-air coupling** for opaque exterior surfaces:
-   - compute incident shortwave from DNI/DHI + orientation (unshaded baseline)
-   - apply an absorptance (`α`) and couple inward with a tunable `h_out` (start constant)
-2. Add longwave sky exchange later (sky temperature, emissivity) and improve `h_out`
+1. **DONE (first-order)**: Implemented an unshaded **sol-air coupling** for opaque exterior surfaces
+   (DNI/DHI + orientation, absorptance, tunable `h_out`, coupled inward as a sol-air style gain).
+2. **NEXT (refinement)**: Add longwave sky exchange (sky temperature, emissivity) and improve `h_out`
    (wind speed, surface tilt/orientation).
-3. Add boundary typing for floors (ground vs outdoor) to avoid “fake outdoors” floors.
+3. **DONE (first-order)**: Added a ground boundary knob for “floor-like” exterior surfaces.
+   Current transient solver uses a coarse `Q_ground = UA_ground * (T_ground - T_out)` correction.
 
 Phase 3 — solar distribution + thermal mass (required for 900):
-1. Route transmitted solar to an **interior surface/mass node** (default: floor-first, then
-   distribute by area/absorptance).
-2. Upgrade from 1R1C to **2R2C** (air + mass) with a stable implicit step.
-3. Optionally add a coarse envelope node so exterior absorbed solar affects indoor loads
-   with realistic lag.
+1. **PARTIAL**: Two-node model supports routing a fraction of transmitted solar to the mass node,
+   but the distribution is still a single “solar-to-mass fraction” knob (not surface-aware).
+2. **DONE**: Added a stable implicit **2R2C** (air + mass) option.
+3. **NEXT**: Add an interior-surface-aware distribution (floor-first / area-weighted), and (optionally)
+   a coarse envelope node so exterior absorbed solar affects indoor loads with realistic lag.
 
-Phase 4 — solar time correction (peak timing refinement):
-1. Confirm EPW timestamp convention (hour-ending vs hour-beginning) and implement the same
-   convention as EnergyPlus/OpenStudio.
-2. Add equation-of-time + longitude/time-zone meridian correction to `SolarPosition` use in
-   the energy solar path (and keep it shared with lighting).
+Phase 4 — solar time correction (peak timing refinement): **DONE**
+1. EPW hour-ending handling uses a mid-hour timestamp (`hour - 0.5`) in the energy solar path.
+2. Added equation-of-time + longitude/time-zone meridian correction, shared between energy + lighting.
 
 At the end of each phase, rerun:
 - `cargo test` (CI validation),
