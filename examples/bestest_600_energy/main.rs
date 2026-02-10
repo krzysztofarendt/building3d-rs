@@ -378,6 +378,10 @@ fn main() -> Result<()> {
     solar.glazing_patterns = vec!["window".to_string()];
     // From `Glass Type 1` solar transmittance in the IDF (approximate SHGC).
     solar.default_shgc = 0.86156;
+    // Exterior opaque shortwave (sol-air coupling) helps match BESTEST cooling loads.
+    solar.include_exterior_opaque_absorption = true;
+    // BESTEST case surfaces are moderately absorptive; use a representative default.
+    solar.default_opaque_absorptance = 0.6;
 
     println!("BESTEST 600 energy benchmark (building3d vs OpenStudio/E+ reference)");
     println!(

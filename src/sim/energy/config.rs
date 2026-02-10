@@ -34,6 +34,15 @@ pub struct ThermalConfig {
     pub material_library: Option<MaterialLibrary>,
     /// Exact U-value overrides keyed by polygon `UID` (W/(m^2*K)).
     pub u_value_overrides_by_polygon_uid: HashMap<UID, f64>,
+    /// U-value overrides keyed by polygon path or path substring pattern.
+    ///
+    /// Resolution is deterministic and mirrors `constructions`:
+    /// - exact path match wins
+    /// - otherwise, the longest substring match wins (ties: lexicographic key order)
+    ///
+    /// This is useful for cases where a surface should be specified directly by a
+    /// manufacturer-style U-value (e.g., glazing) rather than by a layered construction.
+    pub u_value_overrides_by_path_pattern: HashMap<String, f64>,
     /// Exact envelope capacity overrides keyed by polygon `UID` (J/(m^2*K)).
     pub envelope_capacity_overrides_j_per_m2_k_by_polygon_uid: HashMap<UID, f64>,
     /// Default U-value for surfaces without assigned construction (W/(m^2*K)).
@@ -63,6 +72,7 @@ impl ThermalConfig {
             constructions: HashMap::new(),
             material_library: None,
             u_value_overrides_by_polygon_uid: HashMap::new(),
+            u_value_overrides_by_path_pattern: HashMap::new(),
             envelope_capacity_overrides_j_per_m2_k_by_polygon_uid: HashMap::new(),
             default_u_value: 2.0,
             outdoor_temperature: 0.0,
@@ -93,12 +103,20 @@ impl ThermalConfig {
             return u;
         }
 
-        // 2) Exact override by path via explicit construction entry
+        // 2) U-value override by path/pattern (manufacturer-style override)
+        if let Some(&u) = self.u_value_overrides_by_path_pattern.get(path) {
+            return u;
+        }
+        if let Some(u) = self.best_matching_u_value_override(path) {
+            return u;
+        }
+
+        // 3) Exact override by path via explicit construction entry
         if let Some(construction) = self.constructions.get(path) {
             return construction.u_value();
         }
 
-        // 3) MaterialLibrary assignment (if provided and contains ThermalMaterial)
+        // 4) MaterialLibrary assignment (if provided and contains ThermalMaterial)
         if let Some(lib) = self.material_library.as_ref()
             && let Some(mat) = lib.lookup(path)
             && let Some(t) = mat.thermal.as_ref()
@@ -106,12 +124,12 @@ impl ThermalConfig {
             return t.u_value;
         }
 
-        // 4) Deterministic best-match construction pattern (fallback)
+        // 5) Deterministic best-match construction pattern (fallback)
         if let Some(construction) = self.best_matching_construction(path) {
             return construction.u_value();
         }
 
-        // 5) Default
+        // 6) Default
         self.default_u_value
     }
 
@@ -176,6 +194,29 @@ impl ThermalConfig {
             }
         }
         best.map(|(_, c)| c)
+    }
+
+    fn best_matching_u_value_override(&self, path: &str) -> Option<f64> {
+        let mut best: Option<(&str, f64)> = None;
+        for (pattern, &u) in &self.u_value_overrides_by_path_pattern {
+            if pattern == path {
+                continue;
+            }
+            if !path.contains(pattern.as_str()) {
+                continue;
+            }
+            match best {
+                None => best = Some((pattern.as_str(), u)),
+                Some((best_pat, _)) => {
+                    let better = pattern.len() > best_pat.len()
+                        || (pattern.len() == best_pat.len() && pattern.as_str() < best_pat);
+                    if better {
+                        best = Some((pattern.as_str(), u));
+                    }
+                }
+            }
+        }
+        best.map(|(_, u)| u)
     }
 
     /// Computes an equivalent inter-zone conductance (W/K) for a partition.
@@ -245,6 +286,22 @@ mod tests {
         // No match - default
         let u = config.resolve_u_value("zone/solid/roof/poly");
         assert!((u - 2.0).abs() < 1e-10, "Should use default U-value");
+    }
+
+    #[test]
+    fn test_resolve_u_value_override_by_path_pattern() {
+        let mut cfg = ThermalConfig::new();
+        cfg.constructions
+            .insert("window".to_string(), insulated_wall());
+
+        cfg.u_value_overrides_by_path_pattern
+            .insert("window".to_string(), 3.0);
+
+        let u = cfg.resolve_u_value("zone/solid/wall/window_1");
+        assert!(
+            (u - 3.0).abs() < 1e-12,
+            "Expected U override to win, got {u}"
+        );
     }
 
     #[test]

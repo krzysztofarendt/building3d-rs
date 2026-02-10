@@ -214,6 +214,8 @@ fn solar_cfg() -> SolarGainConfig {
     let mut solar = SolarGainConfig::new();
     solar.glazing_patterns = vec!["window".to_string()];
     solar.default_shgc = 0.86156;
+    solar.include_exterior_opaque_absorption = true;
+    solar.default_opaque_absorptance = 0.6;
     solar
 }
 
@@ -256,13 +258,13 @@ fn test_bestest_like_regression_synthetic_weather() {
     assert_rel_close(
         "annual_heating_kwh",
         annual.annual_heating_kwh,
-        4029.521465142861,
+        3964.6481732009574,
         1e-6,
     );
     assert_rel_close(
         "annual_cooling_kwh",
         annual.annual_cooling_kwh,
-        5248.683238186831,
+        6795.3785380155,
         1e-6,
     );
 }

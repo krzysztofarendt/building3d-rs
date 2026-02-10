@@ -6,6 +6,8 @@ use crate::sim::materials::MaterialLibrary;
 
 /// Default Solar Heat Gain Coefficient for glazing.
 const DEFAULT_SHGC: f64 = 0.6;
+const DEFAULT_OPAQUE_ABSORPTANCE: f64 = 0.7;
+const DEFAULT_EXTERIOR_HEAT_TRANSFER_COEFF_W_PER_M2_K: f64 = 17.0;
 
 /// Configuration for physics-based solar gain calculation using EPW weather data.
 ///
@@ -20,6 +22,14 @@ pub struct SolarGainConfig {
     pub default_shgc: f64,
     /// Patterns identifying glazing surfaces (substring match on polygon path).
     pub glazing_patterns: Vec<String>,
+    /// If true, also model absorbed shortwave on exterior *opaque* surfaces as an
+    /// additional thermal gain coupled through the envelope (sol-air approximation).
+    pub include_exterior_opaque_absorption: bool,
+    /// Default solar absorptance for opaque surfaces (0..1).
+    pub default_opaque_absorptance: f64,
+    /// Exterior combined heat transfer coefficient `h_out` (W/(m²·K)) used for the
+    /// sol-air coupling term. Typical range: ~15–25 W/(m²·K).
+    pub exterior_heat_transfer_coeff_w_per_m2_k: f64,
 }
 
 impl SolarGainConfig {
@@ -32,6 +42,10 @@ impl SolarGainConfig {
                 "glazing".to_string(),
                 "glass".to_string(),
             ],
+            include_exterior_opaque_absorption: false,
+            default_opaque_absorptance: DEFAULT_OPAQUE_ABSORPTANCE,
+            exterior_heat_transfer_coeff_w_per_m2_k:
+                DEFAULT_EXTERIOR_HEAT_TRANSFER_COEFF_W_PER_M2_K,
         }
     }
 

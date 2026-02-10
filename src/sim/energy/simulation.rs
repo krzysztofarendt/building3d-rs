@@ -14,6 +14,7 @@ use super::solar_bridge::{
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance_with_boundaries;
 use crate::UID;
+use crate::sim::lighting::solar::SolarPosition;
 
 #[cfg(test)]
 use super::zone::calculate_heat_balance;
@@ -61,6 +62,180 @@ fn day_of_year(month: u8, day: u8) -> u16 {
     DAYS_BEFORE_MONTH[m] + day as u16
 }
 
+fn opaque_absorptance_for_path(
+    path: &str,
+    material_library: Option<&crate::sim::materials::MaterialLibrary>,
+    default_absorptance: f64,
+) -> f64 {
+    let Some(lib) = material_library else {
+        return default_absorptance;
+    };
+    let Some(mat) = lib.lookup(path) else {
+        return default_absorptance;
+    };
+    let Some(opt) = mat.optical.as_ref() else {
+        return default_absorptance;
+    };
+
+    let mut a = 0.0;
+    for c in 0..3 {
+        let absorb =
+            (1.0 - opt.diffuse_reflectance[c] - opt.specular_reflectance[c] - opt.transmittance[c])
+                .clamp(0.0, 1.0);
+        a += absorb;
+    }
+    (a / 3.0).clamp(0.0, 1.0)
+}
+
+fn compute_exterior_opaque_sol_air_gain_total_w(
+    building: &Building,
+    base_config: &ThermalConfig,
+    index: &SurfaceIndex,
+    boundaries: &ThermalBoundaries,
+    params: &SolarHourParams,
+    solar_config: &SolarGainConfig,
+) -> f64 {
+    let solar_pos = SolarPosition::calculate(
+        params.latitude,
+        params.longitude,
+        params.day_of_year,
+        params.hour,
+    );
+    let sun_above = solar_pos.is_above_horizon();
+    let sun_dir = solar_pos.to_direction();
+
+    let h_out = solar_config
+        .exterior_heat_transfer_coeff_w_per_m2_k
+        .max(1e-9);
+
+    let mut total = 0.0;
+    for surface in &index.surfaces {
+        if !boundaries.is_exterior(&surface.polygon_uid) {
+            continue;
+        }
+        if solar_config
+            .resolve_shgc_with_materials(&surface.path, base_config.material_library.as_ref())
+            .is_some()
+        {
+            continue; // glazing handled via transmitted-to-zone path
+        }
+
+        let area = surface.area_m2;
+        if area <= 0.0 {
+            continue;
+        }
+        let Some(poly) = building.get_polygon(&surface.path) else {
+            continue;
+        };
+
+        let normal = poly.vn;
+        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+
+        let mut incident = params.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+        if sun_above && params.direct_normal_irradiance > 0.0 {
+            let cos_incidence = sun_dir.dot(&normal).max(0.0);
+            incident += params.direct_normal_irradiance.max(0.0) * cos_incidence;
+        }
+        if incident <= 0.0 {
+            continue;
+        }
+
+        let absorptance = opaque_absorptance_for_path(
+            &surface.path,
+            base_config.material_library.as_ref(),
+            solar_config.default_opaque_absorptance,
+        );
+        if absorptance <= 0.0 {
+            continue;
+        }
+
+        let u = base_config.resolve_u_value_for_surface(&surface.polygon_uid, &surface.path);
+        if !(u.is_finite() && u > 0.0) {
+            continue;
+        }
+
+        // Sol-air style coupling: absorbed shortwave heats the exterior surface, but only
+        // a fraction conducts inward instantaneously. Approximate that fraction as U/h_out.
+        total += (u / h_out) * incident * absorptance * area;
+    }
+    total
+}
+
+fn compute_exterior_opaque_sol_air_gains_by_zone_w(
+    building: &Building,
+    base_config: &ThermalConfig,
+    index: &SurfaceIndex,
+    boundaries: &ThermalBoundaries,
+    params: &SolarHourParams,
+    solar_config: &SolarGainConfig,
+) -> std::collections::HashMap<UID, f64> {
+    let solar_pos = SolarPosition::calculate(
+        params.latitude,
+        params.longitude,
+        params.day_of_year,
+        params.hour,
+    );
+    let sun_above = solar_pos.is_above_horizon();
+    let sun_dir = solar_pos.to_direction();
+
+    let h_out = solar_config
+        .exterior_heat_transfer_coeff_w_per_m2_k
+        .max(1e-9);
+
+    let mut gains: std::collections::HashMap<UID, f64> = std::collections::HashMap::new();
+    for surface in &index.surfaces {
+        if !boundaries.is_exterior(&surface.polygon_uid) {
+            continue;
+        }
+        if solar_config
+            .resolve_shgc_with_materials(&surface.path, base_config.material_library.as_ref())
+            .is_some()
+        {
+            continue;
+        }
+
+        let area = surface.area_m2;
+        if area <= 0.0 {
+            continue;
+        }
+        let Some(poly) = building.get_polygon(&surface.path) else {
+            continue;
+        };
+
+        let normal = poly.vn;
+        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+
+        let mut incident = params.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+        if sun_above && params.direct_normal_irradiance > 0.0 {
+            let cos_incidence = sun_dir.dot(&normal).max(0.0);
+            incident += params.direct_normal_irradiance.max(0.0) * cos_incidence;
+        }
+        if incident <= 0.0 {
+            continue;
+        }
+
+        let absorptance = opaque_absorptance_for_path(
+            &surface.path,
+            base_config.material_library.as_ref(),
+            solar_config.default_opaque_absorptance,
+        );
+        if absorptance <= 0.0 {
+            continue;
+        }
+
+        let u = base_config.resolve_u_value_for_surface(&surface.polygon_uid, &surface.path);
+        if !(u.is_finite() && u > 0.0) {
+            continue;
+        }
+
+        let q = (u / h_out) * incident * absorptance * area;
+        if q != 0.0 {
+            *gains.entry(surface.zone_uid.clone()).or_insert(0.0) += q;
+        }
+    }
+    gains
+}
+
 /// Runs an annual hourly energy simulation.
 ///
 /// For each hour:
@@ -101,7 +276,7 @@ pub fn run_annual_simulation(
             config.internal_gains = profile.gains_at(hour_idx);
         }
 
-        // Solar gains from weather data + sun geometry + glazing properties
+        // Solar gains from weather data + sun geometry + glazing properties (+ optional opaque sol-air coupling)
         config.solar_gains = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
@@ -112,12 +287,23 @@ pub fn run_annual_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains_with_materials(
+                let mut solar = compute_solar_gains_with_materials(
                     building,
                     &params,
                     sc,
                     config.material_library.as_ref(),
-                )
+                );
+                if sc.include_exterior_opaque_absorption {
+                    solar += compute_exterior_opaque_sol_air_gain_total_w(
+                        building,
+                        &config,
+                        &index,
+                        &boundaries,
+                        &params,
+                        sc,
+                    );
+                }
+                solar
             }
             None => 0.0,
         };
@@ -242,12 +428,23 @@ pub fn run_transient_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains_with_materials(
+                let mut solar = compute_solar_gains_with_materials(
                     building,
                     &params,
                     sc,
                     base_config.material_library.as_ref(),
-                )
+                );
+                if sc.include_exterior_opaque_absorption {
+                    solar += compute_exterior_opaque_sol_air_gain_total_w(
+                        building,
+                        base_config,
+                        &index,
+                        &boundaries,
+                        &params,
+                        sc,
+                    );
+                }
+                solar
             }
             None => 0.0,
         };
@@ -359,12 +556,26 @@ pub fn run_multizone_transient_simulation(
                     latitude: weather.latitude,
                     longitude: weather.longitude,
                 };
-                compute_solar_gains_per_zone_with_materials(
+                let mut solar = compute_solar_gains_per_zone_with_materials(
                     building,
                     &params,
                     sc,
                     base_config.material_library.as_ref(),
-                )
+                );
+                if sc.include_exterior_opaque_absorption {
+                    let opaque = compute_exterior_opaque_sol_air_gains_by_zone_w(
+                        building,
+                        base_config,
+                        &index,
+                        &boundaries,
+                        &params,
+                        sc,
+                    );
+                    for (z, q) in opaque {
+                        *solar.entry(z).or_insert(0.0) += q;
+                    }
+                }
+                solar
             }
             None => std::collections::HashMap::new(),
         };

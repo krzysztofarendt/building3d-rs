@@ -282,6 +282,8 @@ fn solar_config_for_case_600() -> SolarGainConfig {
     solar.glazing_patterns = vec!["window".to_string()];
     // From `Glass Type 1` solar transmittance in the IDF (approximate SHGC).
     solar.default_shgc = 0.86156;
+    solar.include_exterior_opaque_absorption = true;
+    solar.default_opaque_absorptance = 0.6;
     solar
 }
 
