@@ -1,5 +1,5 @@
 use crate::sim::energy::construction::WallConstruction;
-use crate::sim::heat_transfer::mesh::{FvmCell, FvmFace, FvmMesh, BOUNDARY};
+use crate::sim::heat_transfer::mesh::{BOUNDARY, FvmCell, FvmFace, FvmMesh};
 
 /// Maximum thickness (m) of a single cell.  Layers thicker than this are
 /// subdivided for accuracy.
@@ -110,11 +110,7 @@ mod tests {
         assert_eq!(mesh.faces.len(), 5);
 
         // Total thickness
-        let total: f64 = mesh
-            .cells
-            .iter()
-            .map(|c| cell_thickness(c, 10.0))
-            .sum();
+        let total: f64 = mesh.cells.iter().map(|c| cell_thickness(c, 10.0)).sum();
         assert!((total - 0.20).abs() < 1e-12, "total thickness = {total}");
     }
 
@@ -158,11 +154,7 @@ mod tests {
         assert_eq!(mesh.faces.len(), 7);
 
         // Total thickness
-        let total: f64 = mesh
-            .cells
-            .iter()
-            .map(|c| cell_thickness(c, area))
-            .sum();
+        let total: f64 = mesh.cells.iter().map(|c| cell_thickness(c, area)).sum();
         assert!(
             (total - 0.27).abs() < 1e-12,
             "total thickness = {total}, expected 0.27"
