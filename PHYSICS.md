@@ -1421,9 +1421,14 @@ Keep the network API stable while swapping internal component models:
 1. **Steady U-value** (current baseline): partitions and envelope are pure conductances.
 2. **Low-order RC networks** (recommended next): 2R1C/3R2C per construction for dynamic
    surface temperatures and thermal mass effects.
-3. **1D finite-difference through layers** (optional): higher fidelity transient conduction.
-4. **3D conduction** (future): couple to tetrahedral meshes / FEM; should still expose
-   the same boundary heat-flow interface to the zone network.
+3. **1D FVM through wall layers** (planned, see `FVM.md`): Finite Volume Method with
+   implicit time stepping, one solver per exterior surface. Uses existing
+   `WallConstruction` layers (k, ρ, c_p, thickness). Produces per-surface interior
+   temperature and heat flux, replacing the steady-state `U*A*ΔT` calculation.
+   The same FVM solver extends to 3D without algorithm changes.
+4. **3D FVM on tetrahedral meshes** (future): couple to existing `TetrahedralMesh`
+   infrastructure; reuses the same solver with a 3D mesh builder. Should still
+   expose the same boundary heat-flow interface to the zone network.
 
 #### 4.9.4 Comfort outputs and radiant exchange (incremental)
 
@@ -1506,17 +1511,23 @@ All thermal simulation configs should be:
 Where randomness is introduced (e.g. Monte Carlo view factors), it must be seeded and the
 results should be cacheable by a config hash.
 
-#### 4.9.8 Suggested next steps: RC wall models beyond envelope lumping
+#### 4.9.8 Suggested next steps: wall conduction beyond envelope lumping
 
-After the current “air node + envelope RC node” model, the next fidelity jump should keep the
-same coupling payloads but introduce additional thermal states:
+After the current "air node + envelope RC node" model, the next fidelity jump should keep the
+same coupling payloads but introduce additional thermal states. Two parallel approaches exist:
 
-1. **Per-construction low-order RC**:
+1. **Per-construction low-order RC** (intermediate):
    - Implement 3R2C / 5R1C-style models per construction (ISO 13790 / ISO 52016 inspired),
      aggregated per surface or per zone, to represent:
      - outside surface temperature,
      - inside surface temperature,
      - thermal mass temperature(s).
+
+1b. **Per-surface FVM** (planned, see `FVM.md`):
+   - Finite Volume Method solver per exterior surface, using `WallConstruction` layers.
+   - Produces spatially resolved temperature profiles and per-surface heat flux.
+   - Same algorithm extends to 3D (tetrahedral meshes) without changes to the solver.
+   - This path supersedes low-order RC for surfaces that have layer definitions.
 
 2. **Inter-zone partition dynamics**:
    - Replace pure inter-zone conductances `K_ij` with a dynamic partition element so heat transfer
