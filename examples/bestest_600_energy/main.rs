@@ -10,7 +10,7 @@ use building3d::sim::energy::simulation::run_transient_simulation;
 use building3d::sim::energy::solar_bridge::SolarGainConfig;
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::materials::Layer;
-use building3d::{Building, Point, Polygon, Solid, Wall, Zone};
+use building3d::{Building, Point, Polygon, Solid, Vector, Wall, Zone};
 
 // Reference outputs from NREL/BESTEST-GSR (`results/workflow_results.csv`)
 // line for "600 - Base Case" (OpenStudio/EnergyPlus).
@@ -58,7 +58,8 @@ fn bestest_600_constructions() -> (
             },
             Layer {
                 name: "FIBERGLASS QUILT-1".to_string(),
-                thickness: 0.066,
+                // Target RSI ≈ 1.94 m²K/W (R-11 in IP units).
+                thickness: 1.94 * 0.04,
                 conductivity: 0.04,
                 density: 12.0,
                 specific_heat: 840.0,
@@ -86,7 +87,8 @@ fn bestest_600_constructions() -> (
             },
             Layer {
                 name: "FIBERGLASS QUILT-2".to_string(),
-                thickness: 0.1118,
+                // Target RSI ≈ 3.35 m²K/W (R-19 in IP units).
+                thickness: 3.35 * 0.04,
                 conductivity: 0.04,
                 density: 12.0,
                 specific_heat: 840.0,
@@ -105,6 +107,8 @@ fn bestest_600_constructions() -> (
     //
     // Represent Material:NoMass "R-25 INSULATION" as a pure resistance layer:
     //   R = thickness / conductivity  => choose thickness=1, conductivity=1/R.
+    // Represent Material:NoMass "R-25 INSULATION" as a pure resistance layer.
+    // In the BESTEST IDF this value is already in m²*K/W.
     let r25 = 25.075_f64;
     let lt_floor = WallConstruction::floor(
         "LTFLOOR",
@@ -196,7 +200,7 @@ fn poly_rect_y0(name: &str, x0: f64, x1: f64, z0: f64, z1: f64) -> Result<Polygo
             Point::new(x1, y, z1),
             Point::new(x0, y, z1),
         ],
-        None,
+        Some(Vector::new(0.0, -1.0, 0.0)),
     )
 }
 
@@ -369,6 +373,9 @@ fn main() -> Result<()> {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
+    // BESTEST case floors are ground-coupled in the reference model.
+    cfg.ground_temperature_c = Some(10.0);
+
     // Derive a zone capacity estimate from envelope layer capacities.
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);
 
@@ -378,6 +385,14 @@ fn main() -> Result<()> {
     solar.glazing_patterns = vec!["window".to_string()];
     // From `Glass Type 1` solar transmittance in the IDF (approximate SHGC).
     solar.default_shgc = 0.86156;
+    solar.include_ground_reflection = true;
+    solar.ground_reflectance = 0.2;
+    solar.include_incidence_angle_modifier = true;
+    solar.incidence_angle_modifier_a = 0.1;
+    // Exterior opaque shortwave (sol-air coupling) helps match BESTEST cooling loads.
+    solar.include_exterior_opaque_absorption = true;
+    // BESTEST case surfaces are moderately absorptive; use a representative default.
+    solar.default_opaque_absorptance = 0.6;
 
     println!("BESTEST 600 energy benchmark (building3d vs OpenStudio/E+ reference)");
     println!(

@@ -1664,6 +1664,98 @@ an optional `MaterialLibrary` and checks `is_glazing` before falling back to nam
 matching. The original `compute_solar_gains()` delegates with `None` for backward
 compatibility.
 
+#### BESTEST discrepancies and implementation plan (energy)
+
+We use **ASHRAE Standard 140 / BESTEST**-style cases (600 = lightweight, 900 = heavyweight)
+as our primary regression/diagnostic harness:
+- `examples/bestest_600_energy` (single case + plots)
+- `examples/bestest_energy_suite` (600 / 600_no_solar / 900 + plots)
+- `tests/bestest_energy_suite.rs` (CI-friendly validation with tolerances)
+
+These are **not measured** validations (they are “model vs model”), but they provide a
+high-signal path to harden the energy engine without coupling it too tightly to EnergyPlus
+internals.
+
+##### The 5 key discrepancies (what we will fix)
+
+1) **Exterior surface heat balance is missing**:
+   - today: opaque surfaces only contribute via `UA*(T_in - T_out)`
+   - missing: exterior shortwave absorption (sol-air), longwave exchange to sky/ground,
+     and a defensible `h_out` model (wind, orientation)
+   - symptom: under-predicted cooling loads in solar-driven cases
+
+2) **Window conduction model is too crude / too insulating**:
+   - today: glazing can be represented as layered conduction, which (if the air gap is
+     treated as pure conduction) produces a too-low U-value compared to ISO 15099-style
+     window models used by EnergyPlus
+   - symptom: distorted UA (often “accidentally good” heating via error cancellation)
+
+3) **Transmitted solar is injected into the zone air node**:
+   - today: transmitted shortwave becomes an instantaneous “air gain”
+   - missing: distribution of transmitted solar to interior surfaces (usually floor first),
+     followed by delayed release via convection/radiation
+   - symptom: wrong peak timing and large errors in heavyweight cases (e.g. 900)
+
+4) **Thermal mass is modeled as a single 1R1C zone node**:
+   - today: “high mass” is approximated by scaling `thermal_capacity_j_per_m3_k`
+   - missing: at least a 2-node model (air + interior mass/surfaces), ideally an envelope
+     node per major construction class (or an aggregated interior surface node)
+   - symptom: 900 heating/cooling magnitudes and dynamics cannot be matched reliably
+
+5) **Solar time conventions may be off (refinement, affects peaks)**:
+   - EPW hour conventions + equation-of-time + time-zone meridian corrections can shift
+     solar position by ~tens of minutes if handled incorrectly
+   - symptom: peak-hour mismatch (typically small effect on annual totals)
+
+##### Important: compensating errors
+
+Several BESTEST totals can look “close” for the wrong reasons (e.g. a too-low window U-value
+can partially cancel missing opaque exterior solar absorption). Fixes must therefore be
+validated on **monthly shapes + peaks**, not just annual totals.
+
+##### Step-by-step implementation plan (BESTEST-first)
+
+Phase 0 — tighten the validation harness (before physics changes):
+1. Extend the BESTEST suite CSV to export diagnostics per case:
+   - `UA_total`, `UA_windows`, `UA_opaque`
+   - annual transmitted shortwave (glazing) and any new opaque shortwave terms
+   - peak hour info (timestamp + value) for heating/cooling
+2. Keep CI tests “wide” but meaningful (avoid brittle exact matches); validate monotonic
+   invariants (e.g. no-solar → heating up, cooling down) and guard against regressions.
+
+Phase 1 — window model (remove the biggest “hidden UA” issue):
+1. Support **U-value overrides by path/pattern** for manufacturer-style glazing inputs.
+2. Add an optional “simple window” model that treats glazing as `U` + `SHGC` (+ later an
+   incidence-angle modifier curve), rather than forcing users to fake an air gap layer.
+3. Update BESTEST windows to use a representative whole-window `U` consistent with the
+   reference model assumptions.
+
+Phase 2 — exterior surface balance (address cooling under-prediction):
+1. Implement a first-order **sol-air coupling** for opaque exterior surfaces:
+   - compute incident shortwave from DNI/DHI + orientation (unshaded baseline)
+   - apply an absorptance (`α`) and couple inward with a tunable `h_out` (start constant)
+2. Add longwave sky exchange later (sky temperature, emissivity) and improve `h_out`
+   (wind speed, surface tilt/orientation).
+3. Add boundary typing for floors (ground vs outdoor) to avoid “fake outdoors” floors.
+
+Phase 3 — solar distribution + thermal mass (required for 900):
+1. Route transmitted solar to an **interior surface/mass node** (default: floor-first, then
+   distribute by area/absorptance).
+2. Upgrade from 1R1C to **2R2C** (air + mass) with a stable implicit step.
+3. Optionally add a coarse envelope node so exterior absorbed solar affects indoor loads
+   with realistic lag.
+
+Phase 4 — solar time correction (peak timing refinement):
+1. Confirm EPW timestamp convention (hour-ending vs hour-beginning) and implement the same
+   convention as EnergyPlus/OpenStudio.
+2. Add equation-of-time + longitude/time-zone meridian correction to `SolarPosition` use in
+   the energy solar path (and keep it shared with lighting).
+
+At the end of each phase, rerun:
+- `cargo test` (CI validation),
+- `examples/bestest_energy_suite` (suite totals + plots),
+- and (when applicable) `examples/bestest_600_energy` (case-focused plot).
+
 ### 5.5 Prioritized Fix Order
 
 Issues are ordered by impact on result correctness:

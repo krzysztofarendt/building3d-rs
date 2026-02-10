@@ -7,8 +7,12 @@ use anyhow::{Context, Result};
 use building3d::sim::energy::config::ThermalConfig;
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
-use building3d::sim::energy::simulation::{AnnualResult, run_transient_simulation};
-use building3d::sim::energy::solar_bridge::SolarGainConfig;
+use building3d::sim::energy::simulation::{
+    AnnualResult, TransientSimulationOptions, run_transient_simulation_with_options,
+};
+use building3d::sim::energy::solar_bridge::{
+    SolarGainConfig, SolarHourParams, compute_solar_gains_with_materials,
+};
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::materials::Layer;
 use building3d::{Building, Point, Polygon, Solid, Wall, Zone};
@@ -45,6 +49,12 @@ fn sum(monthly: &[f64; 12]) -> f64 {
     monthly.iter().sum()
 }
 
+fn day_of_year(month: u8, day: u8) -> u16 {
+    const DAYS_BEFORE_MONTH: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let m = (month as usize).saturating_sub(1).min(11);
+    DAYS_BEFORE_MONTH[m] + day as u16
+}
+
 fn bestest_600_constructions() -> (
     WallConstruction,
     WallConstruction,
@@ -66,7 +76,8 @@ fn bestest_600_constructions() -> (
             },
             Layer {
                 name: "FIBERGLASS QUILT-1".to_string(),
-                thickness: 0.066,
+                // Target RSI ≈ 1.94 m²K/W (R-11 in IP units).
+                thickness: 1.94 * 0.04,
                 conductivity: 0.04,
                 density: 12.0,
                 specific_heat: 840.0,
@@ -94,7 +105,8 @@ fn bestest_600_constructions() -> (
             },
             Layer {
                 name: "FIBERGLASS QUILT-2".to_string(),
-                thickness: 0.1118,
+                // Target RSI ≈ 3.35 m²K/W (R-19 in IP units).
+                thickness: 3.35 * 0.04,
                 conductivity: 0.04,
                 density: 12.0,
                 specific_heat: 840.0,
@@ -113,6 +125,8 @@ fn bestest_600_constructions() -> (
     //
     // Represent Material:NoMass "R-25 INSULATION" as a pure resistance layer:
     //   R = thickness / conductivity  => choose thickness=1, conductivity=1/R.
+    // Represent Material:NoMass "R-25 INSULATION" as a pure resistance layer.
+    // In the BESTEST IDF this value is already in m²*K/W.
     let r25 = 25.075_f64;
     let lt_floor = WallConstruction::floor(
         "LTFLOOR",
@@ -201,7 +215,7 @@ fn poly_rect_y0(name: &str, x0: f64, x1: f64, z0: f64, z1: f64) -> Result<Polygo
             Point::new(x1, y, z1),
             Point::new(x0, y, z1),
         ],
-        None,
+        Some(building3d::Vector::new(0.0, -1.0, 0.0)),
     )
 }
 
@@ -273,6 +287,9 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
+    // BESTEST case floors are ground-coupled in the reference model.
+    cfg.ground_temperature_c = Some(10.0);
+
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
     cfg
 }
@@ -282,6 +299,15 @@ fn solar_config_for_case_600() -> SolarGainConfig {
     solar.glazing_patterns = vec!["window".to_string()];
     // From `Glass Type 1` solar transmittance in the IDF (approximate SHGC).
     solar.default_shgc = 0.86156;
+    // Small physics refinements (still simplified vs EnergyPlus):
+    // - ground-reflected shortwave using a constant albedo
+    // - a simple incidence-angle modifier to reduce gains at grazing angles
+    solar.include_ground_reflection = true;
+    solar.ground_reflectance = 0.2;
+    solar.include_incidence_angle_modifier = true;
+    solar.incidence_angle_modifier_a = 0.1;
+    solar.include_exterior_opaque_absorption = true;
+    solar.default_opaque_absorptance = 0.6;
     solar
 }
 
@@ -382,6 +408,316 @@ fn write_suite_csv(path: &Path, cases: &[(CaseSpec, AnnualResult)]) -> Result<()
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct UaBreakdown {
+    ua_total: f64,
+    ua_glazing: f64,
+    ua_opaque: f64,
+    ua_ground: f64,
+}
+
+fn ua_breakdown(
+    building: &Building,
+    cfg: &ThermalConfig,
+    solar: &SolarGainConfig,
+) -> Result<UaBreakdown> {
+    use building3d::sim::energy::boundary::ThermalBoundaries;
+    use building3d::sim::index::SurfaceIndex;
+
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+
+    let mut ua_total = 0.0;
+    let mut ua_glazing = 0.0;
+    let mut ua_opaque = 0.0;
+    let mut ua_ground = 0.0;
+
+    for s in &index.surfaces {
+        if !boundaries.is_exterior(&s.polygon_uid) {
+            continue;
+        }
+        let u = cfg.resolve_u_value_for_surface(&s.polygon_uid, &s.path);
+        let ua = u * s.area_m2;
+        ua_total += ua;
+        if solar
+            .resolve_shgc(&s.path, cfg.material_library.as_ref())
+            .is_some()
+        {
+            ua_glazing += ua;
+        } else {
+            ua_opaque += ua;
+        }
+
+        if cfg.ground_temperature_c.is_some()
+            && cfg
+                .ground_surface_patterns
+                .iter()
+                .any(|p| s.path.contains(p.as_str()))
+        {
+            let Some(poly) = building.get_polygon(&s.path) else {
+                continue;
+            };
+            if poly.vn.dz <= -0.5 {
+                ua_ground += ua;
+            }
+        }
+    }
+
+    Ok(UaBreakdown {
+        ua_total,
+        ua_glazing,
+        ua_opaque,
+        ua_ground,
+    })
+}
+
+fn print_ua_breakdown(
+    building: &Building,
+    cfg: &ThermalConfig,
+    solar: &SolarGainConfig,
+) -> Result<()> {
+    let ua = ua_breakdown(building, cfg, solar)?;
+    println!(
+        "UA breakdown: total={:.2} W/K (glazing={:.2}, opaque={:.2}, ground={:.2})",
+        ua.ua_total, ua.ua_glazing, ua.ua_opaque, ua.ua_ground
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct CaseDiagnostics {
+    ua: UaBreakdown,
+    annual_solar_transmitted_kwh: f64,
+    annual_solar_opaque_sol_air_kwh: f64,
+    annual_ground_correction_kwh: f64,
+    monthly_solar_transmitted_kwh: [f64; 12],
+    monthly_solar_opaque_sol_air_kwh: [f64; 12],
+    monthly_ground_correction_kwh: [f64; 12],
+    peak_heating_hour_idx: usize,
+    peak_cooling_hour_idx: usize,
+}
+
+fn compute_opaque_sol_air_gain_total_w(
+    building: &Building,
+    cfg: &ThermalConfig,
+    solar: &SolarGainConfig,
+    index: &building3d::sim::index::SurfaceIndex,
+    boundaries: &building3d::sim::energy::boundary::ThermalBoundaries,
+    params: &SolarHourParams,
+) -> f64 {
+    use building3d::sim::lighting::solar::SolarPosition;
+
+    let solar_pos = SolarPosition::calculate_from_local_time(
+        params.latitude,
+        params.longitude,
+        params.timezone,
+        params.day_of_year,
+        params.local_time_hours,
+    );
+    let sun_above = solar_pos.is_above_horizon();
+    let sun_dir = solar_pos.to_direction();
+
+    let h_out = solar.exterior_heat_transfer_coeff_w_per_m2_k.max(1e-9);
+
+    let mut total = 0.0;
+    for surface in &index.surfaces {
+        if !boundaries.is_exterior(&surface.polygon_uid) {
+            continue;
+        }
+        if solar
+            .resolve_shgc(&surface.path, cfg.material_library.as_ref())
+            .is_some()
+        {
+            continue;
+        }
+
+        let area = surface.area_m2;
+        if area <= 0.0 {
+            continue;
+        }
+        let Some(poly) = building.get_polygon(&surface.path) else {
+            continue;
+        };
+
+        let normal = poly.vn;
+        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+
+        let mut incident = params.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+        if sun_above && params.direct_normal_irradiance > 0.0 {
+            let cos_incidence = sun_dir.dot(&normal).max(0.0);
+            incident += params.direct_normal_irradiance.max(0.0) * cos_incidence;
+        }
+        if incident <= 0.0 {
+            continue;
+        }
+
+        let absorptance = solar.default_opaque_absorptance.clamp(0.0, 1.0);
+        if absorptance <= 0.0 {
+            continue;
+        }
+
+        let u = cfg.resolve_u_value_for_surface(&surface.polygon_uid, &surface.path);
+        if !(u.is_finite() && u > 0.0) {
+            continue;
+        }
+
+        total += (u / h_out) * incident * absorptance * area;
+    }
+    total
+}
+
+fn compute_case_diagnostics(
+    building: &Building,
+    cfg: &ThermalConfig,
+    solar_cfg: &SolarGainConfig,
+    weather: &WeatherData,
+    annual: &AnnualResult,
+) -> Result<CaseDiagnostics> {
+    use building3d::sim::energy::boundary::ThermalBoundaries;
+    use building3d::sim::index::SurfaceIndex;
+
+    let index = SurfaceIndex::new(building);
+    let boundaries = ThermalBoundaries::classify(building, &index);
+    let ua = ua_breakdown(building, cfg, solar_cfg)?;
+
+    let mut solar_transmitted_wh = 0.0;
+    let mut solar_opaque_wh = 0.0;
+    let mut ground_correction_wh = 0.0;
+    let mut monthly_solar_transmitted_wh = [0.0; 12];
+    let mut monthly_solar_opaque_wh = [0.0; 12];
+    let mut monthly_ground_correction_wh = [0.0; 12];
+
+    for record in &weather.records {
+        let month_idx = (record.month as usize).saturating_sub(1).min(11);
+        let params = SolarHourParams {
+            global_horizontal_irradiance: record.global_horizontal_radiation,
+            direct_normal_irradiance: record.direct_normal_radiation,
+            diffuse_horizontal_irradiance: record.diffuse_horizontal_radiation,
+            day_of_year: day_of_year(record.month, record.day),
+            local_time_hours: record.hour as f64 - 0.5,
+            latitude: weather.latitude,
+            longitude: weather.longitude,
+            timezone: weather.timezone,
+        };
+
+        let transmitted_w = compute_solar_gains_with_materials(
+            building,
+            &params,
+            solar_cfg,
+            cfg.material_library.as_ref(),
+        );
+        solar_transmitted_wh += transmitted_w;
+        monthly_solar_transmitted_wh[month_idx] += transmitted_w;
+
+        if solar_cfg.include_exterior_opaque_absorption {
+            let opaque_w = compute_opaque_sol_air_gain_total_w(
+                building,
+                cfg,
+                solar_cfg,
+                &index,
+                &boundaries,
+                &params,
+            );
+            solar_opaque_wh += opaque_w;
+            monthly_solar_opaque_wh[month_idx] += opaque_w;
+        }
+
+        if let Some(tg) = cfg.ground_temperature_c {
+            let tout = record.dry_bulb_temperature;
+            let q_ground = ua.ua_ground * (tg - tout);
+            ground_correction_wh += q_ground;
+            monthly_ground_correction_wh[month_idx] += q_ground;
+        }
+    }
+
+    let (peak_heating_hour_idx, _) = annual
+        .hourly_heating
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .unwrap_or((0, &0.0));
+    let (peak_cooling_hour_idx, _) = annual
+        .hourly_cooling
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .unwrap_or((0, &0.0));
+
+    Ok(CaseDiagnostics {
+        ua,
+        annual_solar_transmitted_kwh: solar_transmitted_wh / 1000.0,
+        annual_solar_opaque_sol_air_kwh: solar_opaque_wh / 1000.0,
+        annual_ground_correction_kwh: ground_correction_wh / 1000.0,
+        monthly_solar_transmitted_kwh: monthly_solar_transmitted_wh.map(|v| v / 1000.0),
+        monthly_solar_opaque_sol_air_kwh: monthly_solar_opaque_wh.map(|v| v / 1000.0),
+        monthly_ground_correction_kwh: monthly_ground_correction_wh.map(|v| v / 1000.0),
+        peak_heating_hour_idx,
+        peak_cooling_hour_idx,
+    })
+}
+
+fn weather_timestamp(weather: &WeatherData, hour_idx: usize) -> String {
+    match weather.records.get(hour_idx) {
+        Some(r) => format!("{:02}-{:02} {:02}:00", r.month, r.day, r.hour),
+        None => "n/a".to_string(),
+    }
+}
+
+fn write_diagnostics_csv(
+    path: &Path,
+    weather: &WeatherData,
+    cases: &[(CaseSpec, AnnualResult, CaseDiagnostics)],
+) -> Result<()> {
+    let mut f = fs::File::create(path).context("create diagnostics.csv")?;
+    writeln!(
+        f,
+        "case,ua_total_w_per_k,ua_glazing_w_per_k,ua_opaque_w_per_k,ua_ground_w_per_k,annual_solar_transmitted_kwh,annual_solar_opaque_sol_air_kwh,annual_ground_correction_kwh,peak_heating_w,peak_heating_time,peak_cooling_w,peak_cooling_time"
+    )?;
+
+    for (spec, annual, diag) in cases {
+        writeln!(
+            f,
+            "{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{:.3},{}",
+            spec.name,
+            diag.ua.ua_total,
+            diag.ua.ua_glazing,
+            diag.ua.ua_opaque,
+            diag.ua.ua_ground,
+            diag.annual_solar_transmitted_kwh,
+            diag.annual_solar_opaque_sol_air_kwh,
+            diag.annual_ground_correction_kwh,
+            annual.peak_heating,
+            weather_timestamp(weather, diag.peak_heating_hour_idx),
+            annual.peak_cooling,
+            weather_timestamp(weather, diag.peak_cooling_hour_idx),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn write_diagnostics_monthly_csv(path: &Path, cases: &[(CaseSpec, CaseDiagnostics)]) -> Result<()> {
+    let mut f = fs::File::create(path).context("create diagnostics_monthly.csv")?;
+    writeln!(f, "case,month,metric,value_kwh")?;
+
+    for (spec, diag) in cases {
+        for (metric, arr) in [
+            ("solar_transmitted", &diag.monthly_solar_transmitted_kwh),
+            (
+                "solar_opaque_sol_air",
+                &diag.monthly_solar_opaque_sol_air_kwh,
+            ),
+            ("ground_correction", &diag.monthly_ground_correction_kwh),
+        ] {
+            for (i, v) in arr.iter().enumerate() {
+                writeln!(f, "{},{},{},{:.3}", spec.name, i + 1, metric, v)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let epw_path = std::env::var("BESTEST_600_EPW")
         .map(PathBuf::from)
@@ -399,6 +735,31 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8.0);
+    let enable_two_node_600: bool = std::env::var("BESTEST_600_ENABLE_TWO_NODE")
+        .ok()
+        .as_deref()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let two_node_mass_fraction_600: f64 = std::env::var("BESTEST_600_TWO_NODE_MASS_FRACTION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.6);
+    let solar_to_mass_600: f64 = std::env::var("BESTEST_600_SOLAR_TO_MASS_FRACTION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.6);
+    let interior_h_600: f64 = std::env::var("BESTEST_600_INTERIOR_H_W_PER_M2_K")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3.0);
+    let solar_to_mass_900: f64 = std::env::var("BESTEST_900_SOLAR_TO_MASS_FRACTION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.9);
+    let interior_h_900: f64 = std::env::var("BESTEST_900_INTERIOR_H_W_PER_M2_K")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3.0);
 
     let suite = vec![
         CaseSpec {
@@ -419,6 +780,12 @@ fn main() -> Result<()> {
             high_mass_capacity_scale: cap_scale_900,
             solar: true,
         },
+        CaseSpec {
+            name: "900_no_solar",
+            ref_kind: RefKind::None,
+            high_mass_capacity_scale: cap_scale_900,
+            solar: false,
+        },
     ];
 
     println!("BESTEST energy suite (building3d vs OpenStudio/E+ reference)");
@@ -435,15 +802,58 @@ fn main() -> Result<()> {
         sum(&REF_900_MONTHLY_COOLING_KWH),
     );
     println!("High-mass capacity scale (900): {cap_scale_900}");
+    println!("High-mass solar→mass fraction (900): {solar_to_mass_900}");
+    println!("High-mass interior h (900): {interior_h_900} W/(m²·K)");
+    if enable_two_node_600 {
+        println!(
+            "Light-mass 2R2C enabled (600): mass_fraction={:.2}, solar→mass={:.2}, interior_h={:.2} W/(m²·K)",
+            two_node_mass_fraction_600, solar_to_mass_600, interior_h_600
+        );
+    }
+    println!();
+
+    let warmup_days: usize = std::env::var("BESTEST_WARMUP_DAYS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
+    let options = TransientSimulationOptions {
+        warmup_hours: warmup_days.saturating_mul(24),
+    };
+
+    println!("Warmup: {warmup_days} days");
+    print_ua_breakdown(&building, &base_cfg, &solar_cfg)?;
     println!();
 
     let mut outputs: Vec<(CaseSpec, AnnualResult)> = Vec::new();
+    let mut diag_rows: Vec<(CaseSpec, AnnualResult, CaseDiagnostics)> = Vec::new();
     for spec in suite {
         let mut cfg = base_cfg.clone();
         cfg.thermal_capacity_j_per_m3_k *= spec.high_mass_capacity_scale.max(0.0);
 
+        // Heavy-mass case (900): enable a two-node air+mass transient model and route
+        // most transmitted solar into the mass node (floor/walls in the reference model).
+        if spec.name.starts_with("900") {
+            cfg.two_node_mass_fraction = 0.95;
+            cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_900;
+            cfg.solar_gains_to_mass_fraction = solar_to_mass_900;
+            cfg.internal_gains_to_mass_fraction = 0.0;
+        }
+        if enable_two_node_600 && spec.name.starts_with("600") {
+            cfg.two_node_mass_fraction = two_node_mass_fraction_600;
+            cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_600;
+            cfg.solar_gains_to_mass_fraction = solar_to_mass_600;
+            cfg.internal_gains_to_mass_fraction = 0.0;
+        }
+
         let solar = if spec.solar { Some(&solar_cfg) } else { None };
-        let annual = run_transient_simulation(&building, &cfg, &weather, &hvac, None, solar);
+        let annual = run_transient_simulation_with_options(
+            &building, &cfg, &weather, &hvac, None, solar, &options,
+        );
+
+        if spec.solar {
+            let diag = compute_case_diagnostics(&building, &cfg, &solar_cfg, &weather, &annual)?;
+            diag_rows.push((spec.clone(), annual.clone(), diag));
+        }
 
         let sim_h = annual.annual_heating_kwh;
         let sim_c = annual.annual_cooling_kwh;
@@ -470,5 +880,16 @@ fn main() -> Result<()> {
     write_suite_csv(&out_path, &outputs)?;
     println!();
     println!("Wrote {}", out_path.display());
+    let diag_path = repo_root().join("examples/bestest_energy_suite/diagnostics.csv");
+    write_diagnostics_csv(&diag_path, &weather, &diag_rows)?;
+    println!("Wrote {}", diag_path.display());
+    let diag_monthly_path =
+        repo_root().join("examples/bestest_energy_suite/diagnostics_monthly.csv");
+    let diag_monthly_rows: Vec<(CaseSpec, CaseDiagnostics)> = diag_rows
+        .iter()
+        .map(|(spec, _annual, diag)| (spec.clone(), diag.clone()))
+        .collect();
+    write_diagnostics_monthly_csv(&diag_monthly_path, &diag_monthly_rows)?;
+    println!("Wrote {}", diag_monthly_path.display());
     Ok(())
 }

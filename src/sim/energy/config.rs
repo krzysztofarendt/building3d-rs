@@ -34,6 +34,15 @@ pub struct ThermalConfig {
     pub material_library: Option<MaterialLibrary>,
     /// Exact U-value overrides keyed by polygon `UID` (W/(m^2*K)).
     pub u_value_overrides_by_polygon_uid: HashMap<UID, f64>,
+    /// U-value overrides keyed by polygon path or path substring pattern.
+    ///
+    /// Resolution is deterministic and mirrors `constructions`:
+    /// - exact path match wins
+    /// - otherwise, the longest substring match wins (ties: lexicographic key order)
+    ///
+    /// This is useful for cases where a surface should be specified directly by a
+    /// manufacturer-style U-value (e.g., glazing) rather than by a layered construction.
+    pub u_value_overrides_by_path_pattern: HashMap<String, f64>,
     /// Exact envelope capacity overrides keyed by polygon `UID` (J/(m^2*K)).
     pub envelope_capacity_overrides_j_per_m2_k_by_polygon_uid: HashMap<UID, f64>,
     /// Default U-value for surfaces without assigned construction (W/(m^2*K)).
@@ -53,6 +62,36 @@ pub struct ThermalConfig {
     /// Used by transient zone-air models to estimate total zone thermal capacity:
     /// `C_zone = V_zone * thermal_capacity_j_per_m3_k`.
     pub thermal_capacity_j_per_m3_k: f64,
+    /// Optional ground temperature boundary for ground-coupled surfaces (°C).
+    ///
+    /// When set, surfaces matched by [`Self::ground_surface_patterns`] contribute an
+    /// extra conductance term to a "ground" boundary rather than outdoor air. The
+    /// transient solvers approximate this by adding a per-hour gain:
+    /// `Q_ground = UA_ground * (T_ground - T_outdoor)`.
+    pub ground_temperature_c: Option<f64>,
+    /// Path substring patterns identifying ground-coupled exterior surfaces.
+    ///
+    /// Default: `["floor"]`.
+    pub ground_surface_patterns: Vec<String>,
+    /// Optional two-node (air + mass) thermal model enable knob.
+    ///
+    /// - `0.0` (default): use the historical 1R1C zone model.
+    /// - `> 0.0`: enable a 2R2C model by splitting the total thermal capacity
+    ///   into an air node and a mass node.
+    ///
+    /// Interpretation: fraction of total capacity assigned to the **mass** node.
+    pub two_node_mass_fraction: f64,
+    /// Interior heat transfer coefficient used to couple air ↔ mass (W/(m²·K)).
+    ///
+    /// This is a coarse aggregate that lumps convection+radiation exchange between
+    /// zone air and interior surfaces.
+    pub interior_heat_transfer_coeff_w_per_m2_k: f64,
+    /// Fraction (0..1) of **solar** gains applied to the mass node when the two-node
+    /// model is enabled. The remainder is applied to the air node.
+    pub solar_gains_to_mass_fraction: f64,
+    /// Fraction (0..1) of **internal** gains applied to the mass node when the two-node
+    /// model is enabled. The remainder is applied to the air node.
+    pub internal_gains_to_mass_fraction: f64,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -63,6 +102,7 @@ impl ThermalConfig {
             constructions: HashMap::new(),
             material_library: None,
             u_value_overrides_by_polygon_uid: HashMap::new(),
+            u_value_overrides_by_path_pattern: HashMap::new(),
             envelope_capacity_overrides_j_per_m2_k_by_polygon_uid: HashMap::new(),
             default_u_value: 2.0,
             outdoor_temperature: 0.0,
@@ -71,6 +111,12 @@ impl ThermalConfig {
             internal_gains: 0.0,
             solar_gains: 0.0,
             thermal_capacity_j_per_m3_k: 50_000.0,
+            ground_temperature_c: None,
+            ground_surface_patterns: vec!["floor".to_string()],
+            two_node_mass_fraction: 0.0,
+            interior_heat_transfer_coeff_w_per_m2_k: 3.0,
+            solar_gains_to_mass_fraction: 0.0,
+            internal_gains_to_mass_fraction: 0.0,
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }
@@ -93,12 +139,20 @@ impl ThermalConfig {
             return u;
         }
 
-        // 2) Exact override by path via explicit construction entry
+        // 2) U-value override by path/pattern (manufacturer-style override)
+        if let Some(&u) = self.u_value_overrides_by_path_pattern.get(path) {
+            return u;
+        }
+        if let Some(u) = self.best_matching_u_value_override(path) {
+            return u;
+        }
+
+        // 3) Exact override by path via explicit construction entry
         if let Some(construction) = self.constructions.get(path) {
             return construction.u_value();
         }
 
-        // 3) MaterialLibrary assignment (if provided and contains ThermalMaterial)
+        // 4) MaterialLibrary assignment (if provided and contains ThermalMaterial)
         if let Some(lib) = self.material_library.as_ref()
             && let Some(mat) = lib.lookup(path)
             && let Some(t) = mat.thermal.as_ref()
@@ -106,12 +160,12 @@ impl ThermalConfig {
             return t.u_value;
         }
 
-        // 4) Deterministic best-match construction pattern (fallback)
+        // 5) Deterministic best-match construction pattern (fallback)
         if let Some(construction) = self.best_matching_construction(path) {
             return construction.u_value();
         }
 
-        // 5) Default
+        // 6) Default
         self.default_u_value
     }
 
@@ -178,6 +232,29 @@ impl ThermalConfig {
         best.map(|(_, c)| c)
     }
 
+    fn best_matching_u_value_override(&self, path: &str) -> Option<f64> {
+        let mut best: Option<(&str, f64)> = None;
+        for (pattern, &u) in &self.u_value_overrides_by_path_pattern {
+            if pattern == path {
+                continue;
+            }
+            if !path.contains(pattern.as_str()) {
+                continue;
+            }
+            match best {
+                None => best = Some((pattern.as_str(), u)),
+                Some((best_pat, _)) => {
+                    let better = pattern.len() > best_pat.len()
+                        || (pattern.len() == best_pat.len() && pattern.as_str() < best_pat);
+                    if better {
+                        best = Some((pattern.as_str(), u));
+                    }
+                }
+            }
+        }
+        best.map(|(_, u)| u)
+    }
+
     /// Computes an equivalent inter-zone conductance (W/K) for a partition.
     pub fn interzone_conductance_w_per_k(&self, u1: f64, u2: f64, area_m2: f64) -> f64 {
         if area_m2 <= 0.0 {
@@ -224,6 +301,12 @@ mod tests {
         assert!((config.default_u_value - 2.0).abs() < 1e-10);
         assert!((config.indoor_temperature - 20.0).abs() < 1e-10);
         assert!((config.thermal_capacity_j_per_m3_k - 50_000.0).abs() < 1e-10);
+        assert!(config.ground_temperature_c.is_none());
+        assert_eq!(config.ground_surface_patterns, vec!["floor".to_string()]);
+        assert!((config.two_node_mass_fraction - 0.0).abs() < 1e-12);
+        assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
+        assert!((config.solar_gains_to_mass_fraction - 0.0).abs() < 1e-12);
+        assert!((config.internal_gains_to_mass_fraction - 0.0).abs() < 1e-12);
         assert_eq!(config.interzone_u_value_policy, InterZoneUValuePolicy::Mean);
     }
 
@@ -245,6 +328,22 @@ mod tests {
         // No match - default
         let u = config.resolve_u_value("zone/solid/roof/poly");
         assert!((u - 2.0).abs() < 1e-10, "Should use default U-value");
+    }
+
+    #[test]
+    fn test_resolve_u_value_override_by_path_pattern() {
+        let mut cfg = ThermalConfig::new();
+        cfg.constructions
+            .insert("window".to_string(), insulated_wall());
+
+        cfg.u_value_overrides_by_path_pattern
+            .insert("window".to_string(), 3.0);
+
+        let u = cfg.resolve_u_value("zone/solid/wall/window_1");
+        assert!(
+            (u - 3.0).abs() < 1e-12,
+            "Expected U override to win, got {u}"
+        );
     }
 
     #[test]

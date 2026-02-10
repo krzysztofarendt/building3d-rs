@@ -78,6 +78,40 @@ impl SolarPosition {
         let d = self.to_direction();
         Vector::new(-d.dx, -d.dy, -d.dz)
     }
+
+    /// Calculates solar position from local standard time (clock time) using an
+    /// equation-of-time + longitude/timezone-meridian correction.
+    ///
+    /// - `longitude`: degrees (positive east)
+    /// - `timezone`: hours from UTC (EPW header value)
+    /// - `local_time_hours`: local standard time in hours (0-24)
+    ///
+    /// Note: EPW records are typically "hour-ending"; callers often want to pass
+    /// `hour - 0.5` to represent the mid-hour timestamp.
+    pub fn calculate_from_local_time(
+        latitude: f64,
+        longitude: f64,
+        timezone: f64,
+        day_of_year: u16,
+        local_time_hours: f64,
+    ) -> Self {
+        // Equation of time (Spencer), minutes.
+        let gamma = 2.0 * std::f64::consts::PI * (day_of_year as f64 - 1.0) / 365.0;
+        let eot_min = 229.18
+            * (0.000075 + 0.001868 * gamma.cos()
+                - 0.032077 * gamma.sin()
+                - 0.014615 * (2.0 * gamma).cos()
+                - 0.040849 * (2.0 * gamma).sin());
+
+        // Local standard time meridian, degrees.
+        let lstm = 15.0 * timezone;
+
+        // Time correction factor, minutes.
+        let tc_min = 4.0 * (longitude - lstm) + eot_min;
+
+        let solar_time_hours = local_time_hours + tc_min / 60.0;
+        Self::calculate(latitude, longitude, day_of_year, solar_time_hours)
+    }
 }
 
 #[cfg(test)]

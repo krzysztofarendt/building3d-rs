@@ -6,6 +6,10 @@ use crate::sim::materials::MaterialLibrary;
 
 /// Default Solar Heat Gain Coefficient for glazing.
 const DEFAULT_SHGC: f64 = 0.6;
+const DEFAULT_OPAQUE_ABSORPTANCE: f64 = 0.7;
+const DEFAULT_EXTERIOR_HEAT_TRANSFER_COEFF_W_PER_M2_K: f64 = 17.0;
+const DEFAULT_GROUND_REFLECTANCE: f64 = 0.2;
+const DEFAULT_INC_ANGLE_MODIFIER_A: f64 = 0.1;
 
 /// Configuration for physics-based solar gain calculation using EPW weather data.
 ///
@@ -20,6 +24,28 @@ pub struct SolarGainConfig {
     pub default_shgc: f64,
     /// Patterns identifying glazing surfaces (substring match on polygon path).
     pub glazing_patterns: Vec<String>,
+    /// If true, also model absorbed shortwave on exterior *opaque* surfaces as an
+    /// additional thermal gain coupled through the envelope (sol-air approximation).
+    pub include_exterior_opaque_absorption: bool,
+    /// Default solar absorptance for opaque surfaces (0..1).
+    pub default_opaque_absorptance: f64,
+    /// Exterior combined heat transfer coefficient `h_out` (W/(m²·K)) used for the
+    /// sol-air coupling term. Typical range: ~15–25 W/(m²·K).
+    pub exterior_heat_transfer_coeff_w_per_m2_k: f64,
+    /// If true, add a simple ground-reflected component to incident irradiance.
+    ///
+    /// Approximation: `I_ground = GHI * rho_g * ground_view`, where
+    /// `ground_view = 0.5 * (1 - normal_z)`.
+    pub include_ground_reflection: bool,
+    /// Ground shortwave reflectance (albedo), 0..1.
+    pub ground_reflectance: f64,
+    /// If true, apply a simple incidence-angle modifier (IAM) to glazing gains.
+    ///
+    /// Approximation (ASHRAE-style):
+    /// `IAM = 1 - a * (1/cos(theta) - 1)` clamped to [0, 1].
+    pub include_incidence_angle_modifier: bool,
+    /// IAM shape coefficient `a` (typical: ~0.05–0.2).
+    pub incidence_angle_modifier_a: f64,
 }
 
 impl SolarGainConfig {
@@ -32,6 +58,14 @@ impl SolarGainConfig {
                 "glazing".to_string(),
                 "glass".to_string(),
             ],
+            include_exterior_opaque_absorption: false,
+            default_opaque_absorptance: DEFAULT_OPAQUE_ABSORPTANCE,
+            exterior_heat_transfer_coeff_w_per_m2_k:
+                DEFAULT_EXTERIOR_HEAT_TRANSFER_COEFF_W_PER_M2_K,
+            include_ground_reflection: false,
+            ground_reflectance: DEFAULT_GROUND_REFLECTANCE,
+            include_incidence_angle_modifier: false,
+            incidence_angle_modifier_a: DEFAULT_INC_ANGLE_MODIFIER_A,
         }
     }
 
@@ -41,7 +75,7 @@ impl SolarGainConfig {
     /// 1. Exact match in `shgc` map
     /// 2. Material library `is_glazing` flag (if `material_library` provided)
     /// 3. Substring pattern match (fallback)
-    pub(crate) fn resolve_shgc_with_materials(
+    pub fn resolve_shgc(
         &self,
         path: &str,
         material_library: Option<&MaterialLibrary>,
@@ -76,6 +110,8 @@ impl Default for SolarGainConfig {
 /// Parameters describing the solar conditions for a single hour.
 #[derive(Debug, Clone, Copy)]
 pub struct SolarHourParams {
+    /// Global horizontal irradiance (W/m^2).
+    pub global_horizontal_irradiance: f64,
     /// Direct normal irradiance (W/m^2).
     pub direct_normal_irradiance: f64,
     /// Diffuse horizontal irradiance (W/m^2).
@@ -83,11 +119,16 @@ pub struct SolarHourParams {
     /// Day of year (1-365).
     pub day_of_year: u16,
     /// Solar hour (0-24).
-    pub hour: f64,
+    ///
+    /// Interpretation: local standard time (clock time) in hours.
+    /// For EPW "hour-ending" records, pass `hour - 0.5` to use the mid-hour timestamp.
+    pub local_time_hours: f64,
     /// Site latitude in degrees.
     pub latitude: f64,
     /// Site longitude in degrees.
     pub longitude: f64,
+    /// Timezone (hours from UTC), as provided by EPW.
+    pub timezone: f64,
 }
 
 /// Computes solar heat gains (W) from EPW weather data and sun geometry.
@@ -133,24 +174,37 @@ pub fn compute_solar_gains_with_materials(
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
 ) -> f64 {
-    let solar_pos = SolarPosition::calculate(
-        params.latitude,
-        params.longitude,
-        params.day_of_year,
-        params.hour,
-    );
-    if !solar_pos.is_above_horizon() {
-        // Sun below horizon: only diffuse contribution
-        return compute_diffuse_only(
-            building,
-            params.diffuse_horizontal_irradiance,
-            config,
-            material_library,
-        );
+    fn iam_for_cos(cos_incidence: f64, a: f64) -> f64 {
+        if !(cos_incidence.is_finite() && cos_incidence > 0.0) {
+            return 0.0;
+        }
+        let a = a.max(0.0);
+        let iam = 1.0 - a * (1.0 / cos_incidence - 1.0);
+        iam.clamp(0.0, 1.0)
     }
 
+    let solar_pos = SolarPosition::calculate_from_local_time(
+        params.latitude,
+        params.longitude,
+        params.timezone,
+        params.day_of_year,
+        params.local_time_hours,
+    );
+    let sun_above = solar_pos.is_above_horizon();
     let sun_dir = solar_pos.to_direction();
     let mut total_gains = 0.0;
+
+    let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
+    let use_ground = config.include_ground_reflection && rho_g > 0.0;
+
+    let use_iam = config.include_incidence_angle_modifier;
+    let a_iam = config.incidence_angle_modifier_a;
+    let iam_diffuse = if use_iam {
+        // Effective incidence for isotropic diffuse/ground components: assume 60°.
+        iam_for_cos(0.5, a_iam)
+    } else {
+        1.0
+    };
 
     for zone in building.zones() {
         for solid in zone.solids() {
@@ -160,25 +214,39 @@ pub fn compute_solar_gains_with_materials(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
-                    {
+                    if let Some(shgc) = config.resolve_shgc(&path, material_library) {
                         let normal = polygon.vn;
                         let area = polygon.area();
 
-                        // Direct component: DNI * cos(incidence_angle) * area * SHGC
-                        // cos(incidence) = sun_direction . surface_normal
-                        // Only positive values (sun facing the surface)
-                        let cos_incidence = sun_dir.dot(&normal).max(0.0);
-                        let q_direct =
-                            params.direct_normal_irradiance * cos_incidence * area * shgc;
-
-                        // Diffuse component: DHI * sky_view_factor * area * SHGC
-                        // Isotropic sky model: view factor = 0.5 for vertical, 1.0 for horizontal up
+                        // Diffuse sky component: isotropic view factor (0.5 for vertical, 1.0 for horizontal up).
                         let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-                        let q_diffuse =
-                            params.diffuse_horizontal_irradiance * sky_view * area * shgc;
+                        let mut incident_diffuse =
+                            params.diffuse_horizontal_irradiance.max(0.0) * sky_view * iam_diffuse;
 
-                        total_gains += q_direct + q_diffuse;
+                        // Ground reflected component: simple view factor approximation.
+                        if use_ground {
+                            let ground_view = 0.5 * (1.0 - normal.dz.clamp(-1.0, 1.0));
+                            incident_diffuse += params.global_horizontal_irradiance.max(0.0)
+                                * rho_g
+                                * ground_view
+                                * iam_diffuse;
+                        }
+
+                        // Direct beam component.
+                        let mut incident_direct = 0.0;
+                        if sun_above && params.direct_normal_irradiance > 0.0 {
+                            let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                            if cos_incidence > 0.0 {
+                                let mut i =
+                                    params.direct_normal_irradiance.max(0.0) * cos_incidence;
+                                if use_iam {
+                                    i *= iam_for_cos(cos_incidence, a_iam);
+                                }
+                                incident_direct = i;
+                            }
+                        }
+
+                        total_gains += (incident_direct + incident_diffuse) * area * shgc;
                     }
                 }
             }
@@ -196,23 +264,36 @@ pub fn compute_solar_gains_per_zone_with_materials(
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
 ) -> HashMap<crate::UID, f64> {
-    let solar_pos = SolarPosition::calculate(
-        params.latitude,
-        params.longitude,
-        params.day_of_year,
-        params.hour,
-    );
-    if !solar_pos.is_above_horizon() {
-        return compute_diffuse_only_per_zone(
-            building,
-            params.diffuse_horizontal_irradiance,
-            config,
-            material_library,
-        );
+    fn iam_for_cos(cos_incidence: f64, a: f64) -> f64 {
+        if !(cos_incidence.is_finite() && cos_incidence > 0.0) {
+            return 0.0;
+        }
+        let a = a.max(0.0);
+        let iam = 1.0 - a * (1.0 / cos_incidence - 1.0);
+        iam.clamp(0.0, 1.0)
     }
 
+    let solar_pos = SolarPosition::calculate_from_local_time(
+        params.latitude,
+        params.longitude,
+        params.timezone,
+        params.day_of_year,
+        params.local_time_hours,
+    );
+    let sun_above = solar_pos.is_above_horizon();
     let sun_dir = solar_pos.to_direction();
     let mut gains: HashMap<crate::UID, f64> = HashMap::new();
+
+    let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
+    let use_ground = config.include_ground_reflection && rho_g > 0.0;
+
+    let use_iam = config.include_incidence_angle_modifier;
+    let a_iam = config.incidence_angle_modifier_a;
+    let iam_diffuse = if use_iam {
+        iam_for_cos(0.5, a_iam)
+    } else {
+        1.0
+    };
 
     for zone in building.zones() {
         let mut zone_gains = 0.0;
@@ -223,8 +304,7 @@ pub fn compute_solar_gains_per_zone_with_materials(
                         "{}/{}/{}/{}",
                         zone.name, solid.name, wall.name, polygon.name
                     );
-                    let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
-                    else {
+                    let Some(shgc) = config.resolve_shgc(&path, material_library) else {
                         continue;
                     };
 
@@ -234,13 +314,30 @@ pub fn compute_solar_gains_per_zone_with_materials(
                     }
 
                     let normal = polygon.vn;
-                    let cos_incidence = sun_dir.dot(&normal).max(0.0);
-                    let q_direct = params.direct_normal_irradiance * cos_incidence * area * shgc;
-
                     let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-                    let q_diffuse = params.diffuse_horizontal_irradiance * sky_view * area * shgc;
+                    let mut incident_diffuse =
+                        params.diffuse_horizontal_irradiance.max(0.0) * sky_view * iam_diffuse;
+                    if use_ground {
+                        let ground_view = 0.5 * (1.0 - normal.dz.clamp(-1.0, 1.0));
+                        incident_diffuse += params.global_horizontal_irradiance.max(0.0)
+                            * rho_g
+                            * ground_view
+                            * iam_diffuse;
+                    }
 
-                    zone_gains += q_direct + q_diffuse;
+                    let mut incident_direct = 0.0;
+                    if sun_above && params.direct_normal_irradiance > 0.0 {
+                        let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                        if cos_incidence > 0.0 {
+                            let mut i = params.direct_normal_irradiance.max(0.0) * cos_incidence;
+                            if use_iam {
+                                i *= iam_for_cos(cos_incidence, a_iam);
+                            }
+                            incident_direct = i;
+                        }
+                    }
+
+                    zone_gains += (incident_direct + incident_diffuse) * area * shgc;
                 }
             }
         }
@@ -249,69 +346,6 @@ pub fn compute_solar_gains_per_zone_with_materials(
         }
     }
 
-    gains
-}
-
-/// Computes diffuse-only solar gains when the sun is below the horizon.
-fn compute_diffuse_only(
-    building: &Building,
-    diffuse_horizontal_irradiance: f64,
-    config: &SolarGainConfig,
-    material_library: Option<&MaterialLibrary>,
-) -> f64 {
-    let mut total = 0.0;
-    for zone in building.zones() {
-        for solid in zone.solids() {
-            for wall in solid.walls() {
-                for polygon in wall.polygons() {
-                    let path = format!(
-                        "{}/{}/{}/{}",
-                        zone.name, solid.name, wall.name, polygon.name
-                    );
-                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
-                    {
-                        let area = polygon.area();
-                        let normal = polygon.vn;
-                        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-                        total += diffuse_horizontal_irradiance * sky_view * area * shgc;
-                    }
-                }
-            }
-        }
-    }
-    total
-}
-
-fn compute_diffuse_only_per_zone(
-    building: &Building,
-    diffuse_horizontal_irradiance: f64,
-    config: &SolarGainConfig,
-    material_library: Option<&MaterialLibrary>,
-) -> HashMap<crate::UID, f64> {
-    let mut gains: HashMap<crate::UID, f64> = HashMap::new();
-    for zone in building.zones() {
-        let mut zone_total = 0.0;
-        for solid in zone.solids() {
-            for wall in solid.walls() {
-                for polygon in wall.polygons() {
-                    let path = format!(
-                        "{}/{}/{}/{}",
-                        zone.name, solid.name, wall.name, polygon.name
-                    );
-                    if let Some(shgc) = config.resolve_shgc_with_materials(&path, material_library)
-                    {
-                        let area = polygon.area();
-                        let normal = polygon.vn;
-                        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-                        zone_total += diffuse_horizontal_irradiance * sky_view * area * shgc;
-                    }
-                }
-            }
-        }
-        if zone_total != 0.0 {
-            gains.insert(zone.uid.clone(), zone_total);
-        }
-    }
     gains
 }
 
@@ -333,12 +367,14 @@ mod tests {
 
         // At solar noon in summer (day 172), latitude 45N
         let params = SolarHourParams {
+            global_horizontal_irradiance: 700.0,
             direct_normal_irradiance: 500.0,
             diffuse_horizontal_irradiance: 200.0,
             day_of_year: 172,
-            hour: 12.0,
+            local_time_hours: 12.0,
             latitude: 45.0,
             longitude: 0.0,
+            timezone: 0.0,
         };
         let gains = compute_solar_gains(&building, &params, &config);
 
@@ -359,12 +395,14 @@ mod tests {
         let config = SolarGainConfig::new();
 
         let params = SolarHourParams {
+            global_horizontal_irradiance: 0.0,
             direct_normal_irradiance: 0.0,
             diffuse_horizontal_irradiance: 0.0,
             day_of_year: 172,
-            hour: 12.0,
+            local_time_hours: 12.0,
             latitude: 45.0,
             longitude: 0.0,
+            timezone: 0.0,
         };
         let gains = compute_solar_gains(&building, &params, &config);
 
@@ -380,12 +418,14 @@ mod tests {
         let building = Building::new("b", vec![z0, z1]).unwrap();
 
         let params = SolarHourParams {
+            global_horizontal_irradiance: 900.0,
             direct_normal_irradiance: 800.0,
             diffuse_horizontal_irradiance: 100.0,
-            day_of_year: 81, // ~equinox
-            hour: 9.0,       // morning sun (east-ish)
+            day_of_year: 81,       // ~equinox
+            local_time_hours: 9.0, // morning sun (east-ish)
             latitude: 0.0,
             longitude: 0.0,
+            timezone: 0.0,
         };
 
         let mut cfg = SolarGainConfig::new();
@@ -418,7 +458,7 @@ mod tests {
         let mut cfg = SolarGainConfig::new();
         cfg.default_shgc = 0.75;
 
-        let shgc = cfg.resolve_shgc_with_materials("zone/room/wall/window_0", Some(&lib));
+        let shgc = cfg.resolve_shgc("zone/room/wall/window_0", Some(&lib));
         assert_eq!(shgc, Some(0.75));
     }
 }
