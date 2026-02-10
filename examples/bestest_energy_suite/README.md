@@ -25,7 +25,7 @@ Runs a small BESTEST-inspired validation suite for the energy simulation:
 
 - **600 - Base Case** (light-mass)
 - **600 - Base Case (no solar)** (internal sanity check; no external reference)
-- **900 - High-Mass Base Case** (approximated via increased zone thermal capacity)
+- **900 - High-Mass Base Case** (heavyweight envelope constructions)
 
 Reference monthly/annual heating and cooling loads for 600 and 900 are taken from the
 NREL/BESTEST-GSR `workflow_results.csv` (OpenStudio/EnergyPlus), using the same Boston Logan
@@ -48,9 +48,7 @@ Outputs:
 
 ## Notes
 
-- The 900 case is **not a perfect mapping** to EnergyPlus BESTEST 900 (which uses a detailed
-  high-mass construction and internal mass). In `building3d`, this suite approximates “high
-  mass” by scaling the zone thermal capacity (`ThermalConfig::thermal_capacity_j_per_m3_k`).
-- Tune the high-mass capacity scale with:
-  - `BESTEST_900_CAPACITY_SCALE` (default: `8.0`)
-
+- The 900 case uses heavyweight constructions derived from BESTEST-GSR shared resources
+  (`bestest_resources.osm`, construction set "BESTEST HW").
+- The simulation is still simplified vs EnergyPlus (e.g., no detailed interior shortwave
+  distribution to individual surfaces), so remaining differences should be expected.

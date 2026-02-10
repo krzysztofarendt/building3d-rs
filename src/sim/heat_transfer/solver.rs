@@ -168,6 +168,40 @@ impl FvmWallSolver {
         self.boundary_flux(t_centroid, bc_exterior, self.mesh.exterior_boundary_face())
     }
 
+    /// Conductance (W/K) of the exterior boundary face (includes wall area).
+    pub fn exterior_boundary_face_conductance_w_per_k(&self) -> Option<f64> {
+        self.mesh
+            .exterior_boundary_face()
+            .map(|fi| self.mesh.faces[fi].conductance)
+    }
+
+    /// Conductance (W/K) of the interior boundary face (includes wall area).
+    pub fn interior_boundary_face_conductance_w_per_k(&self) -> Option<f64> {
+        self.mesh
+            .interior_boundary_face()
+            .map(|fi| self.mesh.faces[fi].conductance)
+    }
+
+    /// Fraction (0..1) of a surface source that enters the wall domain when the boundary is
+    /// modeled as convection with film coefficient `h` (W/(m²·K)).
+    ///
+    /// This mirrors the split used by [`BoundaryCondition::ConvectiveWithFlux`] in `apply_bc()`.
+    pub fn boundary_conduction_fraction(&self, h: f64, is_interior: bool) -> f64 {
+        let face_conductance = if is_interior {
+            self.interior_boundary_face_conductance_w_per_k()
+        } else {
+            self.exterior_boundary_face_conductance_w_per_k()
+        };
+        let Some(k_face) = face_conductance else {
+            return 0.0;
+        };
+        let h_a = h.max(0.0) * self.wall_area;
+        if h_a <= 0.0 {
+            return 1.0;
+        }
+        (k_face / (k_face + h_a)).clamp(0.0, 1.0)
+    }
+
     /// Compute heat flux at a boundary surface.
     ///
     /// For convective BCs, the actual surface temperature is computed from the
@@ -199,20 +233,21 @@ impl FvmWallSolver {
                 t_fluid,
                 heat_flux,
             } => {
+                // Report only the convective component (wall ↔ fluid heat transfer).
+                //
+                // The imposed surface source affects the wall temperatures and thus the
+                // convective flux indirectly, but it is not itself a wall→fluid heat flux term.
+                let _ = heat_flux;
                 if *h <= 0.0 {
-                    // With no convective path, the only flux term is the imposed flux.
-                    return -*heat_flux;
+                    return 0.0;
                 }
-                let q_conv_out = if let Some(fi) = face_idx {
+                if let Some(fi) = face_idx {
                     let k_cond = self.mesh.faces[fi].conductance / self.wall_area;
                     let k_combined = 1.0 / (1.0 / k_cond + 1.0 / h);
                     k_combined * (t_centroid - t_fluid)
                 } else {
                     h * (t_centroid - t_fluid)
-                };
-                // `heat_flux` is defined positive into the wall domain, so it is negative
-                // in the "out of wall" sign convention used by this method.
-                q_conv_out - *heat_flux
+                }
             }
             BoundaryCondition::Dirichlet { temperature } => {
                 if let Some(fi) = face_idx {

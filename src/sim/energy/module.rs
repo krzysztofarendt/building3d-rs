@@ -86,6 +86,7 @@ pub struct EnergyModule {
     boundaries: Option<ThermalBoundaries>,
     fvm_walls: Vec<FvmExteriorWall>,
     fvm_polygon_uids: HashSet<crate::UID>,
+    ground_ua_by_zone_w_per_k: Vec<f64>,
 }
 
 enum EnergyModel {
@@ -97,6 +98,7 @@ struct FvmExteriorWall {
     polygon_uid: crate::UID,
     zone_idx: usize,
     area_m2: f64,
+    is_ground_coupled: bool,
     h_in_w_per_m2_k: f64,
     h_out_w_per_m2_k: f64,
     capacity_j_per_k: f64,
@@ -116,6 +118,7 @@ impl EnergyModule {
             boundaries: None,
             fvm_walls: vec![],
             fvm_polygon_uids: HashSet::new(),
+            ground_ua_by_zone_w_per_k: vec![],
         }
     }
 
@@ -243,7 +246,7 @@ impl SimModule for EnergyModule {
                     continue;
                 }
 
-                if self.config.thermal.ground_temperature_c.is_some()
+                let is_ground_coupled = if self.config.thermal.ground_temperature_c.is_some()
                     && self
                         .config
                         .thermal
@@ -251,11 +254,14 @@ impl SimModule for EnergyModule {
                         .iter()
                         .any(|p| s.path.contains(p.as_str()))
                 {
-                    if let Some(poly) = ctx.building.get_polygon(&s.path)
-                        && poly.vn.dz <= -0.5
-                    {
-                        continue;
-                    }
+                    ctx.building
+                        .get_polygon(&s.path)
+                        .is_some_and(|poly| poly.vn.dz <= -0.5)
+                } else {
+                    false
+                };
+                if is_ground_coupled {
+                    continue;
                 }
 
                 let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(&s.polygon_uid) else {
@@ -285,12 +291,49 @@ impl SimModule for EnergyModule {
                     polygon_uid: s.polygon_uid.clone(),
                     zone_idx,
                     area_m2: s.area_m2,
+                    is_ground_coupled: false,
                     h_in_w_per_m2_k: h_in,
                     h_out_w_per_m2_k: h_out,
                     capacity_j_per_k,
                     solver,
                 });
                 self.fvm_polygon_uids.insert(s.polygon_uid.clone());
+            }
+        }
+
+        self.ground_ua_by_zone_w_per_k = vec![0.0; self.zone_uids.len()];
+        if self.config.thermal.ground_temperature_c.is_some() {
+            for s in &ctx.surface_index.surfaces {
+                if !boundaries.is_exterior(&s.polygon_uid) {
+                    continue;
+                }
+                if self.fvm_polygon_uids.contains(&s.polygon_uid) {
+                    continue;
+                }
+                if !self
+                    .config
+                    .thermal
+                    .ground_surface_patterns
+                    .iter()
+                    .any(|p| s.path.contains(p.as_str()))
+                {
+                    continue;
+                }
+                let Some(poly) = ctx.building.get_polygon(&s.path) else {
+                    continue;
+                };
+                if poly.vn.dz > -0.5 {
+                    continue;
+                }
+
+                let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(&s.polygon_uid) else {
+                    continue;
+                };
+                let u = self
+                    .config
+                    .thermal
+                    .resolve_u_value_for_surface(&s.polygon_uid, &s.path);
+                self.ground_ua_by_zone_w_per_k[zone_idx] += u * s.area_m2;
             }
         }
 
@@ -364,7 +407,15 @@ impl SimModule for EnergyModule {
             .map(|t| t.0)
             .unwrap_or(self.config.thermal.outdoor_temperature);
 
-        let (mut air_gains, env_gains) = self.gains_by_zone_split(bus);
+        let (mut air_gains, mut env_gains) = self.gains_by_zone_split(bus);
+        if let Some(tg) = self.config.thermal.ground_temperature_c {
+            let dt = tg - outdoor_temp_c;
+            for (i, ua) in self.ground_ua_by_zone_w_per_k.iter().enumerate() {
+                if let Some(g) = env_gains.get_mut(i) {
+                    *g += ua * dt;
+                }
+            }
+        }
 
         let Some(model) = self.model.as_mut() else {
             anyhow::bail!("EnergyModule not initialized");
@@ -400,7 +451,16 @@ impl SimModule for EnergyModule {
                     h: h_in,
                     t_fluid: t_air,
                 };
-                let bc_out = if heat_flux_w_per_m2 != 0.0 {
+                let bc_out = if w.is_ground_coupled {
+                    BoundaryCondition::Convective {
+                        h: h_out,
+                        t_fluid: self
+                            .config
+                            .thermal
+                            .ground_temperature_c
+                            .unwrap_or(outdoor_temp_c),
+                    }
+                } else if heat_flux_w_per_m2 != 0.0 {
                     BoundaryCondition::ConvectiveWithFlux {
                         h: h_out,
                         t_fluid: outdoor_temp_c,

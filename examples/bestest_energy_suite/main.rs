@@ -179,6 +179,74 @@ fn bestest_600_constructions() -> (
     (lt_wall, lt_roof, lt_floor, window)
 }
 
+fn bestest_900_constructions() -> (
+    WallConstruction,
+    WallConstruction,
+    WallConstruction,
+    WallConstruction,
+) {
+    // From BESTEST-GSR shared `bestest_resources.osm` (construction set "BESTEST HW").
+    //
+    // NOTE: In that resource model, the heavyweight case uses:
+    // - HWWALL (WOOD SIDING-1 + FOAM INSULATION + CONCRETE BLOCK)
+    // - HWFLOOR (R-25 INSULATION + CONCRETE SLAB)
+    // - LTROOF (same as the light-mass case)
+    // - Double Pane Window (same as the light-mass case)
+    let (_lt_wall, lt_roof, _lt_floor, window) = bestest_600_constructions();
+
+    let hw_wall = WallConstruction::new(
+        "HWWALL",
+        vec![
+            Layer {
+                name: "WOOD SIDING-1".to_string(),
+                thickness: 0.009,
+                conductivity: 0.14,
+                density: 530.0,
+                specific_heat: 900.0,
+            },
+            Layer {
+                name: "FOAM INSULATION".to_string(),
+                thickness: 0.0615,
+                conductivity: 0.04,
+                density: 10.0,
+                specific_heat: 1400.0,
+            },
+            Layer {
+                name: "CONCRETE BLOCK".to_string(),
+                thickness: 0.1,
+                conductivity: 0.51,
+                density: 1400.0,
+                specific_heat: 1000.0,
+            },
+        ],
+    );
+
+    // HWFLOOR: R-25 INSULATION (no mass) + CONCRETE SLAB
+    // In BESTEST-GSR resources, R-25 is 25.175 m²*K/W.
+    let r25 = 25.175_f64;
+    let hw_floor = WallConstruction::floor(
+        "HWFLOOR",
+        vec![
+            Layer {
+                name: "R-25 INSULATION (no mass)".to_string(),
+                thickness: 1.0,
+                conductivity: 1.0 / r25,
+                density: 0.0,
+                specific_heat: 0.0,
+            },
+            Layer {
+                name: "CONCRETE SLAB".to_string(),
+                thickness: 0.08,
+                conductivity: 1.13,
+                density: 1400.0,
+                specific_heat: 1000.0,
+            },
+        ],
+    );
+
+    (hw_wall, lt_roof, hw_floor, window)
+}
+
 fn estimate_zone_capacity_j_per_m3_k(building: &Building, cfg: &ThermalConfig) -> f64 {
     let volume_m3: f64 = building.zones().iter().map(|z| z.volume()).sum();
     if volume_m3 <= 0.0 {
@@ -296,7 +364,17 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // BESTEST case floors are ground-coupled in the reference model.
     cfg.ground_temperature_c = Some(10.0);
 
-    cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
+    // Surface-aware policy for transmitted solar + radiant internal gains.
+    //
+    // With FVM envelope walls, routing all transmitted shortwave into the zone air node
+    // over-predicts peaks and fails to use the envelope thermal mass. Instead, deposit
+    // most of it on interior surfaces (floor-first), and similarly deposit the radiant
+    // fraction of internal gains to surfaces.
+    cfg.use_surface_aware_solar_distribution = true;
+    cfg.transmitted_solar_to_air_fraction = 0.0;
+    cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
+
+    let _ = building;
     cfg
 }
 
@@ -327,11 +405,17 @@ enum RefKind {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaseMassKind {
+    Light,
+    Heavy,
+}
+
 #[derive(Debug, Clone)]
 struct CaseSpec {
     name: &'static str,
     ref_kind: RefKind,
-    high_mass_capacity_scale: f64,
+    mass_kind: CaseMassKind,
     solar: bool,
 }
 
@@ -735,7 +819,7 @@ fn main() -> Result<()> {
         .ok()
         .as_deref()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+        .unwrap_or(true);
 
     let epw_path = std::env::var("BESTEST_600_EPW")
         .map(PathBuf::from)
@@ -750,10 +834,6 @@ fn main() -> Result<()> {
     let solar_cfg = solar_config_for_case_600();
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
 
-    let cap_scale_900: f64 = std::env::var("BESTEST_900_CAPACITY_SCALE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8.0);
     let enable_two_node_600: bool = std::env::var("BESTEST_600_ENABLE_TWO_NODE")
         .ok()
         .as_deref()
@@ -771,43 +851,30 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3.0);
-    let solar_to_mass_900: f64 = std::env::var("BESTEST_900_SOLAR_TO_MASS_FRACTION")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.9);
-    let interior_h_900: f64 = std::env::var("BESTEST_900_INTERIOR_H_W_PER_M2_K")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5.0);
-    let three_node_env_fraction_900: f64 =
-        std::env::var("BESTEST_900_THREE_NODE_ENV_MASS_FRACTION")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
 
     let suite = vec![
         CaseSpec {
             name: "600",
             ref_kind: RefKind::Ref600,
-            high_mass_capacity_scale: 1.0,
+            mass_kind: CaseMassKind::Light,
             solar: true,
         },
         CaseSpec {
             name: "600_no_solar",
             ref_kind: RefKind::None,
-            high_mass_capacity_scale: 1.0,
+            mass_kind: CaseMassKind::Light,
             solar: false,
         },
         CaseSpec {
             name: "900",
             ref_kind: RefKind::Ref900,
-            high_mass_capacity_scale: cap_scale_900,
+            mass_kind: CaseMassKind::Heavy,
             solar: true,
         },
         CaseSpec {
             name: "900_no_solar",
             ref_kind: RefKind::None,
-            high_mass_capacity_scale: cap_scale_900,
+            mass_kind: CaseMassKind::Heavy,
             solar: false,
         },
     ];
@@ -826,10 +893,6 @@ fn main() -> Result<()> {
         sum(&REF_900_MONTHLY_COOLING_KWH),
     );
     println!("FVM walls: {}", if use_fvm_walls { "ON" } else { "off" });
-    println!("High-mass capacity scale (900): {cap_scale_900}");
-    println!("High-mass solar→mass fraction (900): {solar_to_mass_900}");
-    println!("High-mass interior h (900): {interior_h_900} W/(m²·K)");
-    println!("High-mass 3-node env mass fraction (900): {three_node_env_fraction_900}");
     if enable_two_node_600 {
         println!(
             "Light-mass 2R2C enabled (600): mass_fraction={:.2}, solar→mass={:.2}, interior_h={:.2} W/(m²·K)",
@@ -854,19 +917,12 @@ fn main() -> Result<()> {
     let mut diag_rows: Vec<(CaseSpec, AnnualResult, CaseDiagnostics)> = Vec::new();
     for spec in suite {
         let mut cfg = base_cfg.clone();
-        cfg.thermal_capacity_j_per_m3_k *= spec.high_mass_capacity_scale.max(0.0);
-
-        // Heavy-mass case (900): enable a two-node air+mass transient model and route
-        // most transmitted solar into the mass node (floor/walls in the reference model).
-        if spec.name.starts_with("900") {
-            cfg.two_node_mass_fraction = 0.95;
-            cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_900;
-            cfg.solar_gains_to_mass_fraction = solar_to_mass_900;
-            cfg.use_surface_aware_solar_distribution = true;
-            cfg.transmitted_solar_to_air_fraction = 0.0;
-            cfg.internal_gains_to_mass_fraction = 0.0;
-            cfg.two_node_envelope_to_mass = true;
-            cfg.three_node_envelope_mass_fraction = three_node_env_fraction_900;
+        if spec.mass_kind == CaseMassKind::Heavy {
+            let (wall, roof, floor, window) = bestest_900_constructions();
+            cfg.constructions.insert("window".to_string(), window);
+            cfg.constructions.insert("ceiling".to_string(), roof);
+            cfg.constructions.insert("floor".to_string(), floor);
+            cfg.constructions.insert("wall".to_string(), wall);
         }
         if enable_two_node_600 && spec.name.starts_with("600") {
             cfg.two_node_mass_fraction = two_node_mass_fraction_600;
@@ -874,6 +930,8 @@ fn main() -> Result<()> {
             cfg.solar_gains_to_mass_fraction = solar_to_mass_600;
             cfg.internal_gains_to_mass_fraction = 0.0;
         }
+
+        cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);
 
         let solar = if spec.solar { Some(&solar_cfg) } else { None };
         let annual = run_transient_simulation_with_options(

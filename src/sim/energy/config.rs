@@ -167,7 +167,7 @@ impl ThermalConfig {
             internal_gains_to_mass_fraction: 0.0,
             two_node_envelope_to_mass: false,
             three_node_envelope_mass_fraction: 0.0,
-            use_fvm_walls: false,
+            use_fvm_walls: true,
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }
@@ -387,7 +387,7 @@ mod tests {
         assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
         assert!((config.solar_gains_to_mass_fraction - 0.0).abs() < 1e-12);
         assert!((config.internal_gains_to_mass_fraction - 0.0).abs() < 1e-12);
-        assert!(!config.use_fvm_walls);
+        assert!(config.use_fvm_walls);
         assert_eq!(config.interzone_u_value_policy, InterZoneUValuePolicy::Mean);
     }
 
