@@ -1,10 +1,12 @@
 use anyhow::Result;
+use std::collections::HashSet;
 
 use crate::sim::coupling::{
     InternalGainsWPerZone, InternalGainsWTotal, OutdoorAirTemperatureC,
     ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerZone,
 };
 use crate::sim::framework::{Bus, SimContext, SimModule};
+use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh};
 
 use super::boundary::ThermalBoundaries;
 use super::config::ThermalConfig;
@@ -82,11 +84,23 @@ pub struct EnergyModule {
     zone_uids: Vec<crate::UID>,
     polygon_uid_to_zone_idx: std::collections::HashMap<crate::UID, usize>,
     boundaries: Option<ThermalBoundaries>,
+    fvm_walls: Vec<FvmExteriorWall>,
+    fvm_polygon_uids: HashSet<crate::UID>,
 }
 
 enum EnergyModel {
     Air(MultiZoneAirModel),
     EnvelopeRc(MultiZoneEnvelopeRcModel),
+}
+
+struct FvmExteriorWall {
+    polygon_uid: crate::UID,
+    zone_idx: usize,
+    area_m2: f64,
+    h_in_w_per_m2_k: f64,
+    h_out_w_per_m2_k: f64,
+    capacity_j_per_k: f64,
+    solver: FvmWallSolver,
 }
 
 impl EnergyModule {
@@ -100,6 +114,8 @@ impl EnergyModule {
             zone_uids: vec![],
             polygon_uid_to_zone_idx: std::collections::HashMap::new(),
             boundaries: None,
+            fvm_walls: vec![],
+            fvm_polygon_uids: HashSet::new(),
         }
     }
 
@@ -150,6 +166,11 @@ impl EnergyModule {
                 if *w == 0.0 {
                     continue;
                 }
+                // If this polygon is modeled via an FVM wall solver, its absorbed shortwave
+                // is applied as a boundary flux to the wall (not as an instantaneous gain).
+                if self.fvm_polygon_uids.contains(polygon_uid) {
+                    continue;
+                }
                 if let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(polygon_uid) {
                     if is_exterior(polygon_uid) {
                         env_gains[zone_idx] += *w;
@@ -178,17 +199,12 @@ impl SimModule for EnergyModule {
 
         let boundaries = ThermalBoundaries::classify(ctx.building, ctx.surface_index);
         self.boundaries = Some(boundaries.clone());
-        let network = ThermalNetwork::build(
-            ctx.building,
-            &self.config.thermal,
-            ctx.surface_index,
-            &boundaries,
-        );
 
         let zones = ctx.building.zones();
         self.zone_volumes_m3 = zones.iter().map(|z| z.volume()).collect();
         self.total_volume_m3 = self.zone_volumes_m3.iter().sum();
         self.zone_uids = zones.iter().map(|z| z.uid.clone()).collect();
+
         self.polygon_uid_to_zone_idx.clear();
         let uid_to_idx: std::collections::HashMap<&str, usize> = self
             .zone_uids
@@ -203,18 +219,120 @@ impl SimModule for EnergyModule {
             }
         }
 
-        let cap = if self.config.steady_state {
+        self.fvm_walls.clear();
+        self.fvm_polygon_uids.clear();
+        if self.config.thermal.use_fvm_walls {
+            for s in &ctx.surface_index.surfaces {
+                if !boundaries.is_exterior(&s.polygon_uid) {
+                    continue;
+                }
+                if s.area_m2 <= 0.0 {
+                    continue;
+                }
+                if looks_like_glazing(&s.path, &self.config.thermal) {
+                    continue;
+                }
+                if self
+                    .config
+                    .thermal
+                    .has_u_value_override_for_surface(&s.polygon_uid, &s.path)
+                {
+                    continue;
+                }
+                if self.config.thermal.resolve_construction(&s.path).is_none() {
+                    continue;
+                }
+
+                if self.config.thermal.ground_temperature_c.is_some()
+                    && self
+                        .config
+                        .thermal
+                        .ground_surface_patterns
+                        .iter()
+                        .any(|p| s.path.contains(p.as_str()))
+                {
+                    if let Some(poly) = ctx.building.get_polygon(&s.path)
+                        && poly.vn.dz <= -0.5
+                    {
+                        continue;
+                    }
+                }
+
+                let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(&s.polygon_uid) else {
+                    continue;
+                };
+                let Some(construction) = self.config.thermal.resolve_construction(&s.path) else {
+                    continue;
+                };
+
+                let h_in = if construction.r_si > 0.0 {
+                    1.0 / construction.r_si
+                } else {
+                    1.0 / 0.13
+                }
+                .max(1e-9);
+                let h_out = if construction.r_se > 0.0 {
+                    1.0 / construction.r_se
+                } else {
+                    1.0 / 0.04
+                }
+                .max(1e-9);
+
+                let mesh = build_1d_mesh(construction, s.area_m2);
+                let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
+                let capacity_j_per_k = solver.total_capacity_j_per_k();
+                self.fvm_walls.push(FvmExteriorWall {
+                    polygon_uid: s.polygon_uid.clone(),
+                    zone_idx,
+                    area_m2: s.area_m2,
+                    h_in_w_per_m2_k: h_in,
+                    h_out_w_per_m2_k: h_out,
+                    capacity_j_per_k,
+                    solver,
+                });
+                self.fvm_polygon_uids.insert(s.polygon_uid.clone());
+            }
+        }
+
+        let network = if self.config.thermal.use_fvm_walls && !self.fvm_polygon_uids.is_empty() {
+            ThermalNetwork::build_with_ignored_exterior_polygons(
+                ctx.building,
+                &self.config.thermal,
+                ctx.surface_index,
+                &boundaries,
+                &self.fvm_polygon_uids,
+            )
+        } else {
+            ThermalNetwork::build(
+                ctx.building,
+                &self.config.thermal,
+                ctx.surface_index,
+                &boundaries,
+            )
+        };
+
+        let mut cap_j_per_m3_k = if self.config.steady_state {
             0.0
         } else {
             self.config.thermal.thermal_capacity_j_per_m3_k
         };
+
+        if !self.fvm_walls.is_empty() && self.total_volume_m3 > 0.0 && cap_j_per_m3_k > 0.0 {
+            let fvm_capacity_total_j_per_k: f64 =
+                self.fvm_walls.iter().map(|w| w.capacity_j_per_k).sum();
+            let lumped_total_j_per_k = self.total_volume_m3 * cap_j_per_m3_k;
+            let air_total_j_per_k = 1.2 * 1005.0 * self.total_volume_m3;
+            let remaining = (lumped_total_j_per_k - fvm_capacity_total_j_per_k).max(0.0);
+            let effective_total = air_total_j_per_k + remaining;
+            cap_j_per_m3_k = effective_total / self.total_volume_m3;
+        }
 
         self.model = Some(match self.config.model_kind {
             EnergyModelKind::AirOnly => EnergyModel::Air(MultiZoneAirModel::new(
                 ctx.building,
                 &network,
                 self.config.thermal.infiltration_ach,
-                cap,
+                cap_j_per_m3_k,
                 self.config.thermal.indoor_temperature,
             )),
             EnergyModelKind::EnvelopeRc2R1C => {
@@ -231,7 +349,7 @@ impl SimModule for EnergyModule {
                     &boundaries,
                     &self.config.thermal,
                     self.config.thermal.infiltration_ach,
-                    cap,
+                    cap_j_per_m3_k,
                     default_env_cap,
                     self.config.thermal.indoor_temperature,
                 ))
@@ -246,11 +364,62 @@ impl SimModule for EnergyModule {
             .map(|t| t.0)
             .unwrap_or(self.config.thermal.outdoor_temperature);
 
-        let (air_gains, env_gains) = self.gains_by_zone_split(bus);
+        let (mut air_gains, env_gains) = self.gains_by_zone_split(bus);
 
         let Some(model) = self.model.as_mut() else {
             anyhow::bail!("EnergyModule not initialized");
         };
+
+        if !self.fvm_walls.is_empty() {
+            let absorbed = bus
+                .get::<ShortwaveAbsorbedWPerPolygon>()
+                .map(|a| &a.watts_by_polygon_uid);
+
+            let air_temps: Vec<f64> = match model {
+                EnergyModel::Air(m) => m.temperatures_c().to_vec(),
+                EnergyModel::EnvelopeRc(m) => m.air_temperatures_c().to_vec(),
+            };
+
+            for w in &mut self.fvm_walls {
+                let h_in = w.h_in_w_per_m2_k.max(1e-9);
+                let h_out = w.h_out_w_per_m2_k.max(1e-9);
+                let t_air = air_temps
+                    .get(w.zone_idx)
+                    .copied()
+                    .unwrap_or(self.config.thermal.indoor_temperature);
+                let absorbed_w = absorbed
+                    .and_then(|m| m.get(&w.polygon_uid).copied())
+                    .unwrap_or(0.0);
+                let heat_flux_w_per_m2 = if w.area_m2 > 0.0 {
+                    absorbed_w / w.area_m2
+                } else {
+                    0.0
+                };
+
+                let bc_in = BoundaryCondition::Convective {
+                    h: h_in,
+                    t_fluid: t_air,
+                };
+                let bc_out = if heat_flux_w_per_m2 != 0.0 {
+                    BoundaryCondition::ConvectiveWithFlux {
+                        h: h_out,
+                        t_fluid: outdoor_temp_c,
+                        heat_flux: heat_flux_w_per_m2,
+                    }
+                } else {
+                    BoundaryCondition::Convective {
+                        h: h_out,
+                        t_fluid: outdoor_temp_c,
+                    }
+                };
+
+                w.solver.step(self.config.dt_s, &bc_out, &bc_in, &[]);
+                let q_in_w = w.solver.interior_heat_flux(&bc_in) * w.area_m2;
+                if let Some(g) = air_gains.get_mut(w.zone_idx) {
+                    *g += q_in_w;
+                }
+            }
+        }
 
         let result = match model {
             EnergyModel::Air(m) => {
@@ -273,6 +442,17 @@ impl SimModule for EnergyModule {
         self.step_index += 1;
         Ok(())
     }
+}
+
+fn looks_like_glazing(path: &str, thermal: &ThermalConfig) -> bool {
+    if let Some(lib) = thermal.material_library.as_ref()
+        && let Some(mat) = lib.lookup(path)
+        && mat.is_glazing
+    {
+        return true;
+    }
+    let p = path.to_ascii_lowercase();
+    p.contains("window") || p.contains("glazing") || p.contains("glass")
 }
 
 #[cfg(test)]

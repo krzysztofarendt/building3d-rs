@@ -14,6 +14,16 @@ pub struct FvmWallSolver {
     wall_area: f64,
 }
 
+impl Clone for FvmWallSolver {
+    fn clone(&self) -> Self {
+        Self {
+            mesh: self.mesh.clone(),
+            temperatures: self.temperatures.clone(),
+            wall_area: self.wall_area,
+        }
+    }
+}
+
 impl FvmWallSolver {
     /// Create a new solver from a mesh and an initial uniform temperature.
     pub fn new(mesh: FvmMesh, initial_temperature: f64) -> Self {
@@ -184,6 +194,26 @@ impl FvmWallSolver {
                     h * (t_centroid - t_fluid)
                 }
             }
+            BoundaryCondition::ConvectiveWithFlux {
+                h,
+                t_fluid,
+                heat_flux,
+            } => {
+                if *h <= 0.0 {
+                    // With no convective path, the only flux term is the imposed flux.
+                    return -*heat_flux;
+                }
+                let q_conv_out = if let Some(fi) = face_idx {
+                    let k_cond = self.mesh.faces[fi].conductance / self.wall_area;
+                    let k_combined = 1.0 / (1.0 / k_cond + 1.0 / h);
+                    k_combined * (t_centroid - t_fluid)
+                } else {
+                    h * (t_centroid - t_fluid)
+                };
+                // `heat_flux` is defined positive into the wall domain, so it is negative
+                // in the "out of wall" sign convention used by this method.
+                q_conv_out - *heat_flux
+            }
             BoundaryCondition::Dirichlet { temperature } => {
                 if let Some(fi) = face_idx {
                     let k_per_area = self.mesh.faces[fi].conductance / self.wall_area;
@@ -203,6 +233,11 @@ impl FvmWallSolver {
     /// Access current cell temperatures.
     pub fn temperatures(&self) -> &[f64] {
         &self.temperatures
+    }
+
+    /// Total thermal capacity of the wall mesh (sum of cell capacities) [J/K].
+    pub fn total_capacity_j_per_k(&self) -> f64 {
+        self.mesh.cells.iter().map(|c| c.capacity()).sum()
     }
 }
 
@@ -245,6 +280,39 @@ fn apply_bc(
             };
             diag[cell_idx] += k_eff;
             rhs[cell_idx] += k_eff * t_fluid;
+        }
+        BoundaryCondition::ConvectiveWithFlux {
+            h,
+            t_fluid,
+            heat_flux,
+        } => {
+            let h_a = h * wall_area;
+            if h_a <= 0.0 {
+                // Pure imposed flux into the domain.
+                rhs[cell_idx] += heat_flux * wall_area;
+                return;
+            }
+            let k_eff = if face_conductance > 0.0 {
+                1.0 / (1.0 / h_a + 1.0 / face_conductance)
+            } else {
+                h_a
+            };
+            diag[cell_idx] += k_eff;
+            rhs[cell_idx] += k_eff * t_fluid;
+            // Split the imposed surface flux between convection to the fluid and conduction into
+            // the wall. For a boundary face with half-cell conductance `K_face`, the fraction that
+            // enters the wall control volume is:
+            //   alpha = K_face / (K_face + h*A)
+            // so that the added RHS term is `alpha * q_solar * A`.
+            //
+            // This prevents incorrectly injecting 100% of absorbed shortwave into the wall when
+            // there is a strong convective loss path to outdoors.
+            let alpha = if face_conductance > 0.0 {
+                face_conductance / (face_conductance + h_a)
+            } else {
+                0.0
+            };
+            rhs[cell_idx] += alpha * heat_flux * wall_area;
         }
     }
 }

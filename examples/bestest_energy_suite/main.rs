@@ -731,6 +731,12 @@ fn write_diagnostics_monthly_csv(path: &Path, cases: &[(CaseSpec, CaseDiagnostic
 }
 
 fn main() -> Result<()> {
+    let use_fvm_walls: bool = std::env::var("BESTEST_USE_FVM_WALLS")
+        .ok()
+        .as_deref()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     let epw_path = std::env::var("BESTEST_600_EPW")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_epw_path());
@@ -739,7 +745,8 @@ fn main() -> Result<()> {
     let weather = WeatherData::from_epw(&epw_content).context("parse EPW")?;
 
     let building = build_case_600_geometry()?;
-    let base_cfg = config_for_case_600(&building);
+    let mut base_cfg = config_for_case_600(&building);
+    base_cfg.use_fvm_walls = use_fvm_walls;
     let solar_cfg = solar_config_for_case_600();
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
 
@@ -818,6 +825,7 @@ fn main() -> Result<()> {
         sum(&REF_900_MONTHLY_HEATING_KWH),
         sum(&REF_900_MONTHLY_COOLING_KWH),
     );
+    println!("FVM walls: {}", if use_fvm_walls { "ON" } else { "off" });
     println!("High-mass capacity scale (900): {cap_scale_900}");
     println!("High-mass solar→mass fraction (900): {solar_to_mass_900}");
     println!("High-mass interior h (900): {interior_h_900} W/(m²·K)");

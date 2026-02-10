@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use crate::Building;
 
+use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh};
 use crate::sim::index::SurfaceIndex;
 
 use super::boundary::ThermalBoundaries;
@@ -90,6 +93,195 @@ fn opaque_absorptance_for_path(
     (a / 3.0).clamp(0.0, 1.0)
 }
 
+struct FvmExteriorWall {
+    zone_uid: UID,
+    path: String,
+    area_m2: f64,
+    normal: crate::Vector,
+    h_in_w_per_m2_k: f64,
+    h_out_w_per_m2_k: f64,
+    solver: FvmWallSolver,
+}
+
+fn is_ground_coupled_exterior_surface(
+    config: &ThermalConfig,
+    path: &str,
+    normal: &crate::Vector,
+) -> bool {
+    if config.ground_temperature_c.is_none() {
+        return false;
+    }
+    if !config
+        .ground_surface_patterns
+        .iter()
+        .any(|p| path.contains(p.as_str()))
+    {
+        return false;
+    }
+    // Only treat downward-facing surfaces as ground-coupled.
+    normal.dz <= -0.5
+}
+
+fn collect_fvm_exterior_walls(
+    building: &Building,
+    config: &ThermalConfig,
+    index: &SurfaceIndex,
+    boundaries: &ThermalBoundaries,
+    solar_config: Option<&SolarGainConfig>,
+) -> (Vec<FvmExteriorWall>, HashSet<UID>) {
+    if !config.use_fvm_walls {
+        return (vec![], HashSet::new());
+    }
+
+    let mut walls = Vec::new();
+    let mut skip: HashSet<UID> = HashSet::new();
+
+    for s in &index.surfaces {
+        if !boundaries.is_exterior(&s.polygon_uid) {
+            continue;
+        }
+        if s.area_m2 <= 0.0 {
+            continue;
+        }
+        if looks_like_glazing(&s.path, config, solar_config) {
+            continue;
+        }
+        if config.has_u_value_override_for_surface(&s.polygon_uid, &s.path) {
+            continue;
+        }
+
+        let Some(construction) = config.resolve_construction(&s.path) else {
+            continue;
+        };
+
+        let Some(poly) = building.get_polygon(&s.path) else {
+            continue;
+        };
+
+        if is_ground_coupled_exterior_surface(config, &s.path, &poly.vn) {
+            continue;
+        }
+
+        // Match steady-state U-values derived from ISO 6946 surface resistances:
+        // use film coefficients that reproduce those resistances exactly.
+        let h_in = if construction.r_si > 0.0 {
+            1.0 / construction.r_si
+        } else {
+            1.0 / 0.13
+        }
+        .max(1e-9);
+        let h_out = if construction.r_se > 0.0 {
+            1.0 / construction.r_se
+        } else {
+            1.0 / 0.04
+        }
+        .max(1e-9);
+
+        let mesh = build_1d_mesh(construction, s.area_m2);
+        let solver = FvmWallSolver::new(mesh, config.indoor_temperature);
+
+        walls.push(FvmExteriorWall {
+            zone_uid: s.zone_uid.clone(),
+            path: s.path.clone(),
+            area_m2: s.area_m2,
+            normal: poly.vn,
+            h_in_w_per_m2_k: h_in,
+            h_out_w_per_m2_k: h_out,
+            solver,
+        });
+        skip.insert(s.polygon_uid.clone());
+    }
+
+    (walls, skip)
+}
+
+fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64>(
+    walls: &mut [FvmExteriorWall],
+    config: &ThermalConfig,
+    solar_config: Option<&SolarGainConfig>,
+    params: Option<&SolarHourParams>,
+    outdoor_temp_c: f64,
+    zone_air_temp_for: F,
+    dt_s: f64,
+    gains_out: &mut std::collections::HashMap<UID, f64>,
+) {
+    gains_out.clear();
+    if walls.is_empty() {
+        return;
+    }
+
+    let mut sun_above = false;
+    let mut sun_dir = crate::Vector::new(0.0, 0.0, 1.0);
+    if let Some(p) = params {
+        let solar_pos = SolarPosition::calculate_from_local_time(
+            p.latitude,
+            p.longitude,
+            p.timezone,
+            p.day_of_year,
+            p.local_time_hours,
+        );
+        sun_above = solar_pos.is_above_horizon();
+        sun_dir = solar_pos.to_direction();
+    }
+
+    for w in walls {
+        let t_air = zone_air_temp_for(&w.zone_uid);
+        let h_in = w.h_in_w_per_m2_k.max(1e-9);
+
+        let h_out = w.h_out_w_per_m2_k.max(1e-9);
+        let mut heat_flux_sw_w_per_m2 = 0.0;
+
+        if let (Some(sc), Some(p)) = (solar_config, params) {
+            if sc.include_exterior_opaque_absorption {
+                let normal = w.normal;
+                let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
+                let mut incident = p.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+                if sun_above && p.direct_normal_irradiance > 0.0 {
+                    let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                    incident += p.direct_normal_irradiance.max(0.0) * cos_incidence;
+                }
+
+                if incident > 0.0 {
+                    let a = opaque_absorptance_for_path(
+                        &w.path,
+                        config.material_library.as_ref(),
+                        sc.default_opaque_absorptance,
+                    );
+                    if a > 0.0 {
+                        heat_flux_sw_w_per_m2 = incident * a;
+                    }
+                }
+            }
+        }
+
+        let bc_interior = BoundaryCondition::Convective {
+            h: h_in,
+            t_fluid: t_air,
+        };
+
+        let bc_exterior = if heat_flux_sw_w_per_m2 != 0.0 {
+            BoundaryCondition::ConvectiveWithFlux {
+                h: h_out,
+                t_fluid: outdoor_temp_c,
+                heat_flux: heat_flux_sw_w_per_m2,
+            }
+        } else {
+            BoundaryCondition::Convective {
+                h: h_out,
+                t_fluid: outdoor_temp_c,
+            }
+        };
+
+        w.solver.step(dt_s, &bc_exterior, &bc_interior, &[]);
+
+        let q_in_w_per_m2 = w.solver.interior_heat_flux(&bc_interior);
+        if q_in_w_per_m2 != 0.0 {
+            let q_in_w = q_in_w_per_m2 * w.area_m2;
+            *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) += q_in_w;
+        }
+    }
+}
+
 fn compute_exterior_opaque_sol_air_gain_total_w(
     building: &Building,
     base_config: &ThermalConfig,
@@ -97,6 +289,7 @@ fn compute_exterior_opaque_sol_air_gain_total_w(
     boundaries: &ThermalBoundaries,
     params: &SolarHourParams,
     solar_config: &SolarGainConfig,
+    skip_polygon_uids: Option<&HashSet<UID>>,
 ) -> f64 {
     const SIGMA: f64 = 5.670_374_419e-8; // Stefan–Boltzmann (W/m²/K⁴)
 
@@ -121,6 +314,11 @@ fn compute_exterior_opaque_sol_air_gain_total_w(
 
     let mut total = 0.0;
     for surface in &index.surfaces {
+        if let Some(skip) = skip_polygon_uids
+            && skip.contains(&surface.polygon_uid)
+        {
+            continue;
+        }
         if !boundaries.is_exterior(&surface.polygon_uid) {
             continue;
         }
@@ -215,6 +413,7 @@ fn compute_exterior_opaque_sol_air_gains_by_zone_w(
     boundaries: &ThermalBoundaries,
     params: &SolarHourParams,
     solar_config: &SolarGainConfig,
+    skip_polygon_uids: Option<&HashSet<UID>>,
 ) -> std::collections::HashMap<UID, f64> {
     const SIGMA: f64 = 5.670_374_419e-8;
 
@@ -239,6 +438,11 @@ fn compute_exterior_opaque_sol_air_gains_by_zone_w(
 
     let mut gains: std::collections::HashMap<UID, f64> = std::collections::HashMap::new();
     for surface in &index.surfaces {
+        if let Some(skip) = skip_polygon_uids
+            && skip.contains(&surface.polygon_uid)
+        {
+            continue;
+        }
         if !boundaries.is_exterior(&surface.polygon_uid) {
             continue;
         }
@@ -433,6 +637,7 @@ pub fn run_annual_simulation(
                         &boundaries,
                         &params,
                         sc,
+                        None,
                     );
                 }
                 solar
@@ -530,6 +735,15 @@ pub fn run_transient_simulation_with_options(
 
     let index = SurfaceIndex::new(building);
     let boundaries = ThermalBoundaries::classify(building, &index);
+    let (mut fvm_walls, fvm_skip_polygons) =
+        collect_fvm_exterior_walls(building, base_config, &index, &boundaries, solar_config);
+    let mut fvm_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
+        std::collections::HashMap::new();
+    let has_fvm_walls = !fvm_walls.is_empty();
+    let fvm_capacity_total_j_per_k: f64 = fvm_walls
+        .iter()
+        .map(|w| w.solver.total_capacity_j_per_k())
+        .sum();
 
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
@@ -545,6 +759,9 @@ pub fn run_transient_simulation_with_options(
     let mut ua_ground = 0.0;
     for s in &index.surfaces {
         if !boundaries.is_exterior(&s.polygon_uid) {
+            continue;
+        }
+        if fvm_skip_polygons.contains(&s.polygon_uid) {
             continue;
         }
         let u = base_config.resolve_u_value_for_surface(&s.polygon_uid, &s.path);
@@ -574,11 +791,23 @@ pub fn run_transient_simulation_with_options(
     // Infiltration conductance: rho * cp * V * ACH / 3600.
     let infiltration_cond = 1.2 * 1005.0 * volume * base_config.infiltration_ach / 3600.0;
 
-    // Estimate thermal capacity from building volume.
-    // The factor 50 kJ/(m^3*K) is a tuning parameter for medium-weight construction.
-    // Typical range: ~30 kJ/(m^3*K) (lightweight) to ~80 kJ/(m^3*K) (heavyweight).
-    // For more accurate results, derive from actual construction layer properties.
-    let thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
+    // Lumped thermal capacity from building volume.
+    //
+    // Historically this represented "all mass" in a single lump, and defaults to a
+    // tuning value (e.g. 50 kJ/(m^3*K)).
+    //
+    // When per-surface FVM walls are enabled, the envelope mass is already represented
+    // explicitly in those wall meshes. To avoid double-counting, subtract the FVM wall
+    // capacity from the lumped capacity, leaving:
+    // - mandatory zone air capacity (rho*cp*V),
+    // - plus any *remaining* non-FVM capacity (interior mass/furnishings), if the user
+    //   configured it.
+    let air_capacity_min = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
+    let mut thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
+    if has_fvm_walls {
+        let extra = (thermal_capacity - fvm_capacity_total_j_per_k).max(0.0);
+        thermal_capacity = air_capacity_min + extra;
+    }
 
     let k_env = ua_total + infiltration_cond;
     let dt_s = 3600.0;
@@ -587,10 +816,16 @@ pub fn run_transient_simulation_with_options(
         && base_config.interior_heat_transfer_coeff_w_per_m2_k > 0.0
         && thermal_capacity > 0.0
         && k_env.is_finite()
-        && k_env >= 0.0;
+        && k_env >= 0.0
+        && (!has_fvm_walls || (thermal_capacity - air_capacity_min) > 1.0);
+
+    // When FVM exterior walls are enabled, the envelope conduction + mass is already represented
+    // explicitly via per-surface wall solvers. In that case, avoid routing the remaining
+    // building-level envelope UA to the mass node (which would distort the intended coupling).
+    let two_node_envelope_to_mass = base_config.two_node_envelope_to_mass && !has_fvm_walls;
 
     let use_three_node = use_two_node
-        && base_config.two_node_envelope_to_mass
+        && two_node_envelope_to_mass
         && base_config.three_node_envelope_mass_fraction > 0.0;
 
     let opaque_area_m2 = if use_two_node {
@@ -713,7 +948,7 @@ pub fn run_transient_simulation_with_options(
                     )),
                 )
             }
-        } else if base_config.two_node_envelope_to_mass {
+        } else if two_node_envelope_to_mass {
             (
                 None,
                 Some(TwoNodeVariant::EnvelopeToMass(
@@ -766,6 +1001,7 @@ pub fn run_transient_simulation_with_options(
                              record: &super::weather::HourlyRecord,
                              report: bool| {
         let gains = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
+        let mut solar_params: Option<SolarHourParams> = None;
         let (solar_transmitted, solar_opaque_sol_air) = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
@@ -781,6 +1017,7 @@ pub fn run_transient_simulation_with_options(
                     longitude: weather.longitude,
                     timezone: weather.timezone,
                 };
+                solar_params = Some(params);
                 let transmitted = compute_solar_gains_with_materials(
                     building,
                     &params,
@@ -797,6 +1034,7 @@ pub fn run_transient_simulation_with_options(
                         &boundaries,
                         &params,
                         sc,
+                        Some(&fvm_skip_polygons),
                     )
                 } else {
                     0.0
@@ -811,6 +1049,31 @@ pub fn run_transient_simulation_with_options(
         } else {
             0.0
         };
+
+        let t_air_for_walls = if let Some(m) = model_2r2c.as_ref() {
+            match m {
+                TwoNodeVariant::AirToOutdoor(model) => model.air_temperature_c,
+                TwoNodeVariant::EnvelopeToMass(model) => model.air_temperature_c,
+                TwoNodeVariant::ThreeNodeEnvelope(model) => model.air_temperature_c,
+            }
+        } else {
+            model_1r1c
+                .as_ref()
+                .map(|m| m.zone_temperature)
+                .unwrap_or(base_config.indoor_temperature)
+        };
+
+        step_fvm_exterior_walls_fill_gains_by_zone_uid(
+            &mut fvm_walls,
+            base_config,
+            solar_config,
+            solar_params.as_ref(),
+            record.dry_bulb_temperature,
+            |_| t_air_for_walls,
+            dt_s,
+            &mut fvm_gains_by_zone_uid,
+        );
+        let q_fvm_walls_to_zone_w: f64 = fvm_gains_by_zone_uid.values().sum();
 
         let (heating_power, cooling_power) = if let Some(model) = model_2r2c.as_mut() {
             let f_internal_mass = base_config.internal_gains_to_mass_fraction.clamp(0.0, 1.0);
@@ -837,8 +1100,11 @@ pub fn run_transient_simulation_with_options(
             match model {
                 TwoNodeVariant::AirToOutdoor(model) => {
                     let gains_mass = gains_mass_internal + gains_mass_solar;
-                    let gains_air =
-                        gains_air_internal + gains_air_solar + solar_opaque_sol_air + q_ground;
+                    let gains_air = gains_air_internal
+                        + gains_air_solar
+                        + solar_opaque_sol_air
+                        + q_ground
+                        + q_fvm_walls_to_zone_w;
 
                     let mut free = model.clone();
                     free.step(
@@ -895,7 +1161,7 @@ pub fn run_transient_simulation_with_options(
                 TwoNodeVariant::EnvelopeToMass(model) => {
                     let gains_mass =
                         gains_mass_internal + gains_mass_solar + solar_opaque_sol_air + q_ground;
-                    let gains_air = gains_air_internal + gains_air_solar;
+                    let gains_air = gains_air_internal + gains_air_solar + q_fvm_walls_to_zone_w;
 
                     let mut free = model.clone();
                     free.step(
@@ -956,7 +1222,7 @@ pub fn run_transient_simulation_with_options(
                     // - transmitted solar + (optionally) internal gains heat interior surfaces
                     // - exterior absorbed solar + ground correction heat the envelope node and reach the
                     //   room with lag through the surface↔envelope conductance.
-                    let gains_air = gains_air_internal + gains_air_solar;
+                    let gains_air = gains_air_internal + gains_air_solar + q_fvm_walls_to_zone_w;
                     let gains_surface = gains_mass_internal + gains_mass_solar;
                     let gains_envelope = solar_opaque_sol_air + q_ground;
 
@@ -1027,7 +1293,7 @@ pub fn run_transient_simulation_with_options(
             }
         } else {
             let model = model_1r1c.as_mut().unwrap();
-            let total_gains = gains + solar_total + q_ground;
+            let total_gains = gains + solar_total + q_ground + q_fvm_walls_to_zone_w;
 
             let mut free = model.clone();
             free.step(record.dry_bulb_temperature, total_gains, 0.0, dt_s);
@@ -1108,7 +1374,22 @@ pub fn run_multizone_transient_simulation(
 ) -> anyhow::Result<MultiZoneAnnualResult> {
     let index = SurfaceIndex::new(building);
     let boundaries = ThermalBoundaries::classify(building, &index);
-    let network = ThermalNetwork::build(building, base_config, &index, &boundaries);
+    let (mut fvm_walls, fvm_skip_polygons) =
+        collect_fvm_exterior_walls(building, base_config, &index, &boundaries, solar_config);
+    let mut fvm_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
+        std::collections::HashMap::new();
+
+    let network = if base_config.use_fvm_walls && !fvm_skip_polygons.is_empty() {
+        ThermalNetwork::build_with_ignored_exterior_polygons(
+            building,
+            base_config,
+            &index,
+            &boundaries,
+            &fvm_skip_polygons,
+        )
+    } else {
+        ThermalNetwork::build(building, base_config, &index, &boundaries)
+    };
 
     let mut model = MultiZoneAirModel::new(
         building,
@@ -1117,6 +1398,12 @@ pub fn run_multizone_transient_simulation(
         base_config.thermal_capacity_j_per_m3_k,
         base_config.indoor_temperature,
     );
+    let zone_uid_to_idx: std::collections::HashMap<UID, usize> = model
+        .zone_uids()
+        .iter()
+        .enumerate()
+        .map(|(i, uid)| (uid.clone(), i))
+        .collect();
 
     let zones = building.zones();
     let zone_volumes_m3: Vec<f64> = zones.iter().map(|z| z.volume()).collect();
@@ -1141,6 +1428,7 @@ pub fn run_multizone_transient_simulation(
 
     for (hour_idx, record) in weather.records.iter().enumerate() {
         let gains_internal = gains_profile.map(|p| p.gains_at(hour_idx)).unwrap_or(0.0);
+        let mut solar_params: Option<SolarHourParams> = None;
         let solar_by_zone = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
@@ -1156,6 +1444,7 @@ pub fn run_multizone_transient_simulation(
                     longitude: weather.longitude,
                     timezone: weather.timezone,
                 };
+                solar_params = Some(params);
                 let mut solar = compute_solar_gains_per_zone_with_materials(
                     building,
                     &params,
@@ -1170,6 +1459,7 @@ pub fn run_multizone_transient_simulation(
                         &boundaries,
                         &params,
                         sc,
+                        Some(&fvm_skip_polygons),
                     );
                     for (z, q) in opaque {
                         *solar.entry(z).or_insert(0.0) += q;
@@ -1188,6 +1478,31 @@ pub fn run_multizone_transient_simulation(
                     .cloned()
                     .unwrap_or(0.0);
                 gains_by_zone[i] = internal_i + solar_i;
+            }
+        }
+
+        if !fvm_walls.is_empty() {
+            let temps = model.temperatures_c().to_vec();
+            step_fvm_exterior_walls_fill_gains_by_zone_uid(
+                &mut fvm_walls,
+                base_config,
+                solar_config,
+                solar_params.as_ref(),
+                record.dry_bulb_temperature,
+                |zone_uid| {
+                    zone_uid_to_idx
+                        .get(zone_uid)
+                        .and_then(|&i| temps.get(i).copied())
+                        .unwrap_or(base_config.indoor_temperature)
+                },
+                3600.0,
+                &mut fvm_gains_by_zone_uid,
+            );
+
+            for (zone_uid, q_wall_w) in &fvm_gains_by_zone_uid {
+                if let Some(&i) = zone_uid_to_idx.get(zone_uid) {
+                    gains_by_zone[i] += *q_wall_w;
+                }
             }
         }
 

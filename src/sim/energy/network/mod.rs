@@ -13,7 +13,7 @@ mod multizone;
 mod multizone_envelope;
 mod solve;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::geom::polygon::relations::polygon_overlap_area;
 use crate::sim::energy::boundary::ThermalBoundaries;
@@ -50,11 +50,42 @@ impl ThermalNetwork {
         index: &SurfaceIndex,
         boundaries: &ThermalBoundaries,
     ) -> Self {
+        Self::build_internal(building, config, index, boundaries, None)
+    }
+
+    pub fn build_with_ignored_exterior_polygons(
+        building: &Building,
+        config: &ThermalConfig,
+        index: &SurfaceIndex,
+        boundaries: &ThermalBoundaries,
+        ignored_exterior_polygon_uids: &HashSet<UID>,
+    ) -> Self {
+        Self::build_internal(
+            building,
+            config,
+            index,
+            boundaries,
+            Some(ignored_exterior_polygon_uids),
+        )
+    }
+
+    fn build_internal(
+        building: &Building,
+        config: &ThermalConfig,
+        index: &SurfaceIndex,
+        boundaries: &ThermalBoundaries,
+        ignored_exterior_polygon_uids: Option<&HashSet<UID>>,
+    ) -> Self {
         let mut exterior_conductance_w_per_k: HashMap<UID, f64> = HashMap::new();
 
         // Exterior conductance: sum(U*A) over exterior surfaces.
         for surface in &index.surfaces {
             if !boundaries.is_exterior(&surface.polygon_uid) {
+                continue;
+            }
+            if let Some(ignored) = ignored_exterior_polygon_uids
+                && ignored.contains(&surface.polygon_uid)
+            {
                 continue;
             }
             let u = config.resolve_u_value_for_surface(&surface.polygon_uid, &surface.path);
