@@ -26,6 +26,7 @@ cargo run --example sim_acoustics
 cargo run --example sim_lighting
 cargo run --example sim_lighting_heatmap
 cargo run --example sim_energy
+cargo run --example sim_fvm_wall
 cargo run --example bestest_600_energy
 cargo run --example bestest_energy_suite
 cargo run --example bras_cr2
