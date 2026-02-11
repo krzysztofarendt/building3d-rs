@@ -1,5 +1,6 @@
 //! Mesh representation and quality analysis.
 
+mod delaunay;
 pub mod quality;
 pub mod tetrahedralize;
 

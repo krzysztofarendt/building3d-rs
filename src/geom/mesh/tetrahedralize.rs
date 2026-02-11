@@ -5,6 +5,7 @@
 
 use crate::Point;
 use crate::geom::mesh::Mesh;
+use crate::geom::mesh::delaunay;
 use crate::geom::tetrahedron::{tetrahedron_centroid, tetrahedron_volume};
 use crate::geom::triangles::TriangleIndex;
 
@@ -243,6 +244,42 @@ pub fn tetrahedralize_with_points(
     Some(TetrahedralMesh::new(new_vertices, tetrahedra))
 }
 
+/// Delaunay tetrahedralization via Bowyer-Watson.
+///
+/// Works for both convex and concave meshes. For concave meshes, tetrahedra
+/// outside the surface are automatically culled using ray-casting.
+///
+/// Uses only surface vertices (no interior point generation).
+///
+/// # Arguments
+/// * `mesh` - The triangulated surface mesh to tetrahedralize
+///
+/// # Returns
+/// A tetrahedral mesh, or `None` if the mesh has fewer than 4 non-coplanar vertices.
+pub fn tetrahedralize_delaunay(mesh: &Mesh) -> Option<TetrahedralMesh> {
+    let deduped = mesh.clone().deduplicate_vertices();
+    let vertices = deduped.vertices();
+    let faces = deduped.faces()?;
+
+    if vertices.len() < 4 || faces.is_empty() {
+        return None;
+    }
+
+    let tets = delaunay::bowyer_watson(vertices)?;
+    let culled = delaunay::cull_exterior_tets(vertices, tets, faces);
+
+    if culled.is_empty() {
+        return None;
+    }
+
+    let tetrahedra = culled
+        .into_iter()
+        .map(|t| TetrahedronIndex(t[0], t[1], t[2], t[3]))
+        .collect();
+
+    Some(TetrahedralMesh::new(vertices.to_vec(), tetrahedra))
+}
+
 /// Calculates the centroid of mesh vertices.
 fn calculate_mesh_centroid(vertices: &[Point]) -> Point {
     if vertices.is_empty() {
@@ -422,5 +459,67 @@ mod tests {
         assert_eq!(idx.1, 1);
         assert_eq!(idx.2, 2);
         assert_eq!(idx.3, 3);
+    }
+
+    #[test]
+    fn test_delaunay_box_volume() {
+        let solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box").unwrap();
+        let mesh = solid.copy_mesh();
+        let tet_mesh = tetrahedralize_delaunay(&mesh).unwrap();
+
+        let volume = tet_mesh.volume();
+        assert!(
+            (volume - 8.0).abs() < 0.01,
+            "Delaunay box volume should be ~8.0, got {}",
+            volume
+        );
+    }
+
+    #[test]
+    fn test_delaunay_concave_l_shape() {
+        use crate::FloorPlan;
+
+        // L-shaped floor plan:
+        //  +--+
+        //  |  |
+        //  |  +--+
+        //  |     |
+        //  +-----+
+        let fp = FloorPlan {
+            plan: vec![
+                (0.0, 0.0),
+                (3.0, 0.0),
+                (3.0, 1.0),
+                (1.0, 1.0),
+                (1.0, 2.0),
+                (0.0, 2.0),
+            ],
+            height: 1.0,
+            name: "l_shape".to_string(),
+            wall_names: None,
+            floor_name: None,
+            ceiling_name: None,
+        };
+        let solid = Solid::from_floor_plan(fp).unwrap();
+        let mesh = solid.copy_mesh();
+
+        let tet_mesh = tetrahedralize_delaunay(&mesh).unwrap();
+        let volume = tet_mesh.volume();
+
+        // L-shape area = 3*1 + 1*1 = 4, height = 1, expected volume = 4.0
+        let expected = 4.0;
+        assert!(
+            (volume - expected).abs() < 0.1,
+            "L-shape volume should be ~{}, got {}",
+            expected,
+            volume
+        );
+
+        // Volume must not exceed the convex hull (3*2*1 = 6.0)
+        assert!(
+            volume < 6.0,
+            "L-shape volume {} exceeds convex hull volume 6.0",
+            volume
+        );
     }
 }
