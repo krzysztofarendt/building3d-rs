@@ -18,9 +18,11 @@
 pub mod boundary;
 pub mod mesh;
 pub mod mesh_1d;
+pub mod mesh_3d;
 pub mod solver;
 
 pub use boundary::BoundaryCondition;
 pub use mesh::{FvmCell, FvmFace, FvmMesh};
 pub use mesh_1d::build_1d_mesh;
+pub use mesh_3d::{CellThermalProperties, build_3d_mesh, build_3d_mesh_uniform};
 pub use solver::FvmWallSolver;
