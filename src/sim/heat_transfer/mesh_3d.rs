@@ -154,7 +154,12 @@ pub fn build_3d_mesh(
         }
     }
 
-    for entry in pending.values() {
+    let mut boundary_keys: Vec<[usize; 3]> = pending.keys().copied().collect();
+    boundary_keys.sort_unstable();
+    for key in boundary_keys {
+        let entry = pending
+            .get(&key)
+            .expect("boundary face key disappeared unexpectedly");
         let k = cells[entry.cell_idx].conductivity;
         faces.push(FvmFace {
             cell_left: entry.cell_idx,
