@@ -344,17 +344,16 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
         const SIGMA: f64 = 5.670_374_419e-8; // Stefan–Boltzmann (W/m²/K⁴)
 
         let h_out = if let (Some(sc), Some(p)) = (solar_config, params) {
-            if sc.use_wind_speed_for_h_out {
+            let mut h = if sc.use_wind_speed_for_h_out {
                 let v = p.wind_speed.max(0.0);
-                let mut h =
-                    sc.h_out_base_w_per_m2_k + sc.h_out_wind_coeff_w_per_m2_k_per_m_s * v;
-                if sc.h_out_tilt_scale != 0.0 {
-                    h *= 1.0 + sc.h_out_tilt_scale * w.normal.dz.abs();
-                }
-                h.max(1e-9)
+                sc.h_out_base_w_per_m2_k + sc.h_out_wind_coeff_w_per_m2_k_per_m_s * v
             } else {
-                w.h_out_w_per_m2_k.max(1e-9)
+                w.h_out_w_per_m2_k
+            };
+            if sc.h_out_tilt_scale != 0.0 {
+                h *= 1.0 + sc.h_out_tilt_scale * w.normal.dz.abs();
             }
+            h.max(1e-9)
         } else {
             w.h_out_w_per_m2_k.max(1e-9)
         };
@@ -3102,6 +3101,98 @@ mod tests {
         let result =
             run_transient_simulation(&building, &config, &weather, &hvac, None, Some(&solar));
         assert_eq!(result.hourly_heating.len(), 2);
+    }
+
+    #[test]
+    fn test_fvm_h_out_tilt_scale_applies_without_wind_model() {
+        use crate::sim::energy::construction::WallConstruction;
+        use crate::sim::materials::Layer;
+
+        let construction = WallConstruction::single_layer(
+            "test",
+            Layer {
+                name: "layer".to_string(),
+                thickness: 0.2,
+                conductivity: 1.0,
+                density: 2000.0,
+                specific_heat: 900.0,
+            },
+        );
+        let mesh = build_1d_mesh(&construction, 10.0);
+        let wall = FvmExteriorWall {
+            zone_uid: UID::from("zone"),
+            path: "zone/solid/roof/poly".to_string(),
+            area_m2: 10.0,
+            normal: crate::Vector::new(0.0, 0.0, 1.0),
+            is_ground_coupled: false,
+            h_in_w_per_m2_k: 8.0,
+            h_out_w_per_m2_k: 8.0,
+            solver: FvmWallSolver::new(mesh, 20.0),
+        };
+
+        let mut walls_no_tilt = vec![wall.clone()];
+        let mut walls_with_tilt = vec![wall];
+
+        let config = ThermalConfig::new();
+        let params = SolarHourParams {
+            outdoor_air_temperature_c: 0.0,
+            global_horizontal_irradiance: 0.0,
+            direct_normal_irradiance: 0.0,
+            diffuse_horizontal_irradiance: 0.0,
+            horizontal_infrared_radiation: 0.0,
+            wind_speed: 0.0,
+            day_of_year: 172,
+            local_time_hours: 12.0,
+            latitude: 0.0,
+            longitude: 0.0,
+            timezone: 0.0,
+        };
+
+        let mut solar_no_tilt = SolarGainConfig::new();
+        solar_no_tilt.use_wind_speed_for_h_out = false;
+        solar_no_tilt.h_out_tilt_scale = 0.0;
+        let mut solar_with_tilt = solar_no_tilt.clone();
+        solar_with_tilt.h_out_tilt_scale = 1.0;
+
+        let mut gains_no_tilt = std::collections::HashMap::new();
+        let mut gains_with_tilt = std::collections::HashMap::new();
+
+        step_fvm_exterior_walls_fill_gains_by_zone_uid(
+            &mut walls_no_tilt,
+            &config,
+            Some(&solar_no_tilt),
+            Some(&params),
+            None,
+            0.0,
+            |_| 20.0,
+            |_| 20.0,
+            3600.0,
+            &mut gains_no_tilt,
+        );
+        step_fvm_exterior_walls_fill_gains_by_zone_uid(
+            &mut walls_with_tilt,
+            &config,
+            Some(&solar_with_tilt),
+            Some(&params),
+            None,
+            0.0,
+            |_| 20.0,
+            |_| 20.0,
+            3600.0,
+            &mut gains_with_tilt,
+        );
+
+        let q_no_tilt = *gains_no_tilt.get(&UID::from("zone")).unwrap_or(&0.0);
+        let q_with_tilt = *gains_with_tilt.get(&UID::from("zone")).unwrap_or(&0.0);
+
+        assert!(
+            q_no_tilt < 0.0,
+            "Expected heat loss to zone air, got {q_no_tilt}"
+        );
+        assert!(
+            q_with_tilt.abs() > q_no_tilt.abs(),
+            "Tilt scaling should increase |q| with fixed h_out; no_tilt={q_no_tilt}, with_tilt={q_with_tilt}"
+        );
     }
 
     #[test]

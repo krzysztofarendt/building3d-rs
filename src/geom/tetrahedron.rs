@@ -59,19 +59,39 @@ pub fn circumsphere(p0: Point, p1: Point, p2: Point, p3: Point) -> Option<(Point
 
     // Solve via Cramer's rule for the 3x3 system:
     // 2 * [[a·a, a·b, a·c], [a·b, b·b, b·c], [a·c, b·c, c·c]] * [α, β, γ] = [|a|², |b|², |c|²]
-    let det = a_sq * (b_sq * c_sq - bc * bc)
-        - ab * (ab * c_sq - bc * ac)
-        + ac * (ab * bc - b_sq * ac);
+    let det =
+        a_sq * (b_sq * c_sq - bc * bc) - ab * (ab * c_sq - bc * ac) + ac * (ab * bc - b_sq * ac);
 
-    if det.abs() < 1e-10 {
+    // `det` scales with length^6, so use a scale-aware tolerance to avoid
+    // classifying valid small tetrahedra as degenerate.
+    let scale = a_sq
+        .max(b_sq)
+        .max(c_sq)
+        .max(ab.abs())
+        .max(ac.abs())
+        .max(bc.abs());
+    if scale <= f64::EPSILON {
+        return None;
+    }
+    let det_tol = 1e-12 * scale.powi(3);
+    if det.abs() <= det_tol {
         return None;
     }
 
     let inv_det = 0.5 / det;
 
-    let alpha = inv_det * (a_sq * (b_sq * c_sq - bc * bc) + b_sq * (ac * bc - ab * c_sq) + c_sq * (ab * bc - ac * b_sq));
-    let beta  = inv_det * (a_sq * (bc * ac - ab * c_sq) + b_sq * (a_sq * c_sq - ac * ac) + c_sq * (ab * ac - a_sq * bc));
-    let gamma = inv_det * (a_sq * (ab * bc - b_sq * ac) + b_sq * (ab * ac - a_sq * bc) + c_sq * (a_sq * b_sq - ab * ab));
+    let alpha = inv_det
+        * (a_sq * (b_sq * c_sq - bc * bc)
+            + b_sq * (ac * bc - ab * c_sq)
+            + c_sq * (ab * bc - ac * b_sq));
+    let beta = inv_det
+        * (a_sq * (bc * ac - ab * c_sq)
+            + b_sq * (a_sq * c_sq - ac * ac)
+            + c_sq * (ab * ac - a_sq * bc));
+    let gamma = inv_det
+        * (a_sq * (ab * bc - b_sq * ac)
+            + b_sq * (ab * ac - a_sq * bc)
+            + c_sq * (a_sq * b_sq - ab * ab));
 
     let center = Point::new(
         p0.x + alpha * a.dx + beta * b.dx + gamma * c.dx,
@@ -88,13 +108,7 @@ pub fn circumsphere(p0: Point, p1: Point, p2: Point, p3: Point) -> Option<(Point
 }
 
 /// True if `test` lies strictly inside the circumsphere of (p0, p1, p2, p3).
-pub fn is_point_in_circumsphere(
-    p0: Point,
-    p1: Point,
-    p2: Point,
-    p3: Point,
-    test: Point,
-) -> bool {
+pub fn is_point_in_circumsphere(p0: Point, p1: Point, p2: Point, p3: Point, test: Point) -> bool {
     if let Some((center, radius_sq)) = circumsphere(p0, p1, p2, p3) {
         let dx = center.x - test.x;
         let dy = center.y - test.y;
@@ -134,6 +148,21 @@ mod tests {
         let p3 = Point::new(1.0, 1.0, 0.0);
 
         assert!(circumsphere(p0, p1, p2, p3).is_none());
+    }
+
+    #[test]
+    fn test_circumsphere_small_scale_non_degenerate() {
+        let s = 0.01;
+        let p0 = Point::new(0.0, 0.0, 0.0);
+        let p1 = Point::new(s, 0.0, 0.0);
+        let p2 = Point::new(0.0, s, 0.0);
+        let p3 = Point::new(0.0, 0.0, s);
+
+        let (center, r_sq) = circumsphere(p0, p1, p2, p3).expect("small tetra should be valid");
+        assert!((center.x - 0.5 * s).abs() < 1e-12);
+        assert!((center.y - 0.5 * s).abs() < 1e-12);
+        assert!((center.z - 0.5 * s).abs() < 1e-12);
+        assert!((r_sq - 0.75 * s * s).abs() < 1e-12);
     }
 
     #[test]

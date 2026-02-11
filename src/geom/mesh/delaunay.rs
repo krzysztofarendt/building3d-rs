@@ -267,6 +267,19 @@ mod tests {
     }
 
     #[test]
+    fn test_bowyer_watson_small_scale_single_tet() {
+        let s = 0.01;
+        let points = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(s, 0.0, 0.0),
+            Point::new(0.0, s, 0.0),
+            Point::new(0.0, 0.0, s),
+        ];
+        let tets = bowyer_watson(&points).expect("small non-coplanar points should triangulate");
+        assert_eq!(tets.len(), 1);
+    }
+
+    #[test]
     fn test_bowyer_watson_cube() {
         let points = vec![
             Point::new(0.0, 0.0, 0.0),
