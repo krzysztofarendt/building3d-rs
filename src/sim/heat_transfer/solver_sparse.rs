@@ -794,4 +794,339 @@ mod tests {
             "fraction with h=0 should be 1.0"
         );
     }
+
+    #[test]
+    fn test_sparse_neumann_flux_steady_state() {
+        // Two-cell chain: Neumann on left (flux into domain), Dirichlet on right.
+        // At steady state the imposed flux flows through both cells to the fixed boundary.
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let q_in = 100.0; // W/m² into domain at left boundary
+        let t_right = 20.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+        let mut solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let bcs = vec![
+            (0, BoundaryCondition::Neumann { heat_flux: q_in }),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        let sources = vec![0.0, 0.0];
+
+        for _ in 0..20 {
+            solver.step(1e8, &bcs, &sources);
+        }
+
+        // At steady state, the flux q passes through both cells.
+        // T(x) = T_right + q * (L - x) / k, where L = 2*dx, x measured from left.
+        // Cell 0 centroid at x = dx/2:  T0 = 20 + 100 * (0.2 - 0.05) / 1.4
+        // Cell 1 centroid at x = 3*dx/2: T1 = 20 + 100 * (0.2 - 0.15) / 1.4
+        let l_total = 2.0 * dx;
+        let t0_expected = t_right + q_in * (l_total - dx / 2.0) / k;
+        let t1_expected = t_right + q_in * (l_total - 3.0 * dx / 2.0) / k;
+
+        let t = solver.temperatures();
+        assert!(
+            (t[0] - t0_expected).abs() < 0.5,
+            "t0={}, expected {}",
+            t[0],
+            t0_expected
+        );
+        assert!(
+            (t[1] - t1_expected).abs() < 0.5,
+            "t1={}, expected {}",
+            t[1],
+            t1_expected
+        );
+
+        // Verify reported heat flux at left boundary (positive = outward = -q_in)
+        let flux_left = solver.boundary_heat_flux(
+            0,
+            &BoundaryCondition::Neumann { heat_flux: q_in },
+        );
+        assert!(
+            (flux_left + q_in).abs() < 1e-10,
+            "left flux = {flux_left}, expected {}",
+            -q_in
+        );
+    }
+
+    /// ConvectiveWithFlux: surface source splits between convection and conduction.
+    /// At steady state, ConvectiveWithFlux with identical convective parameters should
+    /// produce a warmer wall than plain Convective (no flux), colder than
+    /// ConvectiveWithFluxToDomain (full flux into domain).
+    #[test]
+    fn test_sparse_convective_with_flux_ordering() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let h = 25.0;
+        let t_fluid = 0.0;
+        let t_right = 20.0;
+        let q_solar = 200.0; // W/m² surface source
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+
+        // 1. Plain Convective (no solar)
+        let mut solver_plain = FvmSparseSolver::new(mesh.clone(), 10.0);
+        let bcs_plain = vec![
+            (
+                0,
+                BoundaryCondition::Convective {
+                    h,
+                    t_fluid,
+                },
+            ),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        let sources = vec![0.0, 0.0];
+        for _ in 0..30 {
+            solver_plain.step(1e8, &bcs_plain, &sources);
+        }
+
+        // 2. ConvectiveWithFlux (alpha fraction enters wall)
+        let mut solver_split = FvmSparseSolver::new(mesh.clone(), 10.0);
+        let bcs_split = vec![
+            (
+                0,
+                BoundaryCondition::ConvectiveWithFlux {
+                    h,
+                    t_fluid,
+                    heat_flux: q_solar,
+                },
+            ),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        for _ in 0..30 {
+            solver_split.step(1e8, &bcs_split, &sources);
+        }
+
+        // 3. ConvectiveWithFluxToDomain (100% enters wall)
+        let mut solver_full = FvmSparseSolver::new(mesh, 10.0);
+        let bcs_full = vec![
+            (
+                0,
+                BoundaryCondition::ConvectiveWithFluxToDomain {
+                    h,
+                    t_fluid,
+                    heat_flux: q_solar,
+                },
+            ),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        for _ in 0..30 {
+            solver_full.step(1e8, &bcs_full, &sources);
+        }
+
+        // Ordering: plain < split < full for all cell temperatures
+        let t_plain = solver_plain.temperatures();
+        let t_split = solver_split.temperatures();
+        let t_full = solver_full.temperatures();
+
+        for i in 0..2 {
+            assert!(
+                t_split[i] > t_plain[i],
+                "cell {i}: split={} should be > plain={}",
+                t_split[i],
+                t_plain[i]
+            );
+            assert!(
+                t_full[i] > t_split[i],
+                "cell {i}: full={} should be > split={}",
+                t_full[i],
+                t_split[i]
+            );
+        }
+    }
+
+    /// ConvectiveWithFlux with h=0 should behave identically to pure Neumann.
+    #[test]
+    fn test_sparse_convective_with_flux_zero_h_is_neumann() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let q_flux = 50.0;
+        let t_right = 20.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+
+        // ConvectiveWithFlux, h=0
+        let mut solver_cwf = FvmSparseSolver::new(mesh.clone(), 10.0);
+        let bcs_cwf = vec![
+            (
+                0,
+                BoundaryCondition::ConvectiveWithFlux {
+                    h: 0.0,
+                    t_fluid: 0.0,
+                    heat_flux: q_flux,
+                },
+            ),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        let sources = vec![0.0, 0.0];
+        for _ in 0..20 {
+            solver_cwf.step(1e8, &bcs_cwf, &sources);
+        }
+
+        // Pure Neumann
+        let mut solver_nm = FvmSparseSolver::new(mesh, 10.0);
+        let bcs_nm = vec![
+            (0, BoundaryCondition::Neumann { heat_flux: q_flux }),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        for _ in 0..20 {
+            solver_nm.step(1e8, &bcs_nm, &sources);
+        }
+
+        let t_cwf = solver_cwf.temperatures();
+        let t_nm = solver_nm.temperatures();
+        for i in 0..2 {
+            assert!(
+                (t_cwf[i] - t_nm[i]).abs() < 1e-10,
+                "cell {i}: cwf={} vs neumann={}",
+                t_cwf[i],
+                t_nm[i]
+            );
+        }
+    }
+
+    /// ConvectiveWithFluxToDomain with h=0 should also degenerate to pure Neumann.
+    #[test]
+    fn test_sparse_convective_with_flux_to_domain_zero_h_is_neumann() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let q_flux = 50.0;
+        let t_right = 20.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+
+        // ConvectiveWithFluxToDomain, h=0
+        let mut solver_td = FvmSparseSolver::new(mesh.clone(), 10.0);
+        let bcs_td = vec![
+            (
+                0,
+                BoundaryCondition::ConvectiveWithFluxToDomain {
+                    h: 0.0,
+                    t_fluid: 0.0,
+                    heat_flux: q_flux,
+                },
+            ),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        let sources = vec![0.0, 0.0];
+        for _ in 0..20 {
+            solver_td.step(1e8, &bcs_td, &sources);
+        }
+
+        // Pure Neumann
+        let mut solver_nm = FvmSparseSolver::new(mesh, 10.0);
+        let bcs_nm = vec![
+            (0, BoundaryCondition::Neumann { heat_flux: q_flux }),
+            (
+                2,
+                BoundaryCondition::Dirichlet {
+                    temperature: t_right,
+                },
+            ),
+        ];
+        for _ in 0..20 {
+            solver_nm.step(1e8, &bcs_nm, &sources);
+        }
+
+        let t_td = solver_td.temperatures();
+        let t_nm = solver_nm.temperatures();
+        for i in 0..2 {
+            assert!(
+                (t_td[i] - t_nm[i]).abs() < 1e-10,
+                "cell {i}: to_domain={} vs neumann={}",
+                t_td[i],
+                t_nm[i]
+            );
+        }
+    }
+
+    /// Verify surface temperature reconstruction for ConvectiveWithFlux.
+    #[test]
+    fn test_sparse_surface_temp_convective_with_flux() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let h = 25.0;
+        let t_fluid = 0.0;
+        let q_solar = 200.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+        let mut solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let bc_left = BoundaryCondition::ConvectiveWithFlux {
+            h,
+            t_fluid,
+            heat_flux: q_solar,
+        };
+        let bcs = vec![
+            (0, bc_left),
+            (
+                2,
+                BoundaryCondition::Dirichlet { temperature: 20.0 },
+            ),
+        ];
+        let sources = vec![0.0, 0.0];
+
+        for _ in 0..30 {
+            solver.step(1e8, &bcs, &sources);
+        }
+
+        let t_centroid = solver.temperatures()[0];
+        let t_surf = solver.boundary_surface_temperature(0, &bc_left);
+
+        // Surface temp should be between centroid and fluid, but boosted by the
+        // solar source fraction
+        assert!(
+            t_surf > t_fluid,
+            "surface temp {t_surf} should exceed fluid temp {t_fluid} due to solar"
+        );
+        // Surface temp should be between centroid and fluid (in the general sense
+        // that it lies on the conduction-convection path)
+        assert!(
+            t_surf != t_centroid,
+            "surface temp should differ from centroid due to half-cell resistance"
+        );
+    }
 }
