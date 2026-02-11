@@ -121,7 +121,7 @@ solver is 1D or 3D.
 
 ## Step-by-step implementation
 
-### Step 1: FvmMesh and 1D mesh builder
+### Step 1: FvmMesh and 1D mesh builder ✅
 
 Build a 1D mesh from a `WallConstruction`:
 
@@ -132,21 +132,27 @@ Exterior BC ─┤ cell_0 │ cell_1 │ ... │ cell_N ├─ Interior BC
 
 Each `Layer` is subdivided into one or more cells (at least one per layer;
 thin layers get one cell, thick layers can be split for accuracy). The face
-conductance between cells in different layers uses the **harmonic mean**:
+conductance between cells in different layers uses the **series-resistance
+formula**:
 
 ```
-k_face = 2 * k_L * k_R / (k_L + k_R)
+K = A / (half_dx_L/k_L + half_dx_R/k_R)
 ```
+
+(reduces to harmonic mean when half-distances are equal).
 
 Input: `WallConstruction` (already has `Vec<Layer>` with thickness, k, ρ, c_p)
 and wall polygon area.
 
 Output: `FvmMesh` with cells and faces.
 
-Deliverable: unit test — build a 3-layer wall mesh, verify cell count, face
-count, and total thickness.
+Implemented in `mesh.rs` and `mesh_1d.rs`. Tests:
+- `test_single_layer_mesh`: 0.20m concrete → 4 cells, 5 faces
+- `test_three_layer_mesh`: layer subdivision and total thickness
+- `test_thin_layer_gets_one_cell`: 0.001m layer → 1 cell
+- `test_face_conductance_same_material`: K ≈ 28.0 for uniform material
 
-### Step 2: Implicit FVM solver
+### Step 2: Implicit FVM solver ✅
 
 Assemble and solve the linear system using Backward Euler:
 
@@ -154,75 +160,61 @@ Assemble and solve the linear system using Backward Euler:
 (C/Δt + K) T^{n+1} = (C/Δt) T^n + Q + BC contributions
 ```
 
-where:
-- `C` = diagonal capacity matrix: `C_ii = ρ_i c_p_i V_i`
-- `K` = stiffness matrix from face conductances (symmetric, tridiagonal in 1D)
-- `Q` = source vector
-- BC contributions modify the relevant rows
+In 1D this is a **tridiagonal system** — solved with Thomas algorithm (O(N)).
 
-In 1D this is a **tridiagonal system** — solve with Thomas algorithm (O(N)).
-In 3D it becomes a sparse symmetric positive-definite system — solve with
-conjugate gradient (future).
+Implemented in `solver.rs`. Tests:
+- `test_thomas_algorithm`: 3×3 system
+- `test_steady_state_dirichlet`: linear profile and q = k·ΔT/L
 
-Use the Thomas algorithm for 1D first. When extending to 3D, swap in a sparse
-solver (e.g. `nalgebra` sparse, or a simple CG implementation).
+### Step 3: Boundary condition handling ✅
 
-Deliverable: unit test — single-layer wall, steady-state analytical solution.
-Apply T_ext = 0, T_int = 20 (Dirichlet), verify linear temperature profile
-and correct heat flux (q = k * ΔT / L).
-
-### Step 3: Boundary condition handling
-
-Implement the three BC types:
+Four BC types implemented in `boundary.rs`:
 
 - **Dirichlet**: modify the matrix row for the boundary cell to fix temperature.
 - **Neumann**: add the prescribed flux to the RHS of the boundary cell.
-- **Convective**: add `h * A` to the diagonal and `h * A * T_fluid` to the RHS.
-  This is the most common mode in building simulation.
+- **Convective**: series resistance `1/(h·A) + 1/K_face` for half-cell accuracy.
+- **ConvectiveWithFlux**: convective + imposed surface source (e.g. absorbed
+  solar), with flux split between conduction and convection via
+  `boundary_conduction_fraction()`.
 
-Deliverable: unit test — convective BCs on both sides, verify that steady-state
-matches the analytical solution: `q = (T_out - T_in) / (1/h_out + R_wall + 1/h_in)`.
+Tests:
+- `test_steady_state_convective`: q = ΔT/R_total within 1%
+- `test_convective_multilayer_interface_temps`: surface temps with half-cell offset
+- `test_neumann_flux_reporting_sign`: sign convention verified
 
-### Step 4: Validation against analytical solutions
+### Step 4: Validation against analytical solutions ✅
 
-1. **Steady-state multi-layer wall**: 3 layers with different k, convective BCs.
-   Verify interface temperatures and heat flux against hand calculation.
+1. **Steady-state multi-layer wall** ✅: 3 layers with different k, convective
+   BCs. Test: `test_steady_state_multilayer`.
 
-2. **Transient step response**: semi-infinite solid with sudden surface
-   temperature change. Compare to error-function analytical solution
-   `T(x,t) = T_s * erfc(x / (2√(αt)))` at selected times.
+2. **Transient step response** ✅: semi-infinite solid with sudden surface
+   temperature change. Compared to `T(x,t) = T_s·erfc(x/(2√(αt)))`.
+   Test: `test_transient_step_response`.
 
-3. **Periodic forcing**: sinusoidal outdoor temperature on a concrete wall.
-   Verify amplitude decay and phase lag against analytical solution for
-   periodic conduction through a slab.
+3. **Periodic forcing** ✅: 24h sinusoidal Dirichlet BC on a 1m concrete wall.
+   Verified against `T(x,t) = T_mean + A₀·exp(-x/δ)·sin(ωt - x/δ)` where
+   `δ = √(2α/ω)` is the penetration depth.
+   Test: `test_periodic_forcing` — checks amplitude decay (<5% error),
+   phase lag (<500s absolute), and mean temperature at 5 cell depths.
 
-### Step 5: Integration with zone thermal model
+### Step 5: Integration with zone thermal model ✅
 
-Connect the FVM wall solver to the existing energy simulation:
+Connected FVM wall solver to the energy simulation in both `module.rs`
+(SimModule pipeline) and `simulation.rs` (annual simulation):
 
-1. For each exterior polygon with a `WallConstruction`, instantiate an
-   `FvmWallSolver` (1D mesh from layers, area from polygon).
-2. Each simulation timestep:
-   - Set exterior BC: `Convective { h: h_out, t_fluid: T_outdoor }` (or sol-air)
-   - Set interior BC: `Convective { h: h_in, t_fluid: T_zone_air }`
-   - Call `solver.step(dt, bc_ext, bc_int, &sources)`
-   - Read back `interior_heat_flux()` → contributes to zone energy balance
-   - Read back `interior_surface_temp()` → available for MRT/comfort (future)
-3. The per-surface heat flux replaces the current `U * A * ΔT` steady-state
-   calculation, giving proper thermal lag and surface temperatures.
+1. `ThermalConfig.use_fvm_walls: bool` (default: **true**). Eligible surfaces:
+   exterior, resolved `WallConstruction`, not glazing, not U-value override,
+   not ground-coupled.
+2. Each timestep: convective BCs from zone air / outdoor temps, absorbed solar
+   via `ConvectiveWithFlux`, interior heat flux fed to zone energy balance.
+3. `ThermalNetwork::build_with_ignored_exterior_polygons()` excludes FVM
+   surfaces from steady-state UA to avoid double-counting.
+4. FVM wall capacity deducted from zone lumped capacity.
 
-This step requires a new `ThermalConfig` option to enable FVM walls (e.g.
-`use_fvm_walls: bool`). The existing U-value path remains as fallback for
-surfaces without layer definitions.
+### Step 6: BESTEST validation ✅
 
-### Step 6: BESTEST validation
-
-Run Cases 600 and 900 with FVM walls enabled. Compare:
-- Annual heating/cooling totals (should stay within tolerance)
-- **Monthly shape** (should improve, especially for Case 900 where thermal
-  mass dynamics matter)
-- Interior surface temperatures (new diagnostic output)
-- Peak load timing (should improve with proper thermal lag)
+BESTEST 600 and 900 run with FVM walls enabled by default. The
+`bestest_energy_suite` example supports `BESTEST_USE_FVM_WALLS` env var.
 
 ### Step 7 (future): 3D mesh builder
 
@@ -261,10 +253,12 @@ longer tridiagonal, so swap the Thomas algorithm for a sparse CG solver.
    energy simulation. Crank-Nicolson can be added later as an option for
    second-order accuracy.
 
-4. **Harmonic mean for face conductivity.** At interfaces between layers with
-   different k, the harmonic mean ensures correct steady-state heat flux.
-   This is standard for FVM on heterogeneous media.
+4. **Series-resistance formula for face conductivity.** At interfaces between
+   layers with different k, `K = A / (half_dx_L/k_L + half_dx_R/k_R)` ensures
+   correct steady-state heat flux. Reduces to harmonic mean when cell sizes
+   are equal. This is standard for FVM on heterogeneous media.
 
-5. **The trait boundary (`HeatTransferSolver`) hides the solver.** The zone
-   model calls `step()` and reads `interior_heat_flux()`. It never knows
-   whether the solver is 1D FVM, 3D FVM, or a future FEM implementation.
+5. **Concrete solver type.** `FvmWallSolver` is used directly (no trait
+   abstraction). The zone model calls `step()` and reads
+   `interior_heat_flux()`. A trait can be added later if alternative solver
+   implementations are needed.

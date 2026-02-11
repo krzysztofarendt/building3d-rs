@@ -746,6 +746,125 @@ mod tests {
         assert!((solver.exterior_heat_flux(&bc) + q_in).abs() < 1e-12);
     }
 
+    /// Periodic forcing: sinusoidal outdoor temperature on a thick concrete wall.
+    /// Verify amplitude decay and phase lag against the analytical solution for
+    /// periodic conduction in a semi-infinite solid:
+    ///   T(x,t) = T_mean + A₀ exp(-x/δ) sin(ωt - x/δ)
+    /// where δ = √(2α/ω) is the penetration depth.
+    #[test]
+    fn test_periodic_forcing() {
+        let k = 1.4;
+        let rho = 2300.0;
+        let cp = 880.0;
+        let alpha = k / (rho * cp); // thermal diffusivity [m²/s]
+        let thickness = 1.0; // thick enough for semi-infinite approximation
+        let area = 1.0;
+
+        let t_mean = 10.0;
+        let amp_0 = 10.0; // surface amplitude [°C]
+        let period = 86400.0; // 24 hours [s]
+        let omega = 2.0 * std::f64::consts::PI / period;
+        let delta = (2.0 * alpha / omega).sqrt(); // penetration depth ≈ 0.138 m
+
+        let construction = WallConstruction::new(
+            "thick_concrete",
+            vec![Layer {
+                name: "concrete".into(),
+                thickness,
+                conductivity: k,
+                density: rho,
+                specific_heat: cp,
+            }],
+        );
+        let mesh = build_1d_mesh(&construction, area);
+        let n = mesh.cells.len();
+        let dx = thickness / n as f64;
+        let mut solver = FvmWallSolver::new(mesh, t_mean);
+
+        let dt = 60.0; // 1-minute steps (1440 per period)
+        let steps_per_period = (period / dt) as usize;
+        let n_warmup = 10; // 10 days to reach periodic steady state
+
+        // Warm-up: run n_warmup full periods
+        for p in 0..n_warmup {
+            for s in 0..steps_per_period {
+                let t = (p * steps_per_period + s) as f64 * dt;
+                let t_ext = t_mean + amp_0 * (omega * t).sin();
+                solver.step(
+                    dt,
+                    &BoundaryCondition::Dirichlet { temperature: t_ext },
+                    &BoundaryCondition::Neumann { heat_flux: 0.0 },
+                    &[],
+                );
+            }
+        }
+
+        // Tracking period: record max, min, and time-of-max for each cell
+        let base_time = (n_warmup * steps_per_period) as f64 * dt;
+        let mut cell_max = vec![f64::NEG_INFINITY; n];
+        let mut cell_min = vec![f64::INFINITY; n];
+        let mut cell_max_time = vec![0.0_f64; n];
+
+        for s in 0..steps_per_period {
+            let t = base_time + s as f64 * dt;
+            let t_ext = t_mean + amp_0 * (omega * t).sin();
+            solver.step(
+                dt,
+                &BoundaryCondition::Dirichlet { temperature: t_ext },
+                &BoundaryCondition::Neumann { heat_flux: 0.0 },
+                &[],
+            );
+            let temps = solver.temperatures();
+            for i in 0..n {
+                if temps[i] > cell_max[i] {
+                    cell_max[i] = temps[i];
+                    cell_max_time[i] = t;
+                }
+                if temps[i] < cell_min[i] {
+                    cell_min[i] = temps[i];
+                }
+            }
+        }
+
+        // Surface peak occurs at sin(ωt) = 1, i.e. t = base_time + P/4
+        let surface_peak_time = base_time + period / 4.0;
+
+        // Check cells 0..5 (depths 0.025 m to 0.225 m, x/δ from 0.18 to 1.63)
+        for i in 0..5 {
+            let x = (i as f64 + 0.5) * dx;
+
+            // Amplitude decay: A(x) = A₀ exp(-x/δ)
+            let expected_amp = amp_0 * (-x / delta).exp();
+            let numerical_amp = (cell_max[i] - cell_min[i]) / 2.0;
+            let amp_err = (numerical_amp - expected_amp).abs() / expected_amp;
+            assert!(
+                amp_err < 0.05,
+                "cell {i} (x={x:.3}m): amplitude {numerical_amp:.3} vs expected \
+                 {expected_amp:.3} (err={:.1}%)",
+                amp_err * 100.0,
+            );
+
+            // Phase lag: Δt = x / (δ ω)
+            // The FVM weak Dirichlet BC introduces a roughly constant ~400s phase
+            // offset from the half-cell thermal resistance, so use absolute tolerance.
+            let expected_lag_s = x / (delta * omega);
+            let numerical_lag_s = cell_max_time[i] - surface_peak_time;
+            let lag_err_s = (numerical_lag_s - expected_lag_s).abs();
+            assert!(
+                lag_err_s < 500.0,
+                "cell {i} (x={x:.3}m): lag {numerical_lag_s:.0}s vs expected \
+                 {expected_lag_s:.0}s (err={lag_err_s:.0}s)",
+            );
+
+            // Mean temperature should be close to t_mean
+            let numerical_mean = (cell_max[i] + cell_min[i]) / 2.0;
+            assert!(
+                (numerical_mean - t_mean).abs() < 0.3,
+                "cell {i} (x={x:.3}m): mean {numerical_mean:.2} vs expected {t_mean}",
+            );
+        }
+    }
+
     /// Complementary error function approximation (Abramowitz & Stegun 7.1.26).
     fn erfc(x: f64) -> f64 {
         if x < 0.0 {
