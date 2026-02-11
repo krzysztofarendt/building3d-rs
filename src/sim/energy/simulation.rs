@@ -6,7 +6,7 @@ use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh}
 use crate::sim::index::SurfaceIndex;
 
 use super::boundary::ThermalBoundaries;
-use super::config::ThermalConfig;
+use super::config::{InternalMassBoundary, ThermalConfig};
 use super::hvac::{
     HvacIdealLoads, LumpedThermalModel, ThreeNodeEnvelopeThermalModel, TwoNodeEnvelopeThermalModel,
     TwoNodeThermalModel,
@@ -105,6 +105,15 @@ struct FvmExteriorWall {
     solver: FvmWallSolver,
 }
 
+#[derive(Clone)]
+struct FvmInternalMassSurface {
+    zone_uid: UID,
+    area_m2: f64,
+    boundary: InternalMassBoundary,
+    h_w_per_m2_k: f64,
+    solver: FvmWallSolver,
+}
+
 fn is_ground_coupled_exterior_surface(
     config: &ThermalConfig,
     path: &str,
@@ -165,9 +174,18 @@ fn collect_fvm_exterior_walls(
             continue;
         }
 
-        // Match steady-state U-values derived from ISO 6946 surface resistances:
-        // use film coefficients that reproduce those resistances exactly.
-        let h_in = if construction.r_si > 0.0 {
+        // Interior heat transfer coefficient.
+        //
+        // When using the 1D FVM wall solver, we currently couple the wall to the zone
+        // **air** node only (no explicit longwave enclosure radiation model yet).
+        //
+        // Using the ISO 6946 combined surface resistance (R_si) as a pure film coefficient
+        // tends to over-couple heavyweight walls to air and under-predict BESTEST 900 thermal
+        // mass effects. As a pragmatic approximation, prefer the user-configured interior
+        // coefficient when it is positive.
+        let h_in = if config.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+            config.interior_heat_transfer_coeff_w_per_m2_k
+        } else if construction.r_si > 0.0 {
             1.0 / construction.r_si
         } else {
             1.0 / 0.13
@@ -197,6 +215,44 @@ fn collect_fvm_exterior_walls(
     }
 
     (walls, skip)
+}
+
+fn collect_internal_mass_surfaces(
+    building: &Building,
+    config: &ThermalConfig,
+) -> Vec<FvmInternalMassSurface> {
+    if config.internal_mass_surfaces.is_empty() {
+        return vec![];
+    }
+    let h = if config.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+        config.interior_heat_transfer_coeff_w_per_m2_k
+    } else {
+        3.0
+    }
+    .max(1e-9);
+
+    let mut out = Vec::new();
+    for zone in building.zones() {
+        for m in &config.internal_mass_surfaces {
+            if m.area_m2 <= 0.0 {
+                continue;
+            }
+            if !zone.name.contains(m.zone_path_pattern.as_str()) {
+                continue;
+            }
+
+            let mesh = build_1d_mesh(&m.construction, m.area_m2);
+            let solver = FvmWallSolver::new(mesh, config.indoor_temperature);
+            out.push(FvmInternalMassSurface {
+                zone_uid: zone.uid.clone(),
+                area_m2: m.area_m2,
+                boundary: m.boundary,
+                h_w_per_m2_k: h,
+                solver,
+            });
+        }
+    }
+    out
 }
 
 fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64>(
@@ -297,16 +353,10 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64>(
             && target_area > 0.0
         {
             interior_source_flux_w_per_m2 = w_total / target_area;
-            let alpha = w.solver.boundary_conduction_fraction(h_in, true);
-            let remainder_to_air_w_per_m2 = (1.0 - alpha) * interior_source_flux_w_per_m2;
-            if remainder_to_air_w_per_m2 != 0.0 {
-                *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) +=
-                    remainder_to_air_w_per_m2 * w.area_m2;
-            }
         }
 
         let bc_interior = if interior_source_flux_w_per_m2 != 0.0 {
-            BoundaryCondition::ConvectiveWithFlux {
+            BoundaryCondition::ConvectiveWithFluxToDomain {
                 h: h_in,
                 t_fluid: t_air,
                 heat_flux: interior_source_flux_w_per_m2,
@@ -342,6 +392,90 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64>(
         if q_in_w_per_m2 != 0.0 {
             let q_in_w = q_in_w_per_m2 * w.area_m2;
             *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) += q_in_w;
+        }
+    }
+}
+
+fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64>(
+    surfaces: &mut [FvmInternalMassSurface],
+    source_w_by_zone_uid: Option<&std::collections::HashMap<UID, f64>>,
+    zone_air_temp_for: F,
+    dt_s: f64,
+    gains_out: &mut std::collections::HashMap<UID, f64>,
+) {
+    gains_out.clear();
+    if surfaces.is_empty() {
+        return;
+    }
+
+    let mut total_area_by_zone_uid: std::collections::HashMap<UID, f64> =
+        std::collections::HashMap::new();
+    if let Some(src) = source_w_by_zone_uid {
+        for s in surfaces.iter() {
+            if s.area_m2 <= 0.0 {
+                continue;
+            }
+            if src.get(&s.zone_uid).copied().unwrap_or(0.0) == 0.0 {
+                continue;
+            }
+            *total_area_by_zone_uid
+                .entry(s.zone_uid.clone())
+                .or_insert(0.0) += s.area_m2;
+        }
+    }
+
+    for s in surfaces {
+        let t_air = zone_air_temp_for(&s.zone_uid);
+        let h = s.h_w_per_m2_k.max(1e-9);
+
+        let mut source_flux_w_per_m2 = 0.0;
+        if let Some(src) = source_w_by_zone_uid
+            && let Some(&w_total) = src.get(&s.zone_uid)
+            && w_total != 0.0
+            && let Some(&a_total) = total_area_by_zone_uid.get(&s.zone_uid)
+            && a_total > 0.0
+        {
+            source_flux_w_per_m2 = w_total / a_total;
+        }
+
+        let (bc_exterior, bc_interior, direct_to_air_w) = if source_flux_w_per_m2 != 0.0 {
+            // Apply the source on the zone-exposed face (treated as the "interior" boundary).
+            let bc_in = BoundaryCondition::ConvectiveWithFluxToDomain {
+                h,
+                t_fluid: t_air,
+                heat_flux: source_flux_w_per_m2,
+            };
+            let bc_out = match s.boundary {
+                InternalMassBoundary::TwoSided => {
+                    BoundaryCondition::Convective { h, t_fluid: t_air }
+                }
+                InternalMassBoundary::OneSidedAdiabatic => {
+                    BoundaryCondition::Neumann { heat_flux: 0.0 }
+                }
+            };
+            (bc_out, bc_in, 0.0)
+        } else {
+            let bc_in = BoundaryCondition::Convective { h, t_fluid: t_air };
+            let bc_out = match s.boundary {
+                InternalMassBoundary::TwoSided => {
+                    BoundaryCondition::Convective { h, t_fluid: t_air }
+                }
+                InternalMassBoundary::OneSidedAdiabatic => {
+                    BoundaryCondition::Neumann { heat_flux: 0.0 }
+                }
+            };
+            (bc_out, bc_in, 0.0)
+        };
+
+        s.solver.step(dt_s, &bc_exterior, &bc_interior, &[]);
+
+        let mut q_to_air_w = 0.0;
+        q_to_air_w += s.solver.interior_heat_flux(&bc_interior) * s.area_m2;
+        q_to_air_w += s.solver.exterior_heat_flux(&bc_exterior) * s.area_m2;
+        q_to_air_w += direct_to_air_w;
+
+        if q_to_air_w != 0.0 {
+            *gains_out.entry(s.zone_uid.clone()).or_insert(0.0) += q_to_air_w;
         }
     }
 }
@@ -815,6 +949,43 @@ pub fn run_transient_simulation_with_options(
         .map(|w| w.solver.total_capacity_j_per_k())
         .sum();
 
+    let (mut internal_mass_surfaces, internal_mass_capacity_total_j_per_k) = {
+        let m = collect_internal_mass_surfaces(building, base_config);
+        let cap: f64 = m.iter().map(|s| s.solver.total_capacity_j_per_k()).sum();
+        (m, cap)
+    };
+    let mut internal_mass_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
+        std::collections::HashMap::new();
+    let has_internal_mass = !internal_mass_surfaces.is_empty();
+
+    // Precompute eligible interior-surface areas per zone for distributing surface sources
+    // (transmitted solar + radiant internal gains). This includes:
+    // - interior faces of FVM exterior walls (eligible opaque exterior polygons),
+    // - explicit internal mass slabs.
+    //
+    // Distributing across all eligible area reduces peak surface fluxes and better matches
+    // the "radiant-to-surfaces" behavior in EnergyPlus.
+    let mut interior_source_area_walls_by_zone_uid: std::collections::HashMap<UID, f64> =
+        std::collections::HashMap::new();
+    for w in &fvm_walls {
+        if w.area_m2 <= 0.0 {
+            continue;
+        }
+        *interior_source_area_walls_by_zone_uid
+            .entry(w.zone_uid.clone())
+            .or_insert(0.0) += w.area_m2;
+    }
+    let mut interior_source_area_mass_by_zone_uid: std::collections::HashMap<UID, f64> =
+        std::collections::HashMap::new();
+    for m in &internal_mass_surfaces {
+        if m.area_m2 <= 0.0 {
+            continue;
+        }
+        *interior_source_area_mass_by_zone_uid
+            .entry(m.zone_uid.clone())
+            .or_insert(0.0) += m.area_m2;
+    }
+
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
     let mut hourly_cooling = Vec::with_capacity(num_hours);
@@ -874,8 +1045,9 @@ pub fn run_transient_simulation_with_options(
     //   configured it.
     let air_capacity_min = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
     let mut thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
-    if has_fvm_walls {
-        let extra = (thermal_capacity - fvm_capacity_total_j_per_k).max(0.0);
+    if has_fvm_walls || has_internal_mass {
+        let explicit = fvm_capacity_total_j_per_k + internal_mass_capacity_total_j_per_k;
+        let extra = (thermal_capacity - explicit).max(0.0);
         thermal_capacity = air_capacity_min + extra;
     }
 
@@ -887,6 +1059,7 @@ pub fn run_transient_simulation_with_options(
         && thermal_capacity > 0.0
         && k_env.is_finite()
         && k_env >= 0.0
+        && !has_internal_mass
         && (!has_fvm_walls || (thermal_capacity - air_capacity_min) > 1.0);
 
     // When FVM exterior walls are enabled, the envelope conduction + mass is already represented
@@ -1115,16 +1288,13 @@ pub fn run_transient_simulation_with_options(
             }
             None => (0.0, 0.0),
         };
-        let use_surface_sources = has_fvm_walls
-            && model_2r2c.is_none()
-            && base_config.use_surface_aware_solar_distribution;
+        let use_surface_sources = model_2r2c.is_none()
+            && base_config.use_surface_aware_solar_distribution
+            && has_internal_mass;
 
         let (gains_air_w, gains_surface_w) = if use_surface_sources {
             let f_surface = base_config.internal_gains_to_mass_fraction.clamp(0.0, 1.0);
-            (
-                gains * (1.0 - f_surface),
-                gains * f_surface, // treat as "to interior surfaces" when using FVM walls
-            )
+            (gains * (1.0 - f_surface), gains * f_surface)
         } else {
             (gains, 0.0)
         };
@@ -1140,18 +1310,60 @@ pub fn run_transient_simulation_with_options(
 
         let solar_total_air_w = solar_transmitted_air_w + solar_opaque_sol_air;
 
-        let mut interior_surface_sources_w_by_zone_uid: Option<
-            std::collections::HashMap<UID, f64>,
-        > = None;
+        let mut internal_mass_sources_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
+            None;
+        let mut interior_sources_walls_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
+            None;
+        let mut interior_sources_mass_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
+            None;
         if use_surface_sources {
             let w_total = gains_surface_w + solar_transmitted_surface_w;
             if w_total != 0.0 {
                 // `run_transient_simulation_with_options` is building-level; treat the whole
-                // interior surface source as belonging to the (single) zone of the FVM walls.
-                if let Some(z) = fvm_walls.first().map(|w| w.zone_uid.clone()) {
+                // interior surface source as belonging to the (single) zone of the internal mass.
+                if let Some(z) = internal_mass_surfaces.first().map(|m| m.zone_uid.clone()) {
                     let mut m = std::collections::HashMap::new();
                     m.insert(z, w_total);
-                    interior_surface_sources_w_by_zone_uid = Some(m);
+                    internal_mass_sources_w_by_zone_uid = Some(m);
+                }
+            }
+
+            // Split surface sources across:
+            // - FVM exterior walls (their interior faces)
+            // - explicit internal mass slabs
+            //
+            // so that each eligible surface sees the same mean flux `w_total / A_total`.
+            if let Some(src_total) = internal_mass_sources_w_by_zone_uid.as_ref() {
+                let mut walls_src = std::collections::HashMap::new();
+                let mut mass_src = std::collections::HashMap::new();
+                for (zone_uid, w) in src_total {
+                    if *w == 0.0 {
+                        continue;
+                    }
+                    let a_walls = interior_source_area_walls_by_zone_uid
+                        .get(zone_uid)
+                        .copied()
+                        .unwrap_or(0.0);
+                    let a_mass = interior_source_area_mass_by_zone_uid
+                        .get(zone_uid)
+                        .copied()
+                        .unwrap_or(0.0);
+                    let a_total = a_walls + a_mass;
+                    if a_total <= 0.0 {
+                        continue;
+                    }
+                    if a_walls > 0.0 {
+                        walls_src.insert(zone_uid.clone(), w * (a_walls / a_total));
+                    }
+                    if a_mass > 0.0 {
+                        mass_src.insert(zone_uid.clone(), w * (a_mass / a_total));
+                    }
+                }
+                if !walls_src.is_empty() {
+                    interior_sources_walls_w_by_zone_uid = Some(walls_src);
+                }
+                if !mass_src.is_empty() {
+                    interior_sources_mass_w_by_zone_uid = Some(mass_src);
                 }
             }
         }
@@ -1190,7 +1402,7 @@ pub fn run_transient_simulation_with_options(
                     base_config,
                     solar_config,
                     solar_params.as_ref(),
-                    interior_surface_sources_w_by_zone_uid.as_ref(),
+                    interior_sources_walls_w_by_zone_uid.as_ref(),
                     record.dry_bulb_temperature,
                     |_| air_temp_c,
                     dt_s,
@@ -1198,6 +1410,26 @@ pub fn run_transient_simulation_with_options(
                 );
                 let q_fvm_walls_to_zone_w: f64 = fvm_gains_by_zone_uid.values().sum();
                 (walls, q_fvm_walls_to_zone_w)
+            };
+
+        let step_internal_mass_for_air_temp =
+            |air_temp_c: f64,
+             masses_start: &Vec<FvmInternalMassSurface>,
+             internal_mass_gains_by_zone_uid: &mut std::collections::HashMap<UID, f64>|
+             -> (Vec<FvmInternalMassSurface>, f64) {
+                if masses_start.is_empty() {
+                    return (vec![], 0.0);
+                }
+                let mut masses = masses_start.clone();
+                step_internal_mass_surfaces_fill_gains_by_zone_uid(
+                    &mut masses,
+                    interior_sources_mass_w_by_zone_uid.as_ref(),
+                    |_| air_temp_c,
+                    dt_s,
+                    internal_mass_gains_by_zone_uid,
+                );
+                let q_internal_mass_to_zone_w: f64 = internal_mass_gains_by_zone_uid.values().sum();
+                (masses, q_internal_mass_to_zone_w)
             };
 
         let (heating_power, cooling_power) = if let Some(model) = model_2r2c.as_mut() {
@@ -1458,7 +1690,13 @@ pub fn run_transient_simulation_with_options(
             let model = model_1r1c.as_mut().unwrap();
             let (walls_free, q_fvm_free) =
                 step_fvm_walls_for_air_temp(t_air_start_c, &fvm_walls, &mut fvm_gains_by_zone_uid);
-            let total_gains_free = gains_air_w + solar_total_air_w + q_ground + q_fvm_free;
+            let (masses_free, q_mass_free) = step_internal_mass_for_air_temp(
+                t_air_start_c,
+                &internal_mass_surfaces,
+                &mut internal_mass_gains_by_zone_uid,
+            );
+            let total_gains_free =
+                gains_air_w + solar_total_air_w + q_ground + q_fvm_free + q_mass_free;
 
             let mut free = model.clone();
             free.step(record.dry_bulb_temperature, total_gains_free, 0.0, dt_s);
@@ -1478,8 +1716,17 @@ pub fn run_transient_simulation_with_options(
             } else {
                 (walls_free, q_fvm_free)
             };
+            let (masses_step, q_mass_step) = if use_hvac {
+                step_internal_mass_for_air_temp(
+                    air_temp_bc,
+                    &internal_mass_surfaces,
+                    &mut internal_mass_gains_by_zone_uid,
+                )
+            } else {
+                (masses_free, q_mass_free)
+            };
 
-            let total_gains = gains_air_w + solar_total_air_w + q_ground + q_fvm_step;
+            let total_gains = gains_air_w + solar_total_air_w + q_ground + q_fvm_step + q_mass_step;
 
             let q_hvac = if use_hvac {
                 model.thermal_capacity * (air_temp_bc - model.zone_temperature) / dt_s
@@ -1491,6 +1738,7 @@ pub fn run_transient_simulation_with_options(
 
             model.step(record.dry_bulb_temperature, total_gains, q_hvac, dt_s);
             fvm_walls = walls_step;
+            internal_mass_surfaces = masses_step;
             (q_hvac.max(0.0), (-q_hvac).max(0.0))
         };
 

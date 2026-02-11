@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use building3d::sim::energy::config::ThermalConfig;
+use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
@@ -374,7 +374,21 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 
-    let _ = building;
+    // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
+    // This allows transmitted solar + radiant internal gains to be stored/released with lag.
+    let floor_area_m2 = building
+        .get_polygon("zone_one/space/floor/floor")
+        .map(|p| p.area())
+        .unwrap_or(48.0);
+    if let Some(floor) = cfg.constructions.get("floor").cloned() {
+        cfg.internal_mass_surfaces.push(InternalMassSurface {
+            name: "floor_mass".to_string(),
+            zone_path_pattern: "zone_one".to_string(),
+            area_m2: floor_area_m2,
+            construction: floor,
+            boundary: InternalMassBoundary::OneSidedAdiabatic,
+        });
+    }
     cfg
 }
 
@@ -923,8 +937,19 @@ fn main() -> Result<()> {
             cfg.constructions.insert("ceiling".to_string(), roof);
             cfg.constructions.insert("floor".to_string(), floor);
             cfg.constructions.insert("wall".to_string(), wall);
+
+            // Update the internal floor-mass slab to use the heavyweight floor construction.
+            if let Some(floor) = cfg.constructions.get("floor").cloned() {
+                for m in &mut cfg.internal_mass_surfaces {
+                    if m.name == "floor_mass" {
+                        m.construction = floor.clone();
+                    }
+                }
+            }
         }
         if enable_two_node_600 && spec.name.starts_with("600") {
+            // Two-node model is an alternative to explicit internal mass slabs.
+            cfg.internal_mass_surfaces.clear();
             cfg.two_node_mass_fraction = two_node_mass_fraction_600;
             cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_600;
             cfg.solar_gains_to_mass_fraction = solar_to_mass_600;

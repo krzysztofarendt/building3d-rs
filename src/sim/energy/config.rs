@@ -4,6 +4,36 @@ use super::construction::WallConstruction;
 use crate::UID;
 use crate::sim::materials::MaterialLibrary;
 
+/// Boundary type for an internal mass surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalMassBoundary {
+    /// Both sides of the mass exchange heat with the zone air (e.g., an interior partition).
+    TwoSided,
+    /// Only one side exchanges heat with the zone air; the other side is adiabatic.
+    ///
+    /// This is a simple way to represent a massive floor slab sitting on high-R insulation.
+    OneSidedAdiabatic,
+}
+
+/// A non-geometric internal thermal mass surface assigned to one or more zones.
+///
+/// These surfaces are modeled as 1D FVM slabs with convective coupling to zone air.
+/// They can receive a portion of transmitted solar and radiant internal gains when
+/// `use_surface_aware_solar_distribution` is enabled.
+#[derive(Debug, Clone)]
+pub struct InternalMassSurface {
+    /// Human-readable name for diagnostics.
+    pub name: String,
+    /// Zone name/path substring pattern (matched against `Zone::name`).
+    pub zone_path_pattern: String,
+    /// Exposed face area (m²) for the slab.
+    pub area_m2: f64,
+    /// Layer stack (outside → inside). The *zone-exposed* face is treated as the "inside".
+    pub construction: WallConstruction,
+    /// Boundary type (one-sided vs two-sided).
+    pub boundary: InternalMassBoundary,
+}
+
 /// Policy for computing inter-zone partition conductance from two assigned U-values.
 ///
 /// When two adjacent solids belong to different zones, the interface is represented
@@ -138,6 +168,12 @@ pub struct ThermalConfig {
     ///
     /// This is intended for transient simulations and step-based pipelines.
     pub use_fvm_walls: bool,
+    /// Optional internal thermal mass surfaces (non-geometric).
+    ///
+    /// These are modeled as 1D FVM slabs coupled to zone air, and can receive a
+    /// portion of transmitted solar and radiant internal gains when
+    /// `use_surface_aware_solar_distribution` is enabled.
+    pub internal_mass_surfaces: Vec<InternalMassSurface>,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -168,6 +204,7 @@ impl ThermalConfig {
             two_node_envelope_to_mass: false,
             three_node_envelope_mass_fraction: 0.0,
             use_fvm_walls: true,
+            internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }

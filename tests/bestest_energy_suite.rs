@@ -1,4 +1,4 @@
-use building3d::sim::energy::config::ThermalConfig;
+use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
@@ -320,6 +320,18 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 
+    // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
+    // This allows transmitted solar + radiant internal gains to be stored/released with lag.
+    if let Some(floor) = cfg.constructions.get("floor").cloned() {
+        cfg.internal_mass_surfaces.push(InternalMassSurface {
+            name: "floor_mass".to_string(),
+            zone_path_pattern: "zone_one".to_string(),
+            area_m2: 48.0,
+            construction: floor,
+            boundary: InternalMassBoundary::OneSidedAdiabatic,
+        });
+    }
+
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
     cfg
 }
@@ -332,6 +344,14 @@ fn make_cfg_900(building: &Building) -> ThermalConfig {
     cfg.constructions.insert("ceiling".to_string(), roof);
     cfg.constructions.insert("floor".to_string(), floor);
     cfg.constructions.insert("wall".to_string(), wall);
+
+    if let Some(floor) = cfg.constructions.get("floor").cloned() {
+        for m in &mut cfg.internal_mass_surfaces {
+            if m.name == "floor_mass" {
+                m.construction = floor.clone();
+            }
+        }
+    }
 
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
     cfg

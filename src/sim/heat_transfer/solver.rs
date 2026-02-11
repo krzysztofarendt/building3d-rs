@@ -232,6 +232,11 @@ impl FvmWallSolver {
                 h,
                 t_fluid,
                 heat_flux,
+            }
+            | BoundaryCondition::ConvectiveWithFluxToDomain {
+                h,
+                t_fluid,
+                heat_flux,
             } => {
                 // Report only the convective component (wall ↔ fluid heat transfer).
                 //
@@ -348,6 +353,26 @@ fn apply_bc(
                 0.0
             };
             rhs[cell_idx] += alpha * heat_flux * wall_area;
+        }
+        BoundaryCondition::ConvectiveWithFluxToDomain {
+            h,
+            t_fluid,
+            heat_flux,
+        } => {
+            let h_a = h * wall_area;
+            if h_a <= 0.0 {
+                rhs[cell_idx] += heat_flux * wall_area;
+                return;
+            }
+            let k_eff = if face_conductance > 0.0 {
+                1.0 / (1.0 / h_a + 1.0 / face_conductance)
+            } else {
+                h_a
+            };
+            diag[cell_idx] += k_eff;
+            rhs[cell_idx] += k_eff * t_fluid;
+            // Apply 100% of the imposed surface source into the domain.
+            rhs[cell_idx] += heat_flux * wall_area;
         }
     }
 }

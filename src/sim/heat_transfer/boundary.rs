@@ -24,4 +24,16 @@ pub enum BoundaryCondition {
         t_fluid: f64,
         heat_flux: f64,
     },
+    /// Convective with an imposed heat flux that is applied **entirely into the domain**.
+    ///
+    /// This is useful for **interior** radiant sources (transmitted shortwave, radiant
+    /// internal gains) that are absorbed on an interior surface: they heat the surface
+    /// and must first enter the material before being released to zone air via
+    /// convection. Unlike exterior absorbed shortwave, these sources should not be
+    /// "lost" directly to the adjacent air node.
+    ConvectiveWithFluxToDomain {
+        h: f64,
+        t_fluid: f64,
+        heat_flux: f64,
+    },
 }
