@@ -341,31 +341,70 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
             (h_in_total, t_air)
         };
 
-        let h_out = w.h_out_w_per_m2_k.max(1e-9);
+        const SIGMA: f64 = 5.670_374_419e-8; // Stefan–Boltzmann (W/m²/K⁴)
+
+        let h_out = if let (Some(sc), Some(p)) = (solar_config, params) {
+            if sc.use_wind_speed_for_h_out {
+                let v = p.wind_speed.max(0.0);
+                let mut h =
+                    sc.h_out_base_w_per_m2_k + sc.h_out_wind_coeff_w_per_m2_k_per_m_s * v;
+                if sc.h_out_tilt_scale != 0.0 {
+                    h *= 1.0 + sc.h_out_tilt_scale * w.normal.dz.abs();
+                }
+                h.max(1e-9)
+            } else {
+                w.h_out_w_per_m2_k.max(1e-9)
+            }
+        } else {
+            w.h_out_w_per_m2_k.max(1e-9)
+        };
+
         let mut heat_flux_sw_w_per_m2 = 0.0;
 
-        if !w.is_ground_coupled {
-            if let (Some(sc), Some(p)) = (solar_config, params) {
-                if sc.include_exterior_opaque_absorption {
-                    let normal = w.normal;
-                    let sky_view = isotropic_sky_view_factor_from_nz(normal.dz.clamp(-1.0, 1.0));
-                    let mut incident = p.diffuse_horizontal_irradiance.max(0.0) * sky_view;
-                    if sun_above && p.direct_normal_irradiance > 0.0 {
-                        let cos_incidence = sun_dir.dot(&normal).max(0.0);
-                        incident += p.direct_normal_irradiance.max(0.0) * cos_incidence;
-                    }
+        if !w.is_ground_coupled
+            && let (Some(sc), Some(p)) = (solar_config, params)
+            && sc.include_exterior_opaque_absorption
+        {
+            let normal = w.normal;
+            let sky_view = isotropic_sky_view_factor_from_nz(normal.dz.clamp(-1.0, 1.0));
+            let mut incident = p.diffuse_horizontal_irradiance.max(0.0) * sky_view;
+            if sun_above && p.direct_normal_irradiance > 0.0 {
+                let cos_incidence = sun_dir.dot(&normal).max(0.0);
+                incident += p.direct_normal_irradiance.max(0.0) * cos_incidence;
+            }
 
-                    if incident > 0.0 {
-                        let a = opaque_absorptance_for_path(
-                            &w.path,
-                            config.material_library.as_ref(),
-                            sc.default_opaque_absorptance,
-                        );
-                        if a > 0.0 {
-                            heat_flux_sw_w_per_m2 = incident * a;
-                        }
-                    }
+            if incident > 0.0 {
+                let a = opaque_absorptance_for_path(
+                    &w.path,
+                    config.material_library.as_ref(),
+                    sc.default_opaque_absorptance,
+                );
+                if a > 0.0 {
+                    heat_flux_sw_w_per_m2 = incident * a;
                 }
+            }
+        }
+
+        // Exterior longwave radiation exchange with sky/ground
+        let mut heat_flux_net_w_per_m2 = heat_flux_sw_w_per_m2;
+        if !w.is_ground_coupled
+            && let (Some(sc), Some(p)) = (solar_config, params)
+            && sc.include_exterior_longwave_exchange
+        {
+            let eps = sc.exterior_opaque_emissivity.clamp(0.0, 1.0);
+            if eps > 0.0 {
+                let normal = w.normal;
+                let n_z = normal.dz.clamp(-1.0, 1.0);
+                let sky_view = 0.5 * (1.0 + n_z);
+                let ground_view = 1.0 - sky_view;
+                let t_air_k = (p.outdoor_air_temperature_c + 273.15).max(1.0);
+                let l_sky = p.horizontal_infrared_radiation.max(0.0);
+                let eps_g = sc.ground_emissivity.clamp(0.0, 1.0);
+                let l_ground = eps_g * SIGMA * t_air_k.powi(4);
+                let incoming = sky_view * l_sky + ground_view * l_ground;
+                let outgoing = SIGMA * t_air_k.powi(4);
+                // q_lw < 0 when sky is cold → net heat loss from surface
+                heat_flux_net_w_per_m2 += eps * (incoming - outgoing);
             }
         }
 
@@ -397,11 +436,11 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
                 h: h_out,
                 t_fluid: config.ground_temperature_c.unwrap_or(outdoor_temp_c),
             }
-        } else if heat_flux_sw_w_per_m2 != 0.0 {
+        } else if heat_flux_net_w_per_m2 != 0.0 {
             BoundaryCondition::ConvectiveWithFlux {
                 h: h_out,
                 t_fluid: outdoor_temp_c,
-                heat_flux: heat_flux_sw_w_per_m2,
+                heat_flux: heat_flux_net_w_per_m2,
             }
         } else {
             BoundaryCondition::Convective {
@@ -1029,13 +1068,15 @@ pub fn run_transient_simulation_with_options(
     // the "radiant-to-surfaces" behavior in EnergyPlus.
     let mut interior_source_area_walls_by_zone_uid: std::collections::HashMap<UID, f64> =
         std::collections::HashMap::new();
-    for w in &fvm_walls {
-        if w.area_m2 <= 0.0 {
-            continue;
+    if base_config.distribute_transmitted_solar_to_fvm_walls {
+        for w in &fvm_walls {
+            if w.area_m2 <= 0.0 {
+                continue;
+            }
+            *interior_source_area_walls_by_zone_uid
+                .entry(w.zone_uid.clone())
+                .or_insert(0.0) += w.area_m2;
         }
-        *interior_source_area_walls_by_zone_uid
-            .entry(w.zone_uid.clone())
-            .or_insert(0.0) += w.area_m2;
     }
     let mut interior_source_area_mass_by_zone_uid: std::collections::HashMap<UID, f64> =
         std::collections::HashMap::new();
