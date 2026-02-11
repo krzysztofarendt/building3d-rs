@@ -4,6 +4,36 @@ use super::construction::WallConstruction;
 use crate::UID;
 use crate::sim::materials::MaterialLibrary;
 
+/// Boundary type for an internal mass surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalMassBoundary {
+    /// Both sides of the mass exchange heat with the zone air (e.g., an interior partition).
+    TwoSided,
+    /// Only one side exchanges heat with the zone air; the other side is adiabatic.
+    ///
+    /// This is a simple way to represent a massive floor slab sitting on high-R insulation.
+    OneSidedAdiabatic,
+}
+
+/// A non-geometric internal thermal mass surface assigned to one or more zones.
+///
+/// These surfaces are modeled as 1D FVM slabs with convective coupling to zone air.
+/// They can receive a portion of transmitted solar and radiant internal gains when
+/// `use_surface_aware_solar_distribution` is enabled.
+#[derive(Debug, Clone)]
+pub struct InternalMassSurface {
+    /// Human-readable name for diagnostics.
+    pub name: String,
+    /// Zone name/path substring pattern (matched against `Zone::name`).
+    pub zone_path_pattern: String,
+    /// Exposed face area (m²) for the slab.
+    pub area_m2: f64,
+    /// Layer stack (outside → inside). The *zone-exposed* face is treated as the "inside".
+    pub construction: WallConstruction,
+    /// Boundary type (one-sided vs two-sided).
+    pub boundary: InternalMassBoundary,
+}
+
 /// Policy for computing inter-zone partition conductance from two assigned U-values.
 ///
 /// When two adjacent solids belong to different zones, the interface is represented
@@ -86,6 +116,21 @@ pub struct ThermalConfig {
     /// This is a coarse aggregate that lumps convection+radiation exchange between
     /// zone air and interior surfaces.
     pub interior_heat_transfer_coeff_w_per_m2_k: f64,
+    /// If true, approximate interior longwave exchange using a simple "radiant node"
+    /// (MRT-style) per zone.
+    ///
+    /// This affects only the FVM-based interior boundary conditions by splitting the
+    /// interior film coefficient into:
+    /// - a convective portion to zone air, and
+    /// - a radiative portion to a zone radiant temperature estimate.
+    ///
+    /// The radiant temperature is estimated from the current interior surface
+    /// temperatures (area-weighted), and does not add or remove energy from the zone
+    /// (it only redistributes among surfaces).
+    pub use_interior_radiative_exchange: bool,
+    /// Fraction (0..1) of the interior film coefficient assigned to the radiative path
+    /// when [`Self::use_interior_radiative_exchange`] is enabled.
+    pub interior_radiation_fraction: f64,
     /// Fraction (0..1) of **solar** gains applied to the mass node when the two-node
     /// model is enabled. The remainder is applied to the air node.
     pub solar_gains_to_mass_fraction: f64,
@@ -138,6 +183,12 @@ pub struct ThermalConfig {
     ///
     /// This is intended for transient simulations and step-based pipelines.
     pub use_fvm_walls: bool,
+    /// Optional internal thermal mass surfaces (non-geometric).
+    ///
+    /// These are modeled as 1D FVM slabs coupled to zone air, and can receive a
+    /// portion of transmitted solar and radiant internal gains when
+    /// `use_surface_aware_solar_distribution` is enabled.
+    pub internal_mass_surfaces: Vec<InternalMassSurface>,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -161,6 +212,8 @@ impl ThermalConfig {
             ground_surface_patterns: vec!["floor".to_string()],
             two_node_mass_fraction: 0.0,
             interior_heat_transfer_coeff_w_per_m2_k: 3.0,
+            use_interior_radiative_exchange: false,
+            interior_radiation_fraction: 0.6,
             solar_gains_to_mass_fraction: 0.0,
             use_surface_aware_solar_distribution: false,
             transmitted_solar_to_air_fraction: 0.0,
@@ -168,6 +221,7 @@ impl ThermalConfig {
             two_node_envelope_to_mass: false,
             three_node_envelope_mass_fraction: 0.0,
             use_fvm_walls: true,
+            internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }

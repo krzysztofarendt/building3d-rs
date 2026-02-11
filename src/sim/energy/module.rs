@@ -9,7 +9,7 @@ use crate::sim::framework::{Bus, SimContext, SimModule};
 use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh};
 
 use super::boundary::ThermalBoundaries;
-use super::config::ThermalConfig;
+use super::config::{InternalMassBoundary, ThermalConfig};
 use super::hvac::HvacIdealLoads;
 use super::network::{MultiZoneAirModel, MultiZoneEnvelopeRcModel, ThermalNetwork};
 use crate::sim::materials::MaterialLibrary;
@@ -87,6 +87,7 @@ pub struct EnergyModule {
     fvm_walls: Vec<FvmExteriorWall>,
     fvm_polygon_uids: HashSet<crate::UID>,
     ground_ua_by_zone_w_per_k: Vec<f64>,
+    internal_mass_surfaces: Vec<FvmInternalMassSurface>,
 }
 
 enum EnergyModel {
@@ -105,6 +106,14 @@ struct FvmExteriorWall {
     solver: FvmWallSolver,
 }
 
+struct FvmInternalMassSurface {
+    zone_idx: usize,
+    area_m2: f64,
+    boundary: InternalMassBoundary,
+    h_w_per_m2_k: f64,
+    solver: FvmWallSolver,
+}
+
 impl EnergyModule {
     pub fn new(config: EnergyModuleConfig) -> Self {
         Self {
@@ -119,13 +128,15 @@ impl EnergyModule {
             fvm_walls: vec![],
             fvm_polygon_uids: HashSet::new(),
             ground_ua_by_zone_w_per_k: vec![],
+            internal_mass_surfaces: vec![],
         }
     }
 
-    fn gains_by_zone_split(&self, bus: &Bus) -> (Vec<f64>, Vec<f64>) {
+    fn gains_by_zone_split(&self, bus: &Bus) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let n = self.zone_uids.len();
         let mut air_gains = vec![0.0; n];
         let mut env_gains = vec![0.0; n];
+        let mut internal_mass_sources = vec![0.0; n];
 
         let internal_by_zone = bus
             .get::<InternalGainsWPerZone>()
@@ -137,7 +148,21 @@ impl EnergyModule {
             .get::<ShortwaveTransmittedWPerZone>()
             .map(|g| &g.watts_by_zone_uid);
 
-        // Apply internal + transmitted shortwave to the air node.
+        let use_internal_mass_sources = self.config.thermal.use_surface_aware_solar_distribution
+            && !self.internal_mass_surfaces.is_empty();
+        let f_internal_mass = self
+            .config
+            .thermal
+            .internal_gains_to_mass_fraction
+            .clamp(0.0, 1.0);
+        let f_solar_air = self
+            .config
+            .thermal
+            .transmitted_solar_to_air_fraction
+            .clamp(0.0, 1.0);
+
+        // Apply internal + transmitted shortwave to the air node, optionally splitting a
+        // portion to internal mass slabs for lagged release.
         for (i, air_gain) in air_gains.iter_mut().enumerate() {
             let uid = &self.zone_uids[i];
 
@@ -153,7 +178,13 @@ impl EnergyModule {
                 .and_then(|map| map.get(uid).cloned())
                 .unwrap_or(0.0);
 
-            *air_gain += internal_i + solar_i;
+            if use_internal_mass_sources {
+                *air_gain += internal_i * (1.0 - f_internal_mass) + solar_i * f_solar_air;
+                internal_mass_sources[i] +=
+                    internal_i * f_internal_mass + solar_i * (1.0 - f_solar_air);
+            } else {
+                *air_gain += internal_i + solar_i;
+            }
         }
 
         // Per-polygon absorbed shortwave: split between envelope (exterior) and air (non-exterior).
@@ -184,7 +215,7 @@ impl EnergyModule {
             }
         }
 
-        (air_gains, env_gains)
+        (air_gains, env_gains, internal_mass_sources)
     }
 }
 
@@ -271,12 +302,20 @@ impl SimModule for EnergyModule {
                     continue;
                 };
 
-                let h_in = if construction.r_si > 0.0 {
+                let h_si_iso = if construction.r_si > 0.0 {
                     1.0 / construction.r_si
                 } else {
                     1.0 / 0.13
                 }
                 .max(1e-9);
+                let h_in = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+                    self.config
+                        .thermal
+                        .interior_heat_transfer_coeff_w_per_m2_k
+                        .max(h_si_iso)
+                } else {
+                    h_si_iso
+                };
                 let h_out = if construction.r_se > 0.0 {
                     1.0 / construction.r_se
                 } else {
@@ -337,6 +376,43 @@ impl SimModule for EnergyModule {
             }
         }
 
+        self.internal_mass_surfaces.clear();
+        if !self.config.thermal.internal_mass_surfaces.is_empty() {
+            for (zone_idx, zone) in ctx.building.zones().iter().enumerate() {
+                for m in &self.config.thermal.internal_mass_surfaces {
+                    if m.area_m2 <= 0.0 {
+                        continue;
+                    }
+                    if !zone.name.contains(m.zone_path_pattern.as_str()) {
+                        continue;
+                    }
+                    let h_si_iso = if m.construction.r_si > 0.0 {
+                        1.0 / m.construction.r_si
+                    } else {
+                        3.0
+                    }
+                    .max(1e-9);
+                    let h = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+                        self.config
+                            .thermal
+                            .interior_heat_transfer_coeff_w_per_m2_k
+                            .max(h_si_iso)
+                    } else {
+                        h_si_iso
+                    };
+                    let mesh = build_1d_mesh(&m.construction, m.area_m2);
+                    let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
+                    self.internal_mass_surfaces.push(FvmInternalMassSurface {
+                        zone_idx,
+                        area_m2: m.area_m2,
+                        boundary: m.boundary,
+                        h_w_per_m2_k: h,
+                        solver,
+                    });
+                }
+            }
+        }
+
         let network = if self.config.thermal.use_fvm_walls && !self.fvm_polygon_uids.is_empty() {
             ThermalNetwork::build_with_ignored_exterior_polygons(
                 ctx.building,
@@ -360,12 +436,21 @@ impl SimModule for EnergyModule {
             self.config.thermal.thermal_capacity_j_per_m3_k
         };
 
-        if !self.fvm_walls.is_empty() && self.total_volume_m3 > 0.0 && cap_j_per_m3_k > 0.0 {
+        if ((!self.fvm_walls.is_empty()) || (!self.internal_mass_surfaces.is_empty()))
+            && self.total_volume_m3 > 0.0
+            && cap_j_per_m3_k > 0.0
+        {
             let fvm_capacity_total_j_per_k: f64 =
                 self.fvm_walls.iter().map(|w| w.capacity_j_per_k).sum();
+            let internal_mass_capacity_total_j_per_k: f64 = self
+                .internal_mass_surfaces
+                .iter()
+                .map(|m| m.solver.total_capacity_j_per_k())
+                .sum();
             let lumped_total_j_per_k = self.total_volume_m3 * cap_j_per_m3_k;
             let air_total_j_per_k = 1.2 * 1005.0 * self.total_volume_m3;
-            let remaining = (lumped_total_j_per_k - fvm_capacity_total_j_per_k).max(0.0);
+            let explicit = fvm_capacity_total_j_per_k + internal_mass_capacity_total_j_per_k;
+            let remaining = (lumped_total_j_per_k - explicit).max(0.0);
             let effective_total = air_total_j_per_k + remaining;
             cap_j_per_m3_k = effective_total / self.total_volume_m3;
         }
@@ -407,7 +492,7 @@ impl SimModule for EnergyModule {
             .map(|t| t.0)
             .unwrap_or(self.config.thermal.outdoor_temperature);
 
-        let (mut air_gains, mut env_gains) = self.gains_by_zone_split(bus);
+        let (mut air_gains, mut env_gains, internal_mass_sources) = self.gains_by_zone_split(bus);
         if let Some(tg) = self.config.thermal.ground_temperature_c {
             let dt = tg - outdoor_temp_c;
             for (i, ua) in self.ground_ua_by_zone_w_per_k.iter().enumerate() {
@@ -421,15 +506,172 @@ impl SimModule for EnergyModule {
             anyhow::bail!("EnergyModule not initialized");
         };
 
+        let air_temps: Vec<f64> = match model {
+            EnergyModel::Air(m) => m.temperatures_c().to_vec(),
+            EnergyModel::EnvelopeRc(m) => m.air_temperatures_c().to_vec(),
+        };
+        let mut rad_temps = air_temps.clone();
+        if self.config.thermal.use_interior_radiative_exchange {
+            let f_rad = self
+                .config
+                .thermal
+                .interior_radiation_fraction
+                .clamp(0.0, 1.0);
+            let n = self.zone_uids.len();
+            let mut num = vec![0.0_f64; n];
+            let mut den = vec![0.0_f64; n];
+
+            for w in &self.fvm_walls {
+                if w.area_m2 <= 0.0 {
+                    continue;
+                }
+                let h_rad = w.h_in_w_per_m2_k.max(1e-9) * f_rad;
+                if h_rad <= 0.0 {
+                    continue;
+                }
+                num[w.zone_idx] += h_rad * w.area_m2 * w.solver.interior_surface_temp();
+                den[w.zone_idx] += h_rad * w.area_m2;
+            }
+            for m in &self.internal_mass_surfaces {
+                if m.area_m2 <= 0.0 {
+                    continue;
+                }
+                let h_rad = m.h_w_per_m2_k.max(1e-9) * f_rad;
+                if h_rad <= 0.0 {
+                    continue;
+                }
+                num[m.zone_idx] += h_rad * m.area_m2 * m.solver.interior_surface_temp();
+                den[m.zone_idx] += h_rad * m.area_m2;
+                if matches!(m.boundary, InternalMassBoundary::TwoSided) {
+                    num[m.zone_idx] += h_rad * m.area_m2 * m.solver.exterior_surface_temp();
+                    den[m.zone_idx] += h_rad * m.area_m2;
+                }
+            }
+
+            for i in 0..n {
+                if den[i] > 0.0 {
+                    rad_temps[i] = num[i] / den[i];
+                }
+            }
+        }
+
+        if !self.internal_mass_surfaces.is_empty() {
+            let n = self.zone_uids.len();
+            let mut total_area_by_zone_m2 = vec![0.0; n];
+            for s in &self.internal_mass_surfaces {
+                if s.area_m2 <= 0.0 {
+                    continue;
+                }
+                let w_total = internal_mass_sources
+                    .get(s.zone_idx)
+                    .copied()
+                    .unwrap_or(0.0);
+                if w_total == 0.0 {
+                    continue;
+                }
+                if let Some(a) = total_area_by_zone_m2.get_mut(s.zone_idx) {
+                    *a += s.area_m2;
+                }
+            }
+
+            for s in &mut self.internal_mass_surfaces {
+                let t_air = air_temps
+                    .get(s.zone_idx)
+                    .copied()
+                    .unwrap_or(self.config.thermal.indoor_temperature);
+                let h_total = s.h_w_per_m2_k.max(1e-9);
+                let (h_conv, t_eff) = if self.config.thermal.use_interior_radiative_exchange {
+                    let f_rad = self
+                        .config
+                        .thermal
+                        .interior_radiation_fraction
+                        .clamp(0.0, 1.0);
+                    let h_rad = h_total * f_rad;
+                    let h_conv = (h_total - h_rad).max(0.0);
+                    let t_rad = rad_temps
+                        .get(s.zone_idx)
+                        .copied()
+                        .unwrap_or(self.config.thermal.indoor_temperature);
+                    let t_eff = if h_total > 0.0 {
+                        (h_conv * t_air + h_rad * t_rad) / h_total
+                    } else {
+                        t_air
+                    };
+                    (h_conv, t_eff)
+                } else {
+                    (h_total, t_air)
+                };
+
+                let w_total = internal_mass_sources
+                    .get(s.zone_idx)
+                    .copied()
+                    .unwrap_or(0.0);
+                let a_total = total_area_by_zone_m2
+                    .get(s.zone_idx)
+                    .copied()
+                    .unwrap_or(0.0);
+                let source_flux_w_per_m2 = if w_total != 0.0 && a_total > 0.0 {
+                    w_total / a_total
+                } else {
+                    0.0
+                };
+
+                let (bc_exterior, bc_interior, direct_to_air_w) = if source_flux_w_per_m2 != 0.0 {
+                    let bc_in = BoundaryCondition::ConvectiveWithFluxToDomain {
+                        h: h_total,
+                        t_fluid: t_eff,
+                        heat_flux: source_flux_w_per_m2,
+                    };
+                    let bc_out = match s.boundary {
+                        InternalMassBoundary::TwoSided => BoundaryCondition::Convective {
+                            h: h_total,
+                            t_fluid: t_eff,
+                        },
+                        InternalMassBoundary::OneSidedAdiabatic => {
+                            BoundaryCondition::Neumann { heat_flux: 0.0 }
+                        }
+                    };
+                    (bc_out, bc_in, 0.0)
+                } else {
+                    let bc_in = BoundaryCondition::Convective {
+                        h: h_total,
+                        t_fluid: t_eff,
+                    };
+                    let bc_out = match s.boundary {
+                        InternalMassBoundary::TwoSided => BoundaryCondition::Convective {
+                            h: h_total,
+                            t_fluid: t_eff,
+                        },
+                        InternalMassBoundary::OneSidedAdiabatic => {
+                            BoundaryCondition::Neumann { heat_flux: 0.0 }
+                        }
+                    };
+                    (bc_out, bc_in, 0.0)
+                };
+
+                s.solver
+                    .step(self.config.dt_s, &bc_exterior, &bc_interior, &[]);
+
+                let mut q_to_air_w = 0.0;
+                let t_surf_in = s.solver.interior_surface_temperature(&bc_interior);
+                q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
+                if matches!(s.boundary, InternalMassBoundary::TwoSided) {
+                    let t_surf_out = s.solver.exterior_surface_temperature(&bc_exterior);
+                    q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
+                }
+                q_to_air_w += direct_to_air_w;
+                if q_to_air_w != 0.0 {
+                    if let Some(g) = air_gains.get_mut(s.zone_idx) {
+                        *g += q_to_air_w;
+                    }
+                }
+            }
+        }
+
         if !self.fvm_walls.is_empty() {
             let absorbed = bus
                 .get::<ShortwaveAbsorbedWPerPolygon>()
                 .map(|a| &a.watts_by_polygon_uid);
-
-            let air_temps: Vec<f64> = match model {
-                EnergyModel::Air(m) => m.temperatures_c().to_vec(),
-                EnergyModel::EnvelopeRc(m) => m.air_temperatures_c().to_vec(),
-            };
 
             for w in &mut self.fvm_walls {
                 let h_in = w.h_in_w_per_m2_k.max(1e-9);
@@ -438,6 +680,27 @@ impl SimModule for EnergyModule {
                     .get(w.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
+                let (h_in_conv, t_eff) = if self.config.thermal.use_interior_radiative_exchange {
+                    let f_rad = self
+                        .config
+                        .thermal
+                        .interior_radiation_fraction
+                        .clamp(0.0, 1.0);
+                    let h_rad = h_in * f_rad;
+                    let h_conv = (h_in - h_rad).max(0.0);
+                    let t_rad = rad_temps
+                        .get(w.zone_idx)
+                        .copied()
+                        .unwrap_or(self.config.thermal.indoor_temperature);
+                    let t_eff = if h_in > 0.0 {
+                        (h_conv * t_air + h_rad * t_rad) / h_in
+                    } else {
+                        t_air
+                    };
+                    (h_conv, t_eff)
+                } else {
+                    (h_in, t_air)
+                };
                 let absorbed_w = absorbed
                     .and_then(|m| m.get(&w.polygon_uid).copied())
                     .unwrap_or(0.0);
@@ -449,7 +712,7 @@ impl SimModule for EnergyModule {
 
                 let bc_in = BoundaryCondition::Convective {
                     h: h_in,
-                    t_fluid: t_air,
+                    t_fluid: t_eff,
                 };
                 let bc_out = if w.is_ground_coupled {
                     BoundaryCondition::Convective {
@@ -474,7 +737,8 @@ impl SimModule for EnergyModule {
                 };
 
                 w.solver.step(self.config.dt_s, &bc_out, &bc_in, &[]);
-                let q_in_w = w.solver.interior_heat_flux(&bc_in) * w.area_m2;
+                let t_surf = w.solver.interior_surface_temperature(&bc_in);
+                let q_in_w = h_in_conv * (t_surf - t_air) * w.area_m2;
                 if let Some(g) = air_gains.get_mut(w.zone_idx) {
                     *g += q_in_w;
                 }
@@ -657,11 +921,13 @@ mod tests {
         absorbed.watts_by_polygon_uid.insert(exterior, 200.0);
         bus.put(absorbed);
 
-        let (air_gains, env_gains) = module.gains_by_zone_split(&bus);
+        let (air_gains, env_gains, internal_mass_sources) = module.gains_by_zone_split(&bus);
         assert_eq!(air_gains.len(), 1);
         assert_eq!(env_gains.len(), 1);
+        assert_eq!(internal_mass_sources.len(), 1);
         assert!((air_gains[0] - (50.0 + 25.0 + 100.0)).abs() < 1e-12);
         assert!((env_gains[0] - 200.0).abs() < 1e-12);
+        assert!((internal_mass_sources[0] - 0.0).abs() < 1e-12);
     }
 
     #[test]
@@ -685,9 +951,10 @@ mod tests {
         module.total_volume_m3 = 0.0;
         bus.put(InternalGainsWTotal(123.0));
 
-        let (air_gains, env_gains) = module.gains_by_zone_split(&bus);
+        let (air_gains, env_gains, internal_mass_sources) = module.gains_by_zone_split(&bus);
         assert_eq!(air_gains, vec![0.0, 0.0]);
         assert_eq!(env_gains, vec![0.0, 0.0]);
+        assert_eq!(internal_mass_sources, vec![0.0, 0.0]);
     }
 
     #[test]
