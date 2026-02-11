@@ -280,6 +280,50 @@ pub fn tetrahedralize_delaunay(mesh: &Mesh) -> Option<TetrahedralMesh> {
     Some(TetrahedralMesh::new(vertices.to_vec(), tetrahedra))
 }
 
+/// Delaunay tetrahedralization with additional interior points.
+///
+/// Combines surface vertices with caller-supplied interior points before
+/// running Bowyer-Watson. This produces a finer mesh than
+/// `tetrahedralize_delaunay`, which only uses surface vertices.
+///
+/// # Arguments
+/// * `mesh` - The triangulated surface mesh
+/// * `extra_points` - Additional interior points to include in the triangulation
+///
+/// # Returns
+/// A tetrahedral mesh, or `None` if the combined point set has fewer than 4
+/// non-coplanar vertices.
+pub fn tetrahedralize_delaunay_refined(
+    mesh: &Mesh,
+    extra_points: &[Point],
+) -> Option<TetrahedralMesh> {
+    let deduped = mesh.clone().deduplicate_vertices();
+    let vertices = deduped.vertices();
+    let faces = deduped.faces()?;
+
+    if vertices.len() < 4 || faces.is_empty() {
+        return None;
+    }
+
+    // Combine surface vertices with extra interior points
+    let mut combined = vertices.to_vec();
+    combined.extend_from_slice(extra_points);
+
+    let tets = delaunay::bowyer_watson(&combined)?;
+    let culled = delaunay::cull_exterior_tets(&combined, tets, faces);
+
+    if culled.is_empty() {
+        return None;
+    }
+
+    let tetrahedra = culled
+        .into_iter()
+        .map(|t| TetrahedronIndex(t[0], t[1], t[2], t[3]))
+        .collect();
+
+    Some(TetrahedralMesh::new(combined, tetrahedra))
+}
+
 /// Calculates the centroid of mesh vertices.
 fn calculate_mesh_centroid(vertices: &[Point]) -> Point {
     if vertices.is_empty() {
