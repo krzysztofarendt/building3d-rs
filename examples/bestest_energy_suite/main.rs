@@ -374,6 +374,12 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 
+    // Use a representative combined interior coefficient for explicit internal mass slabs.
+    cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+    // Approximate interior longwave exchange (convective vs radiative split) for FVM walls/mass.
+    cfg.use_interior_radiative_exchange = true;
+    cfg.interior_radiation_fraction = 0.6;
+
     // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
     // This allows transmitted solar + radiant internal gains to be stored/released with lag.
     let floor_area_m2 = building
@@ -919,11 +925,18 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(7);
+    let substeps_per_hour: usize = std::env::var("BESTEST_SUBSTEPS_PER_HOUR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6)
+        .max(1);
     let options = TransientSimulationOptions {
         warmup_hours: warmup_days.saturating_mul(24),
+        substeps_per_hour,
     };
 
     println!("Warmup: {warmup_days} days");
+    println!("Substeps per hour: {substeps_per_hour}");
     print_ua_breakdown(&building, &base_cfg, &solar_cfg)?;
     println!();
 

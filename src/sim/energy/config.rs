@@ -116,6 +116,21 @@ pub struct ThermalConfig {
     /// This is a coarse aggregate that lumps convection+radiation exchange between
     /// zone air and interior surfaces.
     pub interior_heat_transfer_coeff_w_per_m2_k: f64,
+    /// If true, approximate interior longwave exchange using a simple "radiant node"
+    /// (MRT-style) per zone.
+    ///
+    /// This affects only the FVM-based interior boundary conditions by splitting the
+    /// interior film coefficient into:
+    /// - a convective portion to zone air, and
+    /// - a radiative portion to a zone radiant temperature estimate.
+    ///
+    /// The radiant temperature is estimated from the current interior surface
+    /// temperatures (area-weighted), and does not add or remove energy from the zone
+    /// (it only redistributes among surfaces).
+    pub use_interior_radiative_exchange: bool,
+    /// Fraction (0..1) of the interior film coefficient assigned to the radiative path
+    /// when [`Self::use_interior_radiative_exchange`] is enabled.
+    pub interior_radiation_fraction: f64,
     /// Fraction (0..1) of **solar** gains applied to the mass node when the two-node
     /// model is enabled. The remainder is applied to the air node.
     pub solar_gains_to_mass_fraction: f64,
@@ -197,6 +212,8 @@ impl ThermalConfig {
             ground_surface_patterns: vec!["floor".to_string()],
             two_node_mass_fraction: 0.0,
             interior_heat_transfer_coeff_w_per_m2_k: 3.0,
+            use_interior_radiative_exchange: false,
+            interior_radiation_fraction: 0.6,
             solar_gains_to_mass_fraction: 0.0,
             use_surface_aware_solar_distribution: false,
             transmitted_solar_to_air_fraction: 0.0,

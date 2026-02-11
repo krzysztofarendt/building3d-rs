@@ -302,14 +302,20 @@ impl SimModule for EnergyModule {
                     continue;
                 };
 
-                let h_in = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
-                    self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k
-                } else if construction.r_si > 0.0 {
+                let h_si_iso = if construction.r_si > 0.0 {
                     1.0 / construction.r_si
                 } else {
                     1.0 / 0.13
                 }
                 .max(1e-9);
+                let h_in = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+                    self.config
+                        .thermal
+                        .interior_heat_transfer_coeff_w_per_m2_k
+                        .max(h_si_iso)
+                } else {
+                    h_si_iso
+                };
                 let h_out = if construction.r_se > 0.0 {
                     1.0 / construction.r_se
                 } else {
@@ -372,13 +378,6 @@ impl SimModule for EnergyModule {
 
         self.internal_mass_surfaces.clear();
         if !self.config.thermal.internal_mass_surfaces.is_empty() {
-            let h = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
-                self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k
-            } else {
-                3.0
-            }
-            .max(1e-9);
-
             for (zone_idx, zone) in ctx.building.zones().iter().enumerate() {
                 for m in &self.config.thermal.internal_mass_surfaces {
                     if m.area_m2 <= 0.0 {
@@ -387,6 +386,20 @@ impl SimModule for EnergyModule {
                     if !zone.name.contains(m.zone_path_pattern.as_str()) {
                         continue;
                     }
+                    let h_si_iso = if m.construction.r_si > 0.0 {
+                        1.0 / m.construction.r_si
+                    } else {
+                        3.0
+                    }
+                    .max(1e-9);
+                    let h = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+                        self.config
+                            .thermal
+                            .interior_heat_transfer_coeff_w_per_m2_k
+                            .max(h_si_iso)
+                    } else {
+                        h_si_iso
+                    };
                     let mesh = build_1d_mesh(&m.construction, m.area_m2);
                     let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
                     self.internal_mass_surfaces.push(FvmInternalMassSurface {
@@ -497,6 +510,50 @@ impl SimModule for EnergyModule {
             EnergyModel::Air(m) => m.temperatures_c().to_vec(),
             EnergyModel::EnvelopeRc(m) => m.air_temperatures_c().to_vec(),
         };
+        let mut rad_temps = air_temps.clone();
+        if self.config.thermal.use_interior_radiative_exchange {
+            let f_rad = self
+                .config
+                .thermal
+                .interior_radiation_fraction
+                .clamp(0.0, 1.0);
+            let n = self.zone_uids.len();
+            let mut num = vec![0.0_f64; n];
+            let mut den = vec![0.0_f64; n];
+
+            for w in &self.fvm_walls {
+                if w.area_m2 <= 0.0 {
+                    continue;
+                }
+                let h_rad = w.h_in_w_per_m2_k.max(1e-9) * f_rad;
+                if h_rad <= 0.0 {
+                    continue;
+                }
+                num[w.zone_idx] += h_rad * w.area_m2 * w.solver.interior_surface_temp();
+                den[w.zone_idx] += h_rad * w.area_m2;
+            }
+            for m in &self.internal_mass_surfaces {
+                if m.area_m2 <= 0.0 {
+                    continue;
+                }
+                let h_rad = m.h_w_per_m2_k.max(1e-9) * f_rad;
+                if h_rad <= 0.0 {
+                    continue;
+                }
+                num[m.zone_idx] += h_rad * m.area_m2 * m.solver.interior_surface_temp();
+                den[m.zone_idx] += h_rad * m.area_m2;
+                if matches!(m.boundary, InternalMassBoundary::TwoSided) {
+                    num[m.zone_idx] += h_rad * m.area_m2 * m.solver.exterior_surface_temp();
+                    den[m.zone_idx] += h_rad * m.area_m2;
+                }
+            }
+
+            for i in 0..n {
+                if den[i] > 0.0 {
+                    rad_temps[i] = num[i] / den[i];
+                }
+            }
+        }
 
         if !self.internal_mass_surfaces.is_empty() {
             let n = self.zone_uids.len();
@@ -522,7 +579,28 @@ impl SimModule for EnergyModule {
                     .get(s.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
-                let h = s.h_w_per_m2_k.max(1e-9);
+                let h_total = s.h_w_per_m2_k.max(1e-9);
+                let (h_conv, t_eff) = if self.config.thermal.use_interior_radiative_exchange {
+                    let f_rad = self
+                        .config
+                        .thermal
+                        .interior_radiation_fraction
+                        .clamp(0.0, 1.0);
+                    let h_rad = h_total * f_rad;
+                    let h_conv = (h_total - h_rad).max(0.0);
+                    let t_rad = rad_temps
+                        .get(s.zone_idx)
+                        .copied()
+                        .unwrap_or(self.config.thermal.indoor_temperature);
+                    let t_eff = if h_total > 0.0 {
+                        (h_conv * t_air + h_rad * t_rad) / h_total
+                    } else {
+                        t_air
+                    };
+                    (h_conv, t_eff)
+                } else {
+                    (h_total, t_air)
+                };
 
                 let w_total = internal_mass_sources
                     .get(s.zone_idx)
@@ -540,25 +618,30 @@ impl SimModule for EnergyModule {
 
                 let (bc_exterior, bc_interior, direct_to_air_w) = if source_flux_w_per_m2 != 0.0 {
                     let bc_in = BoundaryCondition::ConvectiveWithFluxToDomain {
-                        h,
-                        t_fluid: t_air,
+                        h: h_total,
+                        t_fluid: t_eff,
                         heat_flux: source_flux_w_per_m2,
                     };
                     let bc_out = match s.boundary {
-                        InternalMassBoundary::TwoSided => {
-                            BoundaryCondition::Convective { h, t_fluid: t_air }
-                        }
+                        InternalMassBoundary::TwoSided => BoundaryCondition::Convective {
+                            h: h_total,
+                            t_fluid: t_eff,
+                        },
                         InternalMassBoundary::OneSidedAdiabatic => {
                             BoundaryCondition::Neumann { heat_flux: 0.0 }
                         }
                     };
                     (bc_out, bc_in, 0.0)
                 } else {
-                    let bc_in = BoundaryCondition::Convective { h, t_fluid: t_air };
+                    let bc_in = BoundaryCondition::Convective {
+                        h: h_total,
+                        t_fluid: t_eff,
+                    };
                     let bc_out = match s.boundary {
-                        InternalMassBoundary::TwoSided => {
-                            BoundaryCondition::Convective { h, t_fluid: t_air }
-                        }
+                        InternalMassBoundary::TwoSided => BoundaryCondition::Convective {
+                            h: h_total,
+                            t_fluid: t_eff,
+                        },
                         InternalMassBoundary::OneSidedAdiabatic => {
                             BoundaryCondition::Neumann { heat_flux: 0.0 }
                         }
@@ -569,10 +652,14 @@ impl SimModule for EnergyModule {
                 s.solver
                     .step(self.config.dt_s, &bc_exterior, &bc_interior, &[]);
 
-                let q_to_air_w = (s.solver.interior_heat_flux(&bc_interior)
-                    + s.solver.exterior_heat_flux(&bc_exterior))
-                    * s.area_m2
-                    + direct_to_air_w;
+                let mut q_to_air_w = 0.0;
+                let t_surf_in = s.solver.interior_surface_temperature(&bc_interior);
+                q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
+                if matches!(s.boundary, InternalMassBoundary::TwoSided) {
+                    let t_surf_out = s.solver.exterior_surface_temperature(&bc_exterior);
+                    q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
+                }
+                q_to_air_w += direct_to_air_w;
                 if q_to_air_w != 0.0 {
                     if let Some(g) = air_gains.get_mut(s.zone_idx) {
                         *g += q_to_air_w;
@@ -593,6 +680,27 @@ impl SimModule for EnergyModule {
                     .get(w.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
+                let (h_in_conv, t_eff) = if self.config.thermal.use_interior_radiative_exchange {
+                    let f_rad = self
+                        .config
+                        .thermal
+                        .interior_radiation_fraction
+                        .clamp(0.0, 1.0);
+                    let h_rad = h_in * f_rad;
+                    let h_conv = (h_in - h_rad).max(0.0);
+                    let t_rad = rad_temps
+                        .get(w.zone_idx)
+                        .copied()
+                        .unwrap_or(self.config.thermal.indoor_temperature);
+                    let t_eff = if h_in > 0.0 {
+                        (h_conv * t_air + h_rad * t_rad) / h_in
+                    } else {
+                        t_air
+                    };
+                    (h_conv, t_eff)
+                } else {
+                    (h_in, t_air)
+                };
                 let absorbed_w = absorbed
                     .and_then(|m| m.get(&w.polygon_uid).copied())
                     .unwrap_or(0.0);
@@ -604,7 +712,7 @@ impl SimModule for EnergyModule {
 
                 let bc_in = BoundaryCondition::Convective {
                     h: h_in,
-                    t_fluid: t_air,
+                    t_fluid: t_eff,
                 };
                 let bc_out = if w.is_ground_coupled {
                     BoundaryCondition::Convective {
@@ -629,7 +737,8 @@ impl SimModule for EnergyModule {
                 };
 
                 w.solver.step(self.config.dt_s, &bc_out, &bc_in, &[]);
-                let q_in_w = w.solver.interior_heat_flux(&bc_in) * w.area_m2;
+                let t_surf = w.solver.interior_surface_temperature(&bc_in);
+                let q_in_w = h_in_conv * (t_surf - t_air) * w.area_m2;
                 if let Some(g) = air_gains.get_mut(w.zone_idx) {
                     *g += q_in_w;
                 }

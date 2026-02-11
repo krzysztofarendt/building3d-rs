@@ -279,6 +279,95 @@ impl FvmWallSolver {
     pub fn total_capacity_j_per_k(&self) -> f64 {
         self.mesh.cells.iter().map(|c| c.capacity()).sum()
     }
+
+    /// Estimate the actual boundary **surface** temperature (not the cell centroid).
+    ///
+    /// For convective boundary conditions, the solver eliminates the surface node and
+    /// applies an effective conductance between the fluid and the boundary-adjacent cell.
+    /// This helper reconstructs the corresponding surface temperature from the current
+    /// boundary-adjacent cell temperature, the half-cell conductance, and any imposed
+    /// surface source term.
+    fn boundary_surface_temperature(
+        &self,
+        t_centroid: f64,
+        bc: &BoundaryCondition,
+        face_idx: Option<usize>,
+        is_interior: bool,
+    ) -> f64 {
+        let Some(fi) = face_idx else {
+            return t_centroid;
+        };
+        if self.wall_area <= 0.0 {
+            return t_centroid;
+        }
+        let k_face_per_area = (self.mesh.faces[fi].conductance / self.wall_area).max(0.0);
+        match *bc {
+            BoundaryCondition::Dirichlet { temperature } => temperature,
+            BoundaryCondition::Neumann { .. } => t_centroid,
+            BoundaryCondition::Convective { h, t_fluid } => {
+                if h <= 0.0 {
+                    return t_centroid;
+                }
+                (k_face_per_area * t_centroid + h * t_fluid) / (k_face_per_area + h)
+            }
+            BoundaryCondition::ConvectiveWithFlux {
+                h,
+                t_fluid,
+                heat_flux,
+            } => {
+                if h <= 0.0 {
+                    return t_centroid;
+                }
+                let alpha = self.boundary_conduction_fraction(h, is_interior);
+                let q_into_wall = alpha * heat_flux;
+                (k_face_per_area * t_centroid + h * t_fluid + q_into_wall) / (k_face_per_area + h)
+            }
+            BoundaryCondition::ConvectiveWithFluxToDomain {
+                h,
+                t_fluid,
+                heat_flux,
+            } => {
+                if h <= 0.0 {
+                    return t_centroid;
+                }
+                // `ConvectiveWithFluxToDomain` represents a source injected into the wall domain
+                // (added to the boundary-adjacent control volume), not a surface energy-balance
+                // term. The effect of `heat_flux` is already reflected in `t_centroid`, so we do
+                // not add it again when reconstructing the surface temperature.
+                let _ = heat_flux;
+                (k_face_per_area * t_centroid + h * t_fluid) / (k_face_per_area + h)
+            }
+        }
+    }
+
+    /// Estimate the interior boundary **surface** temperature (°C).
+    pub fn interior_surface_temperature(&self, bc_interior: &BoundaryCondition) -> f64 {
+        let n = self.mesh.cells.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let t_centroid = self.temperatures[n - 1];
+        self.boundary_surface_temperature(
+            t_centroid,
+            bc_interior,
+            self.mesh.interior_boundary_face(),
+            true,
+        )
+    }
+
+    /// Estimate the exterior boundary **surface** temperature (°C).
+    pub fn exterior_surface_temperature(&self, bc_exterior: &BoundaryCondition) -> f64 {
+        if self.mesh.cells.is_empty() {
+            return 0.0;
+        }
+        let t_centroid = self.temperatures[0];
+        self.boundary_surface_temperature(
+            t_centroid,
+            bc_exterior,
+            self.mesh.exterior_boundary_face(),
+            false,
+        )
+    }
 }
 
 /// Apply a boundary condition to the tridiagonal system.
