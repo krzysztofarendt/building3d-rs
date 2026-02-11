@@ -134,6 +134,113 @@ impl FvmSparseSolver {
     pub fn temperatures(&self) -> &[f64] {
         &self.temperatures
     }
+
+    /// Heat flux at a boundary face [W/m²].
+    /// Positive = heat flows from domain outward through this face.
+    pub fn boundary_heat_flux(&self, face_idx: usize, bc: &BoundaryCondition) -> f64 {
+        let (cell_idx, face) = get_boundary_face_info(&self.mesh, face_idx);
+        let t_centroid = self.temperatures[cell_idx];
+        match *bc {
+            BoundaryCondition::Dirichlet { temperature } => {
+                let k_per_area = face.conductance / face.area;
+                k_per_area * (t_centroid - temperature)
+            }
+            BoundaryCondition::Neumann { heat_flux } => -heat_flux,
+            BoundaryCondition::Convective { h, t_fluid }
+            | BoundaryCondition::ConvectiveWithFlux {
+                h,
+                t_fluid,
+                heat_flux: _,
+            }
+            | BoundaryCondition::ConvectiveWithFluxToDomain {
+                h,
+                t_fluid,
+                heat_flux: _,
+            } => {
+                if h <= 0.0 {
+                    return 0.0;
+                }
+                let k_cond = face.conductance / face.area;
+                let k_combined = 1.0 / (1.0 / k_cond + 1.0 / h);
+                k_combined * (t_centroid - t_fluid)
+            }
+        }
+    }
+
+    /// Reconstructed surface temperature at a boundary face [°C].
+    /// Accounts for half-cell conduction resistance between centroid and surface.
+    pub fn boundary_surface_temperature(&self, face_idx: usize, bc: &BoundaryCondition) -> f64 {
+        let (cell_idx, face) = get_boundary_face_info(&self.mesh, face_idx);
+        let t_centroid = self.temperatures[cell_idx];
+        let k_face_per_area = (face.conductance / face.area).max(0.0);
+        match *bc {
+            BoundaryCondition::Dirichlet { temperature } => temperature,
+            BoundaryCondition::Neumann { .. } => t_centroid,
+            BoundaryCondition::Convective { h, t_fluid } => {
+                if h <= 0.0 {
+                    return t_centroid;
+                }
+                (k_face_per_area * t_centroid + h * t_fluid) / (k_face_per_area + h)
+            }
+            BoundaryCondition::ConvectiveWithFlux {
+                h,
+                t_fluid,
+                heat_flux,
+            } => {
+                if h <= 0.0 {
+                    return t_centroid;
+                }
+                let alpha = self.boundary_conduction_fraction(face_idx, h);
+                let q_into_wall = alpha * heat_flux;
+                (k_face_per_area * t_centroid + h * t_fluid + q_into_wall)
+                    / (k_face_per_area + h)
+            }
+            BoundaryCondition::ConvectiveWithFluxToDomain {
+                h,
+                t_fluid,
+                heat_flux: _,
+            } => {
+                if h <= 0.0 {
+                    return t_centroid;
+                }
+                (k_face_per_area * t_centroid + h * t_fluid) / (k_face_per_area + h)
+            }
+        }
+    }
+
+    /// Total thermal capacity of all cells [J/K].
+    pub fn total_capacity_j_per_k(&self) -> f64 {
+        self.mesh.cells.iter().map(|c| c.capacity()).sum()
+    }
+
+    /// Fraction (0..1) of a surface source that enters the domain
+    /// when the boundary has convective film coefficient h [W/(m²·K)].
+    pub fn boundary_conduction_fraction(&self, face_idx: usize, h: f64) -> f64 {
+        let (_cell_idx, face) = get_boundary_face_info(&self.mesh, face_idx);
+        let h_a = h.max(0.0) * face.area;
+        if h_a <= 0.0 {
+            return 1.0;
+        }
+        (face.conductance / (face.conductance + h_a)).clamp(0.0, 1.0)
+    }
+}
+
+/// Returns `(cell_idx, &FvmFace)` for a boundary face, or panics with a clear message.
+fn get_boundary_face_info(mesh: &FvmMesh, face_idx: usize) -> (usize, &FvmFace) {
+    assert!(
+        face_idx < mesh.faces.len(),
+        "face index {} out of range ({} faces)",
+        face_idx,
+        mesh.faces.len()
+    );
+    let face = &mesh.faces[face_idx];
+    let cell_idx = boundary_adjacent_cell(face).unwrap_or_else(|| {
+        panic!(
+            "face {} is not a boundary face (cell_left={}, cell_right={})",
+            face_idx, face.cell_left, face.cell_right
+        )
+    });
+    (cell_idx, face)
 }
 
 fn boundary_adjacent_cell(face: &FvmFace) -> Option<usize> {
@@ -450,6 +557,241 @@ mod tests {
             60.0,
             &[(0, BoundaryCondition::Dirichlet { temperature: 0.0 })],
             &[0.0, 0.0],
+        );
+    }
+
+    /// Helper: build a two-cell chain mesh for boundary method tests.
+    /// Layout: [boundary|--cell0--|--cell1--|boundary]
+    /// Each cell has volume = area * dx, conductance at boundary = k*A/half_dx.
+    fn two_cell_chain(k: f64, rho: f64, cp: f64, dx: f64, area: f64) -> FvmMesh {
+        let half_dx = dx / 2.0;
+        FvmMesh {
+            cells: vec![
+                FvmCell {
+                    volume: area * dx,
+                    conductivity: k,
+                    density: rho,
+                    specific_heat: cp,
+                },
+                FvmCell {
+                    volume: area * dx,
+                    conductivity: k,
+                    density: rho,
+                    specific_heat: cp,
+                },
+            ],
+            faces: vec![
+                // face 0: left boundary -> cell 0
+                FvmFace {
+                    cell_left: BOUNDARY,
+                    cell_right: 0,
+                    area,
+                    distance: half_dx,
+                    conductance: k * area / half_dx,
+                },
+                // face 1: cell 0 -> cell 1 (interior)
+                FvmFace {
+                    cell_left: 0,
+                    cell_right: 1,
+                    area,
+                    distance: dx,
+                    conductance: k * area / dx,
+                },
+                // face 2: cell 1 -> right boundary
+                FvmFace {
+                    cell_left: 1,
+                    cell_right: BOUNDARY,
+                    area,
+                    distance: half_dx,
+                    conductance: k * area / half_dx,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_sparse_boundary_heat_flux_dirichlet() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+        let mut solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let t_left = 0.0;
+        let t_right = 30.0;
+        let bc_left = BoundaryCondition::Dirichlet { temperature: t_left };
+        let bc_right = BoundaryCondition::Dirichlet { temperature: t_right };
+        let bcs = vec![(0, bc_left), (2, bc_right)];
+        let sources = vec![0.0, 0.0];
+
+        // Run to steady state
+        for _ in 0..10 {
+            solver.step(1e8, &bcs, &sources);
+        }
+
+        // Steady-state flux: q = k * dT / L = 1.4 * 30 / 0.2 = 210 W/m²
+        let expected_flux = k * (t_right - t_left) / (2.0 * dx);
+
+        // Left boundary: heat flows from domain outward (domain is warmer than 0°C)
+        // so flux should be positive-ish at left... actually let's think:
+        // cell0 centroid T ~ 7.5, bc T = 0 => flux = k_per_area * (7.5 - 0) > 0 => out
+        // But the expected uniform flux is q = k * 30 / 0.2 = 210 W/m²
+        let flux_left = solver.boundary_heat_flux(0, &bc_left);
+        assert!(
+            (flux_left - expected_flux).abs() < 1.0,
+            "left flux = {flux_left}, expected {expected_flux}"
+        );
+
+        // Right boundary: heat flows into domain from the hot side
+        // cell1 centroid T ~ 22.5, bc T = 30 => flux = k_per_area * (22.5 - 30) < 0 => into domain
+        let flux_right = solver.boundary_heat_flux(2, &bc_right);
+        assert!(
+            (flux_right + expected_flux).abs() < 1.0,
+            "right flux = {flux_right}, expected {}",
+            -expected_flux
+        );
+    }
+
+    #[test]
+    fn test_sparse_boundary_heat_flux_convective() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let h_left = 25.0;
+        let h_right = 7.7;
+        let t_left = -10.0;
+        let t_right = 20.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+        let mut solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let bc_left = BoundaryCondition::Convective {
+            h: h_left,
+            t_fluid: t_left,
+        };
+        let bc_right = BoundaryCondition::Convective {
+            h: h_right,
+            t_fluid: t_right,
+        };
+        let bcs = vec![(0, bc_left), (2, bc_right)];
+        let sources = vec![0.0, 0.0];
+
+        for _ in 0..20 {
+            solver.step(1e8, &bcs, &sources);
+        }
+
+        // R_total = 1/h_left + L/k + 1/h_right
+        let l_total = 2.0 * dx;
+        let r_total = 1.0 / h_left + l_total / k + 1.0 / h_right;
+        let expected_flux = (t_left - t_right) / r_total; // negative (heat flows right to left)
+
+        let flux_right = solver.boundary_heat_flux(2, &bc_right);
+        // flux_right should be negative (heat enters domain from right)
+        assert!(
+            (flux_right - expected_flux).abs() < expected_flux.abs() * 0.01,
+            "right flux = {flux_right}, expected {expected_flux}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_boundary_surface_temp_dirichlet() {
+        let mesh = two_cell_chain(1.4, 2300.0, 880.0, 0.1, 1.0);
+        let mut solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let bc = BoundaryCondition::Dirichlet { temperature: 42.0 };
+        let bcs = vec![
+            (0, bc),
+            (2, BoundaryCondition::Dirichlet { temperature: 10.0 }),
+        ];
+        solver.step(1e8, &bcs, &[0.0, 0.0]);
+
+        let t_surf = solver.boundary_surface_temperature(0, &bc);
+        assert!(
+            (t_surf - 42.0).abs() < 1e-12,
+            "Dirichlet surface temp should be prescribed: got {t_surf}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_boundary_surface_temp_convective() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let h = 7.7;
+        let t_fluid = 20.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+        let mut solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let bc_left = BoundaryCondition::Dirichlet { temperature: -10.0 };
+        let bc_right = BoundaryCondition::Convective { h, t_fluid };
+        let bcs = vec![(0, bc_left), (2, bc_right)];
+
+        for _ in 0..20 {
+            solver.step(1e8, &bcs, &[0.0, 0.0]);
+        }
+
+        let t_centroid = solver.temperatures()[1];
+        let t_surf = solver.boundary_surface_temperature(2, &bc_right);
+
+        // Surface temp should be between centroid and fluid temp
+        assert!(
+            t_surf > t_centroid.min(t_fluid) - 1e-6
+                && t_surf < t_centroid.max(t_fluid) + 1e-6,
+            "surface temp {t_surf} should be between centroid {t_centroid} and fluid {t_fluid}"
+        );
+
+        // Verify formula: T_s = (k_face * T_centroid + h * T_fluid) / (k_face + h)
+        let k_face_per_area = k / (dx / 2.0); // conductance / area
+        let expected = (k_face_per_area * t_centroid + h * t_fluid) / (k_face_per_area + h);
+        assert!(
+            (t_surf - expected).abs() < 1e-6,
+            "surface temp {t_surf} != expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_total_capacity() {
+        let k = 1.4;
+        let rho = 2300.0;
+        let cp = 880.0;
+        let dx = 0.1;
+        let area = 1.0;
+        let mesh = two_cell_chain(k, rho, cp, dx, area);
+        let solver = FvmSparseSolver::new(mesh, 10.0);
+
+        let expected = 2.0 * rho * cp * (area * dx);
+        let actual = solver.total_capacity_j_per_k();
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "capacity = {actual}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_boundary_conduction_fraction() {
+        let k = 1.4;
+        let dx = 0.1;
+        let area = 1.0;
+        let h = 25.0;
+
+        let mesh = two_cell_chain(k, 2300.0, 880.0, dx, area);
+        let solver = FvmSparseSolver::new(mesh, 10.0);
+
+        // face 0: boundary face, conductance = k * area / half_dx = 1.4 * 1.0 / 0.05 = 28.0
+        // h_a = 25.0 * 1.0 = 25.0
+        // fraction = 28.0 / (28.0 + 25.0) = 28/53
+        let expected = 28.0 / (28.0 + 25.0);
+        let actual = solver.boundary_conduction_fraction(0, h);
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "fraction = {actual}, expected {expected}"
+        );
+
+        // With h=0, all flux enters the domain
+        assert!(
+            (solver.boundary_conduction_fraction(0, 0.0) - 1.0).abs() < 1e-10,
+            "fraction with h=0 should be 1.0"
         );
     }
 }
