@@ -199,6 +199,26 @@ fn apply_boundary_contribution(
             };
             rhs[cell_idx] += alpha * heat_flux * face.area;
         }
+        BoundaryCondition::ConvectiveWithFluxToDomain {
+            h,
+            t_fluid,
+            heat_flux,
+        } => {
+            let h_a = h * face.area;
+            if h_a <= 0.0 {
+                rhs[cell_idx] += heat_flux * face.area;
+                return;
+            }
+            let k_eff = if face.conductance > 0.0 {
+                1.0 / (1.0 / h_a + 1.0 / face.conductance)
+            } else {
+                h_a
+            };
+            diag[cell_idx] += k_eff;
+            rhs[cell_idx] += k_eff * t_fluid;
+            // Full flux enters the domain (no convective split)
+            rhs[cell_idx] += heat_flux * face.area;
+        }
     }
 }
 

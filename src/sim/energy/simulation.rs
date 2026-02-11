@@ -2958,7 +2958,10 @@ mod tests {
         config.two_node_mass_fraction = 0.8;
         config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
 
-        let opts_warmup = TransientSimulationOptions { warmup_hours: 48 };
+        let opts_warmup = TransientSimulationOptions {
+            warmup_hours: 48,
+            substeps_per_hour: 1,
+        };
 
         let result_warmup = run_transient_simulation_with_options(
             &building,
