@@ -415,8 +415,8 @@ fn solar_config_for_case_600() -> SolarGainConfig {
     solar.incidence_angle_modifier_a = 0.1;
     solar.include_exterior_opaque_absorption = true;
     solar.default_opaque_absorptance = 0.6;
-    // Phase 2.2 refinements: exterior longwave exchange + wind-based h_out.
-    solar.include_exterior_longwave_exchange = false;
+    // Phase 2.2: exterior longwave exchange with sky/ground.
+    solar.include_exterior_longwave_exchange = true;
     solar.use_wind_speed_for_h_out = false;
     solar
 }
