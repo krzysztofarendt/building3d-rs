@@ -8,7 +8,8 @@ use crate::sim::coupling::WeatherHourIndex;
 use crate::sim::coupling::{ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerZone};
 use crate::sim::energy::boundary::ThermalBoundaries;
 use crate::sim::energy::solar_bridge::{
-    SolarGainConfig, SolarHourParams, compute_solar_gains_per_zone_with_materials,
+    SolarGainConfig, SolarHourParams, angular_transmittance_modifier,
+    compute_solar_gains_per_zone_with_materials,
 };
 use crate::sim::energy::weather::WeatherData;
 use crate::sim::engine::FlatScene;
@@ -966,31 +967,37 @@ fn compute_shaded_shortwave(
         }
 
         let normal = poly.vn;
-        let mut q = 0.0;
+        let mut q_diffuse = 0.0;
+        let mut q_direct = 0.0;
 
         // Diffuse component: isotropic sky view factor.
         let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-        q += dhi * sky_view;
+        q_diffuse += dhi * sky_view;
 
         // Direct component: DNI * cos(incidence) * visibility.
+        let mut cos_inc = 0.0;
         if sun_above && dni > 0.0 {
-            let cos_incidence = sun_dir.dot(&normal).max(0.0);
-            if cos_incidence > 0.0 {
+            cos_inc = sun_dir.dot(&normal).max(0.0);
+            if cos_inc > 0.0 {
                 let vis = visibility_fraction(scene, poly_idx, sun_dir);
-                q += dni * cos_incidence * vis;
+                q_direct += dni * cos_inc * vis;
             }
         }
 
-        if q <= 0.0 {
+        if q_diffuse + q_direct <= 0.0 {
             continue;
         }
 
         if let Some(shgc) = shgc {
+            let iam_diffuse = angular_transmittance_modifier(0.5, gain_config);
+            let iam_direct = angular_transmittance_modifier(cos_inc, gain_config);
+            let q = q_diffuse * iam_diffuse + q_direct * iam_direct;
             let q_trans = q * area * shgc;
             if q_trans != 0.0 {
                 *gains_by_zone.entry(surface.zone_uid.clone()).or_insert(0.0) += q_trans;
             }
         } else {
+            let q = q_diffuse + q_direct;
             let absorptance = opaque_absorptance_for_path(&surface.path, material_library);
             let q_abs = q * area * absorptance;
             if q_abs > 0.0 {
