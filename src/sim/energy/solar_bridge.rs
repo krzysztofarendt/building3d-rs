@@ -61,6 +61,11 @@ pub struct SolarGainConfig {
     pub h_out_wind_coeff_w_per_m2_k_per_m_s: f64,
     /// Optional tilt scaling applied to `h_out`: `h_out *= 1 + tilt_scale*|n_z|`.
     pub h_out_tilt_scale: f64,
+    /// Optional 5th-order polynomial coefficients for angular SHGC.
+    /// `SHGC(theta) = SHGC_0 * sum(c[i] * cos^i(theta))` for i=0..5.
+    /// When `Some`, overrides the ASHRAE IAM modifier.
+    /// Coefficients should sum to 1.0 (normalization at theta=0).
+    pub angular_shgc_coefficients: Option<[f64; 6]>,
 }
 
 impl SolarGainConfig {
@@ -88,7 +93,15 @@ impl SolarGainConfig {
             h_out_base_w_per_m2_k: 5.0,
             h_out_wind_coeff_w_per_m2_k_per_m_s: 4.0,
             h_out_tilt_scale: 0.0,
+            angular_shgc_coefficients: None,
         }
+    }
+
+    /// Polynomial coefficients for single-pane clear glass (n ~ 1.526).
+    /// Derived from Fresnel transmittance + absorption fit for 3mm clear float glass
+    /// (BESTEST Glass Type 1, T_sol(0) = 0.834).
+    pub fn single_pane_clear_coefficients() -> [f64; 6] {
+        [0.0, 3.2695, -2.4987, -3.1251, 5.7123, -2.3581]
     }
 
     /// Returns the SHGC for a polygon path, or None if it's not glazing.
@@ -126,6 +139,30 @@ impl SolarGainConfig {
 impl Default for SolarGainConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Angular transmittance modifier for glazing.
+///
+/// When polynomial coefficients are provided, evaluates:
+///   T(theta)/T(0) = sum(c[i] * cos^i(theta))
+///
+/// Otherwise falls back to ASHRAE IAM:
+///   IAM = 1 - a * (1/cos(theta) - 1)
+pub fn angular_transmittance_modifier(cos_incidence: f64, config: &SolarGainConfig) -> f64 {
+    if !(cos_incidence.is_finite() && cos_incidence > 0.0) {
+        return 0.0;
+    }
+    if let Some(c) = &config.angular_shgc_coefficients {
+        let x = cos_incidence;
+        let val = c[0] + c[1] * x + c[2] * x * x + c[3] * x * x * x
+            + c[4] * x * x * x * x + c[5] * x * x * x * x * x;
+        val.clamp(0.0, 1.0)
+    } else if config.include_incidence_angle_modifier {
+        let a = config.incidence_angle_modifier_a.max(0.0);
+        (1.0 - a * (1.0 / cos_incidence - 1.0)).clamp(0.0, 1.0)
+    } else {
+        1.0
     }
 }
 
@@ -202,15 +239,6 @@ pub fn compute_solar_gains_with_materials(
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
 ) -> f64 {
-    fn iam_for_cos(cos_incidence: f64, a: f64) -> f64 {
-        if !(cos_incidence.is_finite() && cos_incidence > 0.0) {
-            return 0.0;
-        }
-        let a = a.max(0.0);
-        let iam = 1.0 - a * (1.0 / cos_incidence - 1.0);
-        iam.clamp(0.0, 1.0)
-    }
-
     let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
@@ -225,14 +253,7 @@ pub fn compute_solar_gains_with_materials(
     let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
     let use_ground = config.include_ground_reflection && rho_g > 0.0;
 
-    let use_iam = config.include_incidence_angle_modifier;
-    let a_iam = config.incidence_angle_modifier_a;
-    let iam_diffuse = if use_iam {
-        // Effective incidence for isotropic diffuse/ground components: assume 60°.
-        iam_for_cos(0.5, a_iam)
-    } else {
-        1.0
-    };
+    let iam_diffuse = angular_transmittance_modifier(0.5, config); // cos(60°)
 
     for zone in building.zones() {
         for solid in zone.solids() {
@@ -267,9 +288,7 @@ pub fn compute_solar_gains_with_materials(
                             if cos_incidence > 0.0 {
                                 let mut i =
                                     params.direct_normal_irradiance.max(0.0) * cos_incidence;
-                                if use_iam {
-                                    i *= iam_for_cos(cos_incidence, a_iam);
-                                }
+                                i *= angular_transmittance_modifier(cos_incidence, config);
                                 incident_direct = i;
                             }
                         }
@@ -292,15 +311,6 @@ pub fn compute_solar_gains_per_zone_with_materials(
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
 ) -> HashMap<crate::UID, f64> {
-    fn iam_for_cos(cos_incidence: f64, a: f64) -> f64 {
-        if !(cos_incidence.is_finite() && cos_incidence > 0.0) {
-            return 0.0;
-        }
-        let a = a.max(0.0);
-        let iam = 1.0 - a * (1.0 / cos_incidence - 1.0);
-        iam.clamp(0.0, 1.0)
-    }
-
     let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
@@ -315,13 +325,7 @@ pub fn compute_solar_gains_per_zone_with_materials(
     let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
     let use_ground = config.include_ground_reflection && rho_g > 0.0;
 
-    let use_iam = config.include_incidence_angle_modifier;
-    let a_iam = config.incidence_angle_modifier_a;
-    let iam_diffuse = if use_iam {
-        iam_for_cos(0.5, a_iam)
-    } else {
-        1.0
-    };
+    let iam_diffuse = angular_transmittance_modifier(0.5, config); // cos(60°)
 
     for zone in building.zones() {
         let mut zone_gains = 0.0;
@@ -358,9 +362,7 @@ pub fn compute_solar_gains_per_zone_with_materials(
                         let cos_incidence = sun_dir.dot(&normal).max(0.0);
                         if cos_incidence > 0.0 {
                             let mut i = params.direct_normal_irradiance.max(0.0) * cos_incidence;
-                            if use_iam {
-                                i *= iam_for_cos(cos_incidence, a_iam);
-                            }
+                            i *= angular_transmittance_modifier(cos_incidence, config);
                             incident_direct = i;
                         }
                     }

@@ -77,7 +77,13 @@ Q_opaque = (U / h_out) * alpha * I_incident * A
 Solar position: Spencer (1971) with equation-of-time and longitude correction.
 EPW hour-ending convention handled via mid-hour timestamp (`hour - 0.5`).
 
-Optional incidence angle modifier: `SHGC(theta) = SHGC_0 * (1 - a * (1/cos(theta) - 1))`.
+Angular transmittance modifier (two options, selected via config):
+- **ASHRAE IAM:** `IAM = 1 - a * (1/cos(theta) - 1)`, clamped to [0, 1].
+- **Polynomial:** `SHGC(theta) = SHGC_0 * sum(c[i] * cos^i(theta))` for i=0..5,
+  with preset coefficients derived from Fresnel + absorption fit for single-pane
+  clear glass (n=1.526, BESTEST Glass Type 1). The polynomial is more physically
+  accurate at high incidence angles (70-80°) but gives nearly identical annual
+  results to ASHRAE IAM a=0.1 for single-pane glass.
 
 ### 1.5 HVAC
 
@@ -113,7 +119,7 @@ facing-graph overlay keyed by polygon UID:
   uses air temperature for outgoing radiation, not surface temperature)
 - **Constant h_out** from ISO 6946 R_se (wind-dependent model available but disabled
   by default)
-- **Constant SHGC** (no spectral or angular dependence beyond simple IAM)
+- **Constant SHGC** (no spectral dependence; polynomial angular model available)
 - **Constant infiltration** (no wind/stack pressure dependence)
 - **Constant ground temperature** boundary
 - **No latent loads** (sensible only)
@@ -133,7 +139,7 @@ facing-graph overlay keyed by polygon UID:
 | **Wall conduction** | Conduction Transfer Functions (CTF) from state-space pre-computation, or Conduction Finite Difference (CondFD). Both capture exact distributed thermal mass. | 1D FVM (similar to CondFD) for eligible exterior opaque surfaces. Windows and inter-zone partitions use steady U*A. |
 | **Solar distribution** | Beam solar distributed to surfaces proportional to `Area * Absorptance`. Full ray-tracing option available. | Fraction-based: `transmitted_solar_to_air_fraction` + remainder to mass node or internal mass slabs. Not geometry-aware. |
 | **Zone air balance** | `C_z * dT/dt = convective_gains + sum(h_i*A_i*(T_si - T_z)) + infiltration + HVAC`. 3rd-order backward difference. Predictor-corrector with HVAC. | Backward Euler on lumped or 2-node model. HVAC applied as ideal loads. |
-| **Window thermal** | ISO 15099 layer-by-layer spectral calculation. Angular transmittance/reflectance per layer. | Bulk U-value override + constant SHGC. Simple IAM approximation. |
+| **Window thermal** | ISO 15099 layer-by-layer spectral calculation. Angular transmittance/reflectance per layer. | Bulk U-value override + constant SHGC. Polynomial angular transmittance (Fresnel-based) or ASHRAE IAM. |
 | **Ground coupling** | Kiva 2D finite difference solver with detailed soil domain. | Constant ground temperature boundary. |
 | **Infiltration** | Design flow rate, effective leakage area (Sherman-Grimsrud), flow coefficient (AIM-2), or full airflow network. | Constant ACH. |
 
@@ -169,27 +175,29 @@ Logan TMY3 EPW file.
 
 | Case | Metric | Annual Error vs E+ | Primary Cause |
 |------|--------|-------------------|---------------|
-| 600 | Heating | -29.2% | Remaining gap from simplified h_out + no interior LW exchange |
-| 600 | Cooling | +18.4% | Solar over-prediction (constant SHGC, simplified distribution) |
-| 900 | Heating | +21.7% | LW sky loss + thermal mass dynamics over-predicting heating |
-| 900 | Cooling | +10.0% | Improved by routing solar to internal mass slabs |
+| 600 | Heating | -29.3% | Remaining gap from simplified h_out + no interior LW exchange |
+| 600 | Cooling | +18.3% | Solar over-prediction (simplified distribution, no interior LW) |
+| 900 | Heating | +20.7% | LW sky loss + thermal mass dynamics over-predicting heating |
+| 900 | Cooling | +9.2% | Improved by routing solar to internal mass slabs |
 
 ### 3.2 Monthly Pattern Analysis
 
-**Case 600 heating (-29.2%):** building3d under-predicts heating. Exterior LW sky
-exchange is now included on FVM walls, which improved this from -34.3% to -29.2%.
+**Case 600 heating (-29.3%):** building3d under-predicts heating. Exterior LW sky
+exchange is now included on FVM walls, which improved this from -34.3% to -29.3%.
 Remaining gap likely from constant h_out and missing interior LW radiation exchange.
 
-**Case 600 cooling (+18.4%):** Over-prediction in summer from solar gains being too
-high. Constant SHGC (no angular reduction at grazing incidence) and simplified solar
-distribution contribute.
+**Case 600 cooling (+18.3%):** Over-prediction in summer from solar gains being too
+high. The angular SHGC polynomial (Phase 3) had negligible effect because the
+Fresnel+absorption curve for single-pane glass closely matches the ASHRAE IAM.
+Remaining gap is primarily from simplified solar distribution and missing interior
+LW radiation exchange.
 
-**Case 900 heating (+21.7%):** Over-predicts heating. The LW sky correction increased
+**Case 900 heating (+20.7%):** Over-predicts heating. The LW sky correction increased
 heating demand beyond the reference. May indicate the LW term is too strong without
 a coupled surface temperature solve, or that the thermal mass seasonal buffering
-needs tuning.
+needs tuning. Slightly improved from +21.7% by the polynomial angular model.
 
-**Case 900 cooling (+10.0%):** Significantly improved from +22.2% by routing
+**Case 900 cooling (+9.2%):** Significantly improved from +22.2% by routing
 transmitted solar to internal mass slabs (FVM floor) rather than directly to zone
 air. The thermal lag from the FVM slab delays solar release.
 
@@ -235,13 +243,22 @@ a full grey-interchange model (ScriptF) that redistributes heat from warm surfac
    with a zone mean radiant node weighted by area*emissivity.
 3. Long term: full view-factor calculation (can reuse ray infrastructure).
 
-### Gap 4: Angular SHGC (MEDIUM)
+### Gap 4: Angular SHGC -- DONE
 
-**Problem:** Constant SHGC regardless of incidence angle. Real SHGC drops
-significantly at grazing angles, especially important for east/west windows.
+**Status:** Implemented. 5th-order polynomial angular transmittance model
+`SHGC(theta) = SHGC_0 * sum(c[i]*cos^i(theta))` with preset coefficients derived
+from Fresnel reflectance + absorption fit for single-pane clear glass (n=1.526).
+Applied consistently in all three SHGC computation paths (unshaded, shaded, legacy).
+Falls back to ASHRAE IAM when polynomial coefficients are not set.
 
-**Fix:** Implement `SHGC(theta) = SHGC_0 * f(theta)` using a polynomial fit. The
-simple IAM modifier exists but is a coarse approximation.
+**Effect:** Negligible for single-pane clear glass (BESTEST Glass Type 1). The
+Fresnel+absorption transmittance curve closely matches ASHRAE IAM a=0.1 at most
+angles. Annual changes were <0.2% for Case 600 and ~1% for Case 900. The angular
+model is not a significant contributor to the remaining cooling over-prediction;
+that gap comes from other sources (solar distribution, interior LW exchange).
+
+**Future value:** The polynomial infrastructure will have more impact with multi-pane
+low-e glazing coefficients, where angular drop-off is steeper than single-pane.
 
 ### Gap 5: Ground Coupling (LOW for BESTEST)
 
@@ -268,14 +285,16 @@ deduction logic may not be fully correct.
 |-------|-----|--------|--------|
 | **1** | Gap 2: Interior solar distribution | Fix Case 900 cooling | DONE |
 | **2** | Gap 1: Exterior surface heat balance | Fix Case 600 heating | DONE |
-| **3** | Gap 4: Angular SHGC | Improve seasonal accuracy | Next |
-| **4** | Gap 3: Interior LW exchange | Improve thermal lag dynamics | |
+| **3** | Gap 4: Angular SHGC | Improve seasonal accuracy | DONE (negligible effect) |
+| **4** | Gap 3: Interior LW exchange | Improve thermal lag dynamics | Next |
 | **5** | Gap 6: Zone capacity audit | Prevent double-counting | |
 | **6** | Gap 5: Ground coupling | Marginal improvement | |
 
-After Phases 1-2, Case 600 is within ~29% heating / ~18% cooling and Case 900
-within ~22% heating / ~10% cooling. Phases 3-4 should bring results closer to the
-ASHRAE 140 inter-program spread (12-32%).
+After Phases 1-3, Case 600 is within ~29% heating / ~18% cooling and Case 900
+within ~21% heating / ~9% cooling. Phase 3 (angular SHGC) confirmed that the
+angular model is not a significant error source for single-pane glass. The
+remaining cooling over-prediction is likely dominated by simplified solar
+distribution and missing interior LW radiation exchange (Phase 4).
 
 ### 4.2 Validation Strategy
 

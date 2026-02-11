@@ -374,6 +374,8 @@ fn solar_cfg() -> SolarGainConfig {
     // Phase 2.2: exterior longwave exchange with sky/ground.
     solar.include_exterior_longwave_exchange = true;
     solar.use_wind_speed_for_h_out = false;
+    // Phase 3: polynomial angular SHGC for single-pane clear glass.
+    solar.angular_shgc_coefficients = Some(SolarGainConfig::single_pane_clear_coefficients());
     solar
 }
 
