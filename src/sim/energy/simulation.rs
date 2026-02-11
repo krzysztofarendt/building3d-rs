@@ -1029,13 +1029,15 @@ pub fn run_transient_simulation_with_options(
     // the "radiant-to-surfaces" behavior in EnergyPlus.
     let mut interior_source_area_walls_by_zone_uid: std::collections::HashMap<UID, f64> =
         std::collections::HashMap::new();
-    for w in &fvm_walls {
-        if w.area_m2 <= 0.0 {
-            continue;
+    if base_config.distribute_transmitted_solar_to_fvm_walls {
+        for w in &fvm_walls {
+            if w.area_m2 <= 0.0 {
+                continue;
+            }
+            *interior_source_area_walls_by_zone_uid
+                .entry(w.zone_uid.clone())
+                .or_insert(0.0) += w.area_m2;
         }
-        *interior_source_area_walls_by_zone_uid
-            .entry(w.zone_uid.clone())
-            .or_insert(0.0) += w.area_m2;
     }
     let mut interior_source_area_mass_by_zone_uid: std::collections::HashMap<UID, f64> =
         std::collections::HashMap::new();

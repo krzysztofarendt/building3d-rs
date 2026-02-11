@@ -191,6 +191,11 @@ pub struct ThermalConfig {
     pub internal_mass_surfaces: Vec<InternalMassSurface>,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
+    /// If true, distribute transmitted solar to FVM wall interior faces (area-proportional
+    /// with internal mass slabs). If false (default), transmitted solar goes only to
+    /// internal mass slabs, which avoids an unrealistic heat-loss path through wall
+    /// insulation to outdoors.
+    pub distribute_transmitted_solar_to_fvm_walls: bool,
 }
 
 impl ThermalConfig {
@@ -223,6 +228,7 @@ impl ThermalConfig {
             use_fvm_walls: true,
             internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
+            distribute_transmitted_solar_to_fvm_walls: false,
         }
     }
 

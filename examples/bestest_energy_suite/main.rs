@@ -371,6 +371,9 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // most of it on interior surfaces (floor-first), and similarly deposit the radiant
     // fraction of internal gains to surfaces.
     cfg.use_surface_aware_solar_distribution = true;
+    // Do NOT distribute transmitted solar to FVM wall interior faces; route it only to
+    // the floor mass slab, avoiding an unrealistic heat-loss path through wall insulation.
+    cfg.distribute_transmitted_solar_to_fvm_walls = false;
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 
