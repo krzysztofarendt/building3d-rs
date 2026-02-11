@@ -16,8 +16,10 @@ pub fn backward_trace_sensors(
     scene: &FlatScene,
     lights: &[&dyn LightSource],
     num_rays: usize,
+    seed: u64,
 ) {
-    let mut rng = rand::thread_rng();
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
     for sensor in &mut grid.sensors {
         let normal = sensor.normal;
@@ -96,7 +98,7 @@ mod tests {
         let sky = DirectionalLight::new(Vector::new(0.0, 0.0, -1.0), [500.0, 500.0, 500.0]);
         let lights: Vec<&dyn LightSource> = vec![&sky];
 
-        backward_trace_sensors(&mut grid, &scene, &lights, 100);
+        backward_trace_sensors(&mut grid, &scene, &lights, 100, 123);
 
         // Sensors should receive some illuminance
         if !grid.sensors.is_empty() {

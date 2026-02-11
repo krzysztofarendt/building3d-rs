@@ -126,6 +126,18 @@ pub struct ThermalConfig {
     /// Interpretation: fraction (0..1) of the total **mass-side** capacity assigned to the
     /// envelope node. The remainder is assigned to the interior surface node.
     pub three_node_envelope_mass_fraction: f64,
+    /// If true, replace steady `U*A*ΔT` exterior conduction for eligible opaque
+    /// exterior surfaces with per-surface 1D FVM wall solvers.
+    ///
+    /// Eligibility (current policy):
+    /// - exterior surface,
+    /// - has a resolved [`WallConstruction`] (layer stack),
+    /// - does **not** have an explicit U-value override (UID or path-pattern),
+    /// - is not treated as glazing (material `is_glazing` or name heuristics),
+    /// - is not ground-coupled (when `ground_temperature_c` is set).
+    ///
+    /// This is intended for transient simulations and step-based pipelines.
+    pub use_fvm_walls: bool,
     /// Policy for computing inter-zone partition conductance from two assigned U-values.
     pub interzone_u_value_policy: InterZoneUValuePolicy,
 }
@@ -155,6 +167,7 @@ impl ThermalConfig {
             internal_gains_to_mass_fraction: 0.0,
             two_node_envelope_to_mass: false,
             three_node_envelope_mass_fraction: 0.0,
+            use_fvm_walls: true,
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
         }
     }
@@ -217,6 +230,23 @@ impl ThermalConfig {
 
         // 6) Default
         self.default_u_value
+    }
+
+    /// Returns true if this surface has an explicit U-value override (by UID or path/pattern).
+    ///
+    /// This is used by higher-fidelity wall models to decide whether a surface should
+    /// follow an explicit manufacturer-style U-value rather than a layered construction.
+    pub fn has_u_value_override_for_surface(&self, polygon_uid: &UID, path: &str) -> bool {
+        if self
+            .u_value_overrides_by_polygon_uid
+            .contains_key(polygon_uid)
+        {
+            return true;
+        }
+        if self.u_value_overrides_by_path_pattern.contains_key(path) {
+            return true;
+        }
+        self.best_matching_u_value_override(path).is_some()
     }
 
     /// Resolves envelope thermal capacity per unit area (J/(m²·K)) for a surface.
@@ -357,6 +387,7 @@ mod tests {
         assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
         assert!((config.solar_gains_to_mass_fraction - 0.0).abs() < 1e-12);
         assert!((config.internal_gains_to_mass_fraction - 0.0).abs() < 1e-12);
+        assert!(config.use_fvm_walls);
         assert_eq!(config.interzone_u_value_policy, InterZoneUValuePolicy::Mean);
     }
 

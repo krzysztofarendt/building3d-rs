@@ -972,6 +972,8 @@ mergeable on its own and keep the lighting engine usable as a composable kernel.
    - If/when parallelism is added: enforce stable chunking and per-chunk RNG streams so results
      do not change with thread count.
    - Acceptance: a golden-scene test asserts identical numeric outputs across repeated runs.
+   - Status: **DONE** — `LightingConfig.seed` now drives a seeded RNG in `LightingSimulation::run()`,
+     and a determinism regression test asserts identical outputs on repeated runs.
 
 2. **Refactor daylight inputs into a “sky + sun” stage**
    - Create a small API boundary for “daylight inputs”:

@@ -4,7 +4,6 @@ use anyhow::Result;
 use rand::Rng;
 
 use crate::sim::engine::FlatScene;
-use crate::sim::engine::reflection::{Diffuse, ReflectionModel, Specular};
 use crate::{Building, Point, Vector};
 
 use super::config::LightingConfig;
@@ -100,7 +99,8 @@ impl LightingSimulation {
 
     /// Runs the forward ray tracing simulation.
     pub fn run(&self) -> LightingResult {
-        let mut rng = rand::thread_rng();
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(self.config.seed);
         self.run_with_rng(&mut rng)
     }
 
@@ -210,7 +210,7 @@ impl LightingSimulation {
                         e[1] * diff[1] / p_diff,
                         e[2] * diff[2] / p_diff,
                     ];
-                    dir = Diffuse.reflect(dir, normal);
+                    dir = diffuse_reflect(dir, normal, rng);
                 } else if roll < p_diff + p_spec {
                     // Specular reflection
                     e = [
@@ -218,7 +218,7 @@ impl LightingSimulation {
                         e[1] * spec[1] / p_spec,
                         e[2] * spec[2] / p_spec,
                     ];
-                    dir = Specular.reflect(dir, normal);
+                    dir = specular_reflect(dir, normal);
                 } else {
                     // Transmission: continue in same direction, offset past surface
                     e = [
@@ -246,6 +246,50 @@ impl LightingSimulation {
             }
         }
     }
+}
+
+fn specular_reflect(incident: Vector, normal: Vector) -> Vector {
+    let dot = incident.dot(&normal);
+    incident - 2.0 * dot * normal
+}
+
+/// Lambertian diffuse reflection (cosine-weighted hemisphere sampling via Malley's method).
+fn diffuse_reflect(incident: Vector, normal: Vector, rng: &mut impl Rng) -> Vector {
+    let speed = incident.length();
+
+    // Flip the hemisphere so the reflected ray stays on the same side of the surface
+    // as the incident ray (handles outward-facing normals for interior propagation).
+    let hemisphere_normal = if incident.dot(&normal) >= 0.0 {
+        normal * -1.0
+    } else {
+        normal
+    };
+
+    // Build orthonormal basis (tangent, bitangent) around the hemisphere normal.
+    let n = hemisphere_normal;
+    let arbitrary = if n.dx.abs() < 0.9 {
+        Vector::new(1.0, 0.0, 0.0)
+    } else {
+        Vector::new(0.0, 1.0, 0.0)
+    };
+    let tangent = n
+        .cross(&arbitrary)
+        .normalize()
+        .unwrap_or(Vector::new(1.0, 0.0, 0.0));
+    let bitangent = n.cross(&tangent);
+
+    // Malley's method: sample uniformly on a disk, then project onto hemisphere.
+    // This produces a cosine-weighted distribution (pdf = cos(theta) / pi).
+    let u1: f64 = rng.r#gen();
+    let u2: f64 = rng.r#gen();
+    let r = u1.sqrt();
+    let phi = 2.0 * std::f64::consts::PI * u2;
+    let x = r * phi.cos();
+    let y = r * phi.sin();
+    let z = (1.0 - u1).sqrt(); // = sqrt(1 - r^2)
+
+    // Transform from local to world coordinates and preserve speed.
+    (tangent * x + bitangent * y + n * z) * speed
 }
 
 /// Generate a random unit vector.
@@ -358,6 +402,30 @@ mod tests {
             !result.illuminance.is_empty(),
             "Illuminance should be computed"
         );
+    }
+
+    #[test]
+    fn test_deterministic_with_seed() {
+        let s0 = Solid::from_box(3.0, 3.0, 3.0, None, "room").unwrap();
+        let zone = Zone::new("z", vec![s0]).unwrap();
+        let building = Building::new("b", vec![zone]).unwrap();
+
+        let mut config = LightingConfig::new();
+        config.seed = 12345;
+        config.num_rays = 25_000;
+        config.max_bounces = 3;
+        config.default_reflectance = [0.3, 0.3, 0.3];
+        config
+            .point_lights
+            .push(PointLight::white(Point::new(1.5, 1.5, 1.5), 800.0));
+
+        let sim = LightingSimulation::new(&building, config).unwrap();
+        let r1 = sim.run();
+        let r2 = sim.run();
+
+        assert_eq!(r1.incident_flux, r2.incident_flux);
+        assert_eq!(r1.hit_count, r2.hit_count);
+        assert_eq!(r1.illuminance, r2.illuminance);
     }
 
     #[test]
