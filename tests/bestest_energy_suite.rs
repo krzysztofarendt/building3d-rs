@@ -333,6 +333,7 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
             area_m2: 48.0,
             construction: floor,
             boundary: InternalMassBoundary::OneSidedAdiabatic,
+            cos_tilt: -1.0,
         });
     }
 

@@ -102,6 +102,7 @@ struct FvmExteriorWall {
     is_ground_coupled: bool,
     h_in_w_per_m2_k: f64,
     h_out_w_per_m2_k: f64,
+    h_min_iso_interior: f64,
     solver: FvmWallSolver,
 }
 
@@ -111,6 +112,8 @@ struct FvmInternalMassSurface {
     area_m2: f64,
     boundary: InternalMassBoundary,
     h_w_per_m2_k: f64,
+    cos_tilt: f64,
+    h_min_iso: f64,
     solver: FvmWallSolver,
 }
 
@@ -123,6 +126,8 @@ struct SteadyStateExteriorSurface {
     area_m2: f64,
     u_value_w_per_m2_k: f64,
     h_in_w_per_m2_k: f64,
+    #[allow(dead_code)]
+    cos_tilt: f64,
 }
 
 fn is_ground_coupled_exterior_surface(
@@ -223,6 +228,7 @@ fn collect_fvm_exterior_walls(
             is_ground_coupled: false,
             h_in_w_per_m2_k: h_in,
             h_out_w_per_m2_k: h_out,
+            h_min_iso_interior: h_si_iso,
             solver,
         });
         skip.insert(s.polygon_uid.clone());
@@ -268,6 +274,8 @@ fn collect_internal_mass_surfaces(
                 area_m2: m.area_m2,
                 boundary: m.boundary,
                 h_w_per_m2_k: h,
+                cos_tilt: m.cos_tilt,
+                h_min_iso: h_si_iso,
                 solver,
             });
         }
@@ -310,16 +318,22 @@ fn collect_steady_state_exterior_surfaces(
         } else {
             h_si_iso
         };
+        let cos_tilt = building
+            .get_polygon(&s.path)
+            .map(|p| p.vn.dz)
+            .unwrap_or(0.0);
         out.push(SteadyStateExteriorSurface {
             zone_uid: s.zone_uid.clone(),
             area_m2: s.area_m2,
             u_value_w_per_m2_k: u,
             h_in_w_per_m2_k: h_in,
+            cos_tilt,
         });
     }
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID) -> f64>(
     walls: &mut [FvmExteriorWall],
     config: &ThermalConfig,
@@ -327,6 +341,7 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
     params: Option<&SolarHourParams>,
     interior_surface_sources_w_by_zone_uid: Option<&std::collections::HashMap<UID, f64>>,
     outdoor_temp_c: f64,
+    wind_speed: f64,
     zone_air_temp_for: F,
     zone_radiant_temp_for: G,
     dt_s: f64,
@@ -381,7 +396,16 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
 
     for w in walls {
         let t_air = zone_air_temp_for(&w.zone_uid);
-        let h_in_total = w.h_in_w_per_m2_k.max(1e-9);
+        // Dynamic interior convection coefficient.
+        let cos_tilt = w.normal.dz;
+        let t_surf_prev = w.solver.interior_surface_temp();
+        let h_in_total = super::convection::interior_convection_h(
+            &config.interior_convection_model,
+            t_surf_prev - t_air,
+            cos_tilt,
+            w.h_min_iso_interior,
+        )
+        .max(1e-9);
         let (h_in_conv, t_eff) = if config.use_interior_radiative_exchange {
             let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
             let h_rad = h_in_total * f_rad;
@@ -399,7 +423,9 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
 
         const SIGMA: f64 = 5.670_374_419e-8; // Stefan–Boltzmann (W/m²/K⁴)
 
-        let h_out = if let (Some(sc), Some(p)) = (solar_config, params) {
+        // Dynamic exterior convection coefficient.
+        let t_surf_ext_prev = w.solver.exterior_surface_temp();
+        let h_out_base = if let (Some(sc), Some(p)) = (solar_config, params) {
             let mut h = if sc.use_wind_speed_for_h_out {
                 let v = p.wind_speed.max(0.0);
                 sc.h_out_base_w_per_m2_k + sc.h_out_wind_coeff_w_per_m2_k_per_m_s * v
@@ -413,6 +439,14 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
         } else {
             w.h_out_w_per_m2_k.max(1e-9)
         };
+        let h_out = super::convection::exterior_convection_h(
+            &config.exterior_convection_model,
+            h_out_base,
+            t_surf_ext_prev - outdoor_temp_c,
+            cos_tilt,
+            wind_speed,
+        )
+        .max(1e-9);
 
         let mut heat_flux_sw_w_per_m2 = 0.0;
 
@@ -547,7 +581,15 @@ fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(
 
     for s in surfaces {
         let t_air = zone_air_temp_for(&s.zone_uid);
-        let h_total = s.h_w_per_m2_k.max(1e-9);
+        // Dynamic interior convection coefficient for internal mass.
+        let t_surf_prev = s.solver.interior_surface_temp();
+        let h_total = super::convection::interior_convection_h(
+            &config.interior_convection_model,
+            t_surf_prev - t_air,
+            s.cos_tilt,
+            s.h_min_iso,
+        )
+        .max(1e-9);
         let (h_conv, t_eff) = if config.use_interior_radiative_exchange {
             let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
             let h_rad = h_total * f_rad;
@@ -1619,6 +1661,7 @@ pub fn run_transient_simulation_with_options(
                         solar_params.as_ref(),
                         interior_sources_walls_w_by_zone_uid.as_ref(),
                         record.dry_bulb_temperature,
+                        record.wind_speed,
                         |_| air_temp_c,
                         |_| t_rad_guess_c,
                         dt_s,
@@ -2147,6 +2190,7 @@ pub fn run_multizone_transient_simulation(
                 solar_params.as_ref(),
                 None,
                 record.dry_bulb_temperature,
+                record.wind_speed,
                 |zone_uid| {
                     zone_uid_to_idx
                         .get(zone_uid)
@@ -3195,6 +3239,7 @@ mod tests {
             is_ground_coupled: false,
             h_in_w_per_m2_k: 8.0,
             h_out_w_per_m2_k: 8.0,
+            h_min_iso_interior: 8.0,
             solver: FvmWallSolver::new(mesh, 20.0),
         };
 
@@ -3232,6 +3277,7 @@ mod tests {
             Some(&params),
             None,
             0.0,
+            0.0,
             |_| 20.0,
             |_| 20.0,
             3600.0,
@@ -3243,6 +3289,7 @@ mod tests {
             Some(&solar_with_tilt),
             Some(&params),
             None,
+            0.0,
             0.0,
             |_| 20.0,
             |_| 20.0,

@@ -1073,6 +1073,172 @@ fn triangle_centroids(poly: &crate::Polygon) -> Vec<Point> {
     pts
 }
 
+// ---------------------------------------------------------------------------
+// Solar Interior Distribution Module
+// ---------------------------------------------------------------------------
+
+use crate::sim::coupling::ShortwaveTransmittedWPerPolygon;
+use crate::UID;
+
+/// Configuration for interior solar distribution.
+#[derive(Debug, Clone)]
+pub struct SolarInteriorDistributionConfig {
+    /// Fraction (0..1) of transmitted solar treated as beam radiation and
+    /// concentrated on floor surfaces. The remainder is diffuse and distributed
+    /// area-proportionally over all non-exterior interior surfaces.
+    ///
+    /// Default: 0.5 (half beam to floors, half diffuse to all interiors).
+    pub beam_fraction: f64,
+}
+
+impl Default for SolarInteriorDistributionConfig {
+    fn default() -> Self {
+        Self {
+            beam_fraction: 0.5,
+        }
+    }
+}
+
+/// Per-zone interior surface lookup table built during `init()`.
+struct ZoneInteriorSurfaces {
+    zone_uid: UID,
+    /// Floor surfaces (non-exterior, normal dz <= -0.5): receive beam solar.
+    /// Stored as (polygon_uid, area_m2).
+    floors: Vec<(UID, f64)>,
+    floor_total_area_m2: f64,
+    /// All non-exterior surfaces (including floors): receive diffuse solar.
+    /// Stored as (polygon_uid, area_m2).
+    all_interiors: Vec<(UID, f64)>,
+    all_interior_total_area_m2: f64,
+}
+
+/// Distributes transmitted solar to interior surfaces within each zone.
+///
+/// Reads [`ShortwaveTransmittedWPerZone`] from the Bus and publishes
+/// [`ShortwaveTransmittedWPerPolygon`] with per-surface allocations.
+///
+/// Beam fraction goes to floor surfaces (area-proportional), diffuse fraction
+/// goes to all interior surfaces (area-proportional). If a zone has no floors,
+/// all transmitted solar is distributed to interior surfaces uniformly.
+pub struct SolarInteriorDistributionModule {
+    config: SolarInteriorDistributionConfig,
+    zone_tables: Vec<ZoneInteriorSurfaces>,
+}
+
+impl SolarInteriorDistributionModule {
+    pub fn new(config: SolarInteriorDistributionConfig) -> Self {
+        Self {
+            config,
+            zone_tables: vec![],
+        }
+    }
+}
+
+impl SimModule for SolarInteriorDistributionModule {
+    fn name(&self) -> &'static str {
+        "solar_interior_distribution"
+    }
+
+    fn init(&mut self, ctx: &SimContext, _bus: &mut Bus) -> Result<()> {
+        let boundaries = ThermalBoundaries::classify(ctx.building, ctx.surface_index);
+        self.zone_tables.clear();
+
+        for zone in ctx.building.zones() {
+            let mut floors = Vec::new();
+            let mut floor_area = 0.0_f64;
+            let mut all_interiors = Vec::new();
+            let mut all_interior_area = 0.0_f64;
+
+            for s in &ctx.surface_index.surfaces {
+                if s.zone_uid != zone.uid {
+                    continue;
+                }
+                if boundaries.is_exterior(&s.polygon_uid) {
+                    continue;
+                }
+                if s.area_m2 <= 0.0 {
+                    continue;
+                }
+
+                all_interiors.push((s.polygon_uid.clone(), s.area_m2));
+                all_interior_area += s.area_m2;
+
+                // Check if this is a floor surface (normal dz <= -0.5).
+                if let Some(poly) = ctx.building.get_polygon(&s.path)
+                    && poly.vn.dz <= -0.5
+                {
+                    floors.push((s.polygon_uid.clone(), s.area_m2));
+                    floor_area += s.area_m2;
+                }
+            }
+
+            self.zone_tables.push(ZoneInteriorSurfaces {
+                zone_uid: zone.uid.clone(),
+                floors,
+                floor_total_area_m2: floor_area,
+                all_interiors,
+                all_interior_total_area_m2: all_interior_area,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn step(&mut self, _ctx: &SimContext, bus: &mut Bus) -> Result<()> {
+        let Some(transmitted) = bus.get::<ShortwaveTransmittedWPerZone>() else {
+            return Ok(());
+        };
+
+        let beam_frac = self.config.beam_fraction.clamp(0.0, 1.0);
+        let diffuse_frac = 1.0 - beam_frac;
+
+        let mut per_polygon = ShortwaveTransmittedWPerPolygon::default();
+
+        for zt in &self.zone_tables {
+            let total_w = transmitted
+                .watts_by_zone_uid
+                .get(&zt.zone_uid)
+                .copied()
+                .unwrap_or(0.0);
+            if total_w == 0.0 {
+                continue;
+            }
+
+            let beam_w = total_w * beam_frac;
+            let diffuse_w = total_w * diffuse_frac;
+
+            // Beam → floors (area-proportional). Fallback: if no floors, add to diffuse.
+            let actual_diffuse_w = if zt.floor_total_area_m2 > 0.0 && !zt.floors.is_empty() {
+                for (floor_uid, area) in &zt.floors {
+                    let share = beam_w * (*area / zt.floor_total_area_m2);
+                    *per_polygon
+                        .watts_by_polygon_uid
+                        .entry(floor_uid.clone())
+                        .or_insert(0.0) += share;
+                }
+                diffuse_w
+            } else {
+                // No floors: all goes to diffuse.
+                total_w
+            };
+
+            // Diffuse → all interior surfaces (area-proportional).
+            if actual_diffuse_w != 0.0 && zt.all_interior_total_area_m2 > 0.0 {
+                for (uid, area) in &zt.all_interiors {
+                    let share = actual_diffuse_w * (*area / zt.all_interior_total_area_m2);
+                    *per_polygon
+                        .watts_by_polygon_uid
+                        .entry(uid.clone())
+                        .or_insert(0.0) += share;
+                }
+            }
+        }
+
+        bus.put(per_polygon);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

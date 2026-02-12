@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::construction::WallConstruction;
+use super::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use crate::UID;
 use crate::sim::materials::MaterialLibrary;
 
@@ -32,6 +33,15 @@ pub struct InternalMassSurface {
     pub construction: WallConstruction,
     /// Boundary type (one-sided vs two-sided).
     pub boundary: InternalMassBoundary,
+    /// Cosine of the surface tilt from horizontal (polygon normal dz equivalent).
+    ///
+    /// - `0.0` (default) → vertical partition
+    /// - `-1.0` → floor (interior side faces up)
+    /// - `+1.0` → ceiling (interior side faces down)
+    ///
+    /// Used by dynamic convection models (TARP) to select the appropriate
+    /// natural convection correlation.
+    pub cos_tilt: f64,
 }
 
 /// Policy for computing inter-zone partition conductance from two assigned U-values.
@@ -196,6 +206,16 @@ pub struct ThermalConfig {
     /// internal mass slabs, which avoids an unrealistic heat-loss path through wall
     /// insulation to outdoors.
     pub distribute_transmitted_solar_to_fvm_walls: bool,
+    /// Interior surface convection model.
+    ///
+    /// - `Fixed(3.0)` (default): legacy constant coefficient.
+    /// - `Tarp`: temperature- and tilt-dependent natural convection (Walton/TARP).
+    pub interior_convection_model: InteriorConvectionModel,
+    /// Exterior surface convection model.
+    ///
+    /// - `Fixed` (default): coefficient from ISO R_se.
+    /// - `Doe2`: DOE-2 simplified combined natural + wind-forced convection.
+    pub exterior_convection_model: ExteriorConvectionModel,
 }
 
 impl ThermalConfig {
@@ -229,6 +249,8 @@ impl ThermalConfig {
             internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
             distribute_transmitted_solar_to_fvm_walls: false,
+            interior_convection_model: InteriorConvectionModel::default(),
+            exterior_convection_model: ExteriorConvectionModel::default(),
         }
     }
 

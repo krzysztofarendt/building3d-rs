@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::sim::coupling::{OutdoorAirTemperatureC, WeatherHourIndex};
+use crate::sim::coupling::{OutdoorAirTemperatureC, OutdoorWindSpeedMPerS, WeatherHourIndex};
 use crate::sim::framework::{Bus, SimContext, SimModule};
 
 use super::weather::WeatherData;
@@ -45,6 +45,7 @@ impl WeatherModule {
         let record = &self.config.weather.records[hour_index];
         bus.put(WeatherHourIndex(hour_index));
         bus.put(OutdoorAirTemperatureC(record.dry_bulb_temperature));
+        bus.put(OutdoorWindSpeedMPerS(record.wind_speed));
         Ok(())
     }
 }

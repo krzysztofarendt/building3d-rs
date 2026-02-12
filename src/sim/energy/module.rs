@@ -3,8 +3,10 @@ use std::collections::HashSet;
 
 use crate::sim::coupling::{
     InternalGainsWPerZone, InternalGainsWTotal, OutdoorAirTemperatureC,
-    ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerZone,
+    OutdoorWindSpeedMPerS, ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerPolygon,
+    ShortwaveTransmittedWPerZone,
 };
+use super::convection::{exterior_convection_h, interior_convection_h};
 use crate::sim::framework::{Bus, SimContext, SimModule};
 use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh};
 
@@ -103,6 +105,8 @@ struct FvmExteriorWall {
     is_ground_coupled: bool,
     h_in_w_per_m2_k: f64,
     h_out_w_per_m2_k: f64,
+    cos_tilt: f64,
+    h_min_iso_interior: f64,
     solver: FvmWallSolver,
 }
 
@@ -111,6 +115,8 @@ struct FvmInternalMassSurface {
     area_m2: f64,
     boundary: InternalMassBoundary,
     h_w_per_m2_k: f64,
+    cos_tilt: f64,
+    h_min_iso: f64,
     solver: FvmWallSolver,
 }
 
@@ -121,6 +127,7 @@ struct SteadyStateExteriorSurface {
     area_m2: f64,
     u_value_w_per_m2_k: f64,
     h_in_w_per_m2_k: f64,
+    cos_tilt: f64,
 }
 
 impl EnergyModule {
@@ -194,6 +201,36 @@ impl EnergyModule {
                     internal_i * f_internal_mass + solar_i * (1.0 - f_solar_air);
             } else {
                 *air_gain += internal_i + solar_i;
+            }
+        }
+
+        // When SolarInteriorDistributionModule has published per-polygon
+        // transmitted solar, use that (aggregated per zone) for internal mass sources.
+        // This replaces the bulk per-zone transmitted solar for the mass path,
+        // giving the distribution module control over beam vs diffuse allocation.
+        if use_internal_mass_sources
+            && let Some(per_poly) = bus.get::<ShortwaveTransmittedWPerPolygon>()
+        {
+            // Re-aggregate per zone from per-polygon data.
+            let mut per_zone_from_poly = vec![0.0_f64; n];
+            for (polygon_uid, w) in &per_poly.watts_by_polygon_uid {
+                if *w == 0.0 {
+                    continue;
+                }
+                if let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(polygon_uid) {
+                    per_zone_from_poly[zone_idx] += *w;
+                }
+            }
+            // Replace internal_mass_sources solar component with the distributed values.
+            for (i, ims) in internal_mass_sources.iter_mut().enumerate() {
+                let uid = &self.zone_uids[i];
+                let solar_zone_orig = solar_by_zone
+                    .and_then(|map| map.get(uid).cloned())
+                    .unwrap_or(0.0);
+                // Remove original solar contribution and add the distributed one.
+                let solar_to_mass_orig = solar_zone_orig * (1.0 - f_solar_air);
+                let solar_to_mass_new = per_zone_from_poly[i] * (1.0 - f_solar_air);
+                *ims += solar_to_mass_new - solar_to_mass_orig;
             }
         }
 
@@ -333,6 +370,12 @@ impl SimModule for EnergyModule {
                 }
                 .max(1e-9);
 
+                let cos_tilt = ctx
+                    .building
+                    .get_polygon(&s.path)
+                    .map(|p| p.vn.dz)
+                    .unwrap_or(0.0);
+
                 let mesh = build_1d_mesh(construction, s.area_m2);
                 let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
                 self.fvm_walls.push(FvmExteriorWall {
@@ -342,6 +385,8 @@ impl SimModule for EnergyModule {
                     is_ground_coupled: false,
                     h_in_w_per_m2_k: h_in,
                     h_out_w_per_m2_k: h_out,
+                    cos_tilt,
+                    h_min_iso_interior: h_si_iso,
                     solver,
                 });
                 self.fvm_polygon_uids.insert(s.polygon_uid.clone());
@@ -430,12 +475,18 @@ impl SimModule for EnergyModule {
             } else {
                 h_si_iso
             };
+            let cos_tilt = ctx
+                .building
+                .get_polygon(&s.path)
+                .map(|p| p.vn.dz)
+                .unwrap_or(0.0);
             self.steady_state_exterior_surfaces
                 .push(SteadyStateExteriorSurface {
                     zone_idx,
                     area_m2: s.area_m2,
                     u_value_w_per_m2_k: u,
                     h_in_w_per_m2_k: h_in,
+                    cos_tilt,
                 });
         }
 
@@ -470,6 +521,8 @@ impl SimModule for EnergyModule {
                         area_m2: m.area_m2,
                         boundary: m.boundary,
                         h_w_per_m2_k: h,
+                        cos_tilt: m.cos_tilt,
+                        h_min_iso: h_si_iso,
                         solver,
                     });
                 }
@@ -545,6 +598,10 @@ impl SimModule for EnergyModule {
             .get::<OutdoorAirTemperatureC>()
             .map(|t| t.0)
             .unwrap_or(self.config.thermal.outdoor_temperature);
+        let wind_speed = bus
+            .get::<OutdoorWindSpeedMPerS>()
+            .map(|w| w.0)
+            .unwrap_or(0.0);
 
         let (mut air_gains, mut env_gains, internal_mass_sources) = self.gains_by_zone_split(bus);
         if let Some(tg) = self.config.thermal.ground_temperature_c {
@@ -608,16 +665,26 @@ impl SimModule for EnergyModule {
                 if ss.area_m2 <= 0.0 {
                     continue;
                 }
-                let h_rad = ss.h_in_w_per_m2_k.max(1e-9) * f_rad;
-                if h_rad <= 0.0 {
-                    continue;
-                }
                 let t_air_zone = air_temps
                     .get(ss.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
-                let ratio =
+                // Estimate surface temp using current h_in, then recompute h_in dynamically.
+                let ratio_est =
                     ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
+                let t_surf_est = t_air_zone - ratio_est * (t_air_zone - outdoor_temp_c);
+                let h_in_dyn = interior_convection_h(
+                    &self.config.thermal.interior_convection_model,
+                    t_surf_est - t_air_zone,
+                    ss.cos_tilt,
+                    ss.h_in_w_per_m2_k,
+                )
+                .max(1e-9);
+                let h_rad = h_in_dyn * f_rad;
+                if h_rad <= 0.0 {
+                    continue;
+                }
+                let ratio = ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + h_in_dyn);
                 let t_surf = t_air_zone - ratio * (t_air_zone - outdoor_temp_c);
                 num[ss.zone_idx] += h_rad * ss.area_m2 * t_surf;
                 den[ss.zone_idx] += h_rad * ss.area_m2;
@@ -654,7 +721,15 @@ impl SimModule for EnergyModule {
                     .get(s.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
-                let h_total = s.h_w_per_m2_k.max(1e-9);
+                // Dynamic interior h for internal mass surfaces.
+                let t_surf_prev = s.solver.interior_surface_temp();
+                let h_total = interior_convection_h(
+                    &self.config.thermal.interior_convection_model,
+                    t_surf_prev - t_air,
+                    s.cos_tilt,
+                    s.h_min_iso,
+                )
+                .max(1e-9);
                 let (h_conv, t_eff) = if self.config.thermal.use_interior_radiative_exchange {
                     let f_rad = self
                         .config
@@ -749,12 +824,29 @@ impl SimModule for EnergyModule {
                 .map(|a| &a.watts_by_polygon_uid);
 
             for w in &mut self.fvm_walls {
-                let h_in = w.h_in_w_per_m2_k.max(1e-9);
-                let h_out = w.h_out_w_per_m2_k.max(1e-9);
                 let t_air = air_temps
                     .get(w.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
+                // Dynamic interior h: use current interior surface temp for dT.
+                let t_surf_prev = w.solver.interior_surface_temp();
+                let h_in = interior_convection_h(
+                    &self.config.thermal.interior_convection_model,
+                    t_surf_prev - t_air,
+                    w.cos_tilt,
+                    w.h_min_iso_interior,
+                )
+                .max(1e-9);
+                // Dynamic exterior h: use current exterior surface temp for dT.
+                let t_surf_ext_prev = w.solver.exterior_surface_temp();
+                let h_out = exterior_convection_h(
+                    &self.config.thermal.exterior_convection_model,
+                    w.h_out_w_per_m2_k,
+                    t_surf_ext_prev - outdoor_temp_c,
+                    w.cos_tilt,
+                    wind_speed,
+                )
+                .max(1e-9);
                 let (h_in_conv, t_eff) = if self.config.thermal.use_interior_radiative_exchange {
                     let f_rad = self
                         .config

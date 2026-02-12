@@ -407,6 +407,7 @@ fn main() -> Result<()> {
             area_m2: floor_area_m2,
             construction: floor,
             boundary: InternalMassBoundary::OneSidedAdiabatic,
+            cos_tilt: -1.0,
         });
     }
 

@@ -1,6 +1,7 @@
 pub mod boundary;
 pub mod config;
 pub mod construction;
+pub mod convection;
 pub mod gains_module;
 pub mod hvac;
 pub mod module;

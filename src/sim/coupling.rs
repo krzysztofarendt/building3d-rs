@@ -38,6 +38,13 @@ pub struct InternalGainsWPerZone {
 #[derive(Debug, Clone, Copy)]
 pub struct InternalGainsWTotal(pub f64);
 
+/// Outdoor wind speed [m/s].
+///
+/// Used by dynamic exterior convection models (DOE-2) to compute wind-driven
+/// forced convection coefficients.
+#[derive(Debug, Clone, Copy)]
+pub struct OutdoorWindSpeedMPerS(pub f64);
+
 /// Shortwave radiant power absorbed at polygon surfaces, keyed by polygon `UID` [W].
 ///
 /// Note: "shortwave" usually means solar radiation. If a lighting simulation includes
@@ -52,4 +59,14 @@ pub struct ShortwaveAbsorbedWPerPolygon {
 #[derive(Debug, Clone, Default)]
 pub struct ShortwaveTransmittedWPerZone {
     pub watts_by_zone_uid: HashMap<UID, f64>,
+}
+
+/// Shortwave radiant power transmitted and distributed to interior polygon surfaces [W].
+///
+/// This is a refinement of [`ShortwaveTransmittedWPerZone`]: instead of a bulk
+/// per-zone number, the power is allocated to specific interior surfaces (e.g.
+/// beam solar concentrated on floors, diffuse spread over all interiors).
+#[derive(Debug, Clone, Default)]
+pub struct ShortwaveTransmittedWPerPolygon {
+    pub watts_by_polygon_uid: HashMap<UID, f64>,
 }
