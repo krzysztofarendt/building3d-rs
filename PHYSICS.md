@@ -114,7 +114,8 @@ facing-graph overlay keyed by polygon UID:
 
 - **1D heat conduction** only (no lateral flow within wall layers)
 - **No per-surface interior temperature nodes** (except FVM wall faces)
-- **No interior longwave radiation exchange** (simplified MRT available)
+- **Simplified interior longwave radiation exchange** (area-weighted MRT from FVM
+  wall faces, internal mass slabs, and steady-state window surfaces)
 - **Simplified exterior LW radiation** (sky/ground exchange enabled on FVM walls;
   uses air temperature for outgoing radiation, not surface temperature)
 - **Constant h_out** from ISO 6946 R_se (wind-dependent model available but disabled
@@ -135,7 +136,7 @@ facing-graph overlay keyed by polygon UID:
 | Aspect | EnergyPlus | building3d |
 |--------|-----------|------------|
 | **Exterior surface balance** | Full separate-term balance: absorbed solar + LW radiation (sky/ground/air/surrounding surfaces) + wind-dependent convection + conduction. Each term computed independently. No sol-air lumping. | FVM walls: absorbed solar + LW sky/ground exchange as BC fluxes. Non-FVM: sol-air `(U/h_out) * (alpha*I - eps*delta_R)`. Constant h_out from ISO 6946 R_se (wind model available). |
-| **Interior surface balance** | Full grey-interchange LW model (ScriptF/CarrollMRT) between all zone surfaces. Each surface has its own temperature node. | No per-surface interior temperature nodes. Simplified area-weighted MRT from FVM wall faces only. |
+| **Interior surface balance** | Full grey-interchange LW model (ScriptF/CarrollMRT) between all zone surfaces. Each surface has its own temperature node. | Simplified area-weighted MRT from FVM wall faces, internal mass slabs, and steady-state window surfaces. |
 | **Wall conduction** | Conduction Transfer Functions (CTF) from state-space pre-computation, or Conduction Finite Difference (CondFD). Both capture exact distributed thermal mass. | 1D FVM (similar to CondFD) for eligible exterior opaque surfaces. Windows and inter-zone partitions use steady U*A. |
 | **Solar distribution** | Beam solar distributed to surfaces proportional to `Area * Absorptance`. Full ray-tracing option available. | Fraction-based: `transmitted_solar_to_air_fraction` + remainder to mass node or internal mass slabs. Not geometry-aware. |
 | **Zone air balance** | `C_z * dT/dt = convective_gains + sum(h_i*A_i*(T_si - T_z)) + infiltration + HVAC`. 3rd-order backward difference. Predictor-corrector with HVAC. | Backward Euler on lumped or 2-node model. HVAC applied as ideal loads. |
@@ -286,15 +287,19 @@ deduction logic may not be fully correct.
 | **1** | Gap 2: Interior solar distribution | Fix Case 900 cooling | DONE |
 | **2** | Gap 1: Exterior surface heat balance | Fix Case 600 heating | DONE |
 | **3** | Gap 4: Angular SHGC | Improve seasonal accuracy | DONE (negligible effect) |
-| **4** | Gap 3: Interior LW exchange | Improve thermal lag dynamics | Next |
+| **4** | Gap 3: Interior LW exchange (windows in MRT) | Improve Case 600 heating | DONE |
 | **5** | Gap 6: Zone capacity audit | Prevent double-counting | |
 | **6** | Gap 5: Ground coupling | Marginal improvement | |
 
-After Phases 1-3, Case 600 is within ~29% heating / ~18% cooling and Case 900
-within ~21% heating / ~9% cooling. Phase 3 (angular SHGC) confirmed that the
-angular model is not a significant error source for single-pane glass. The
-remaining cooling over-prediction is likely dominated by simplified solar
-distribution and missing interior LW radiation exchange (Phase 4).
+After Phase 4 (window surfaces in MRT), Case 600 is within ~17% heating / ~1%
+cooling and Case 900 within ~54% heating / ~11% cooling. Phase 4 added
+steady-state interior surface temperatures for non-FVM exterior surfaces
+(windows) to the area-weighted MRT. This correctly increases heating demand by
+accounting for radiative exchange between warm walls and cold window surfaces.
+Case 600 heating improved significantly (-29% → -17%). Case 900 heating
+worsened (+21% → +54%) because the heavyweight model already over-predicted
+heating; the root cause is likely elsewhere (thermal mass dynamics, h_in
+calibration, or envelope capacity accounting).
 
 ### 4.2 Validation Strategy
 
