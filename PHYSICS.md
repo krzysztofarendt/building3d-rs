@@ -288,18 +288,23 @@ deduction logic may not be fully correct.
 | **2** | Gap 1: Exterior surface heat balance | Fix Case 600 heating | DONE |
 | **3** | Gap 4: Angular SHGC | Improve seasonal accuracy | DONE (negligible effect) |
 | **4** | Gap 3: Interior LW exchange (windows in MRT) | Improve Case 600 heating | DONE |
-| **5** | Gap 6: Zone capacity audit | Prevent double-counting | |
+| **5** | Gap 6: Zone capacity audit | Prevent double-counting | DONE |
 | **6** | Gap 5: Ground coupling | Marginal improvement | |
 
-After Phase 4 (window surfaces in MRT), Case 600 is within ~17% heating / ~1%
-cooling and Case 900 within ~54% heating / ~11% cooling. Phase 4 added
-steady-state interior surface temperatures for non-FVM exterior surfaces
-(windows) to the area-weighted MRT. This correctly increases heating demand by
-accounting for radiative exchange between warm walls and cold window surfaces.
-Case 600 heating improved significantly (-29% → -17%). Case 900 heating
-worsened (+21% → +54%) because the heavyweight model already over-predicted
-heating; the root cause is likely elsewhere (thermal mass dynamics, h_in
-calibration, or envelope capacity accounting).
+After Phase 5 (zone capacity audit), Case 600 is within ~16% heating / ~1%
+cooling and Case 900 within ~55% heating / ~11% cooling. Phase 5 simplified
+the lumped air node capacity: when FVM walls and/or internal mass slabs are
+present, all structural mass is explicitly modeled, so the air node uses pure
+air capacity (rho * cp * V) instead of subtracting explicit capacity from the
+lumped estimate. The prior deduction logic was mathematically correct (the
+~143 kJ/K remainder equaled window glass construction mass), but including
+window glass mass in the air node was inconsistent since windows are modeled
+as steady-state (no FVM solver, no thermal mass). The effect is small
+(~143 kJ/K removed from ~300 kJ/K total), but the principle matters for
+correctness and predictability. Case 900's +54% heating error is NOT caused
+by capacity double-counting; it was introduced by Phase 4 (window MRT) adding
+correct radiative heat loss that exposes other gaps (thermal mass dynamics,
+h_in calibration, or ground coupling).
 
 ### 4.2 Validation Strategy
 

@@ -103,7 +103,6 @@ struct FvmExteriorWall {
     is_ground_coupled: bool,
     h_in_w_per_m2_k: f64,
     h_out_w_per_m2_k: f64,
-    capacity_j_per_k: f64,
     solver: FvmWallSolver,
 }
 
@@ -336,7 +335,6 @@ impl SimModule for EnergyModule {
 
                 let mesh = build_1d_mesh(construction, s.area_m2);
                 let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
-                let capacity_j_per_k = solver.total_capacity_j_per_k();
                 self.fvm_walls.push(FvmExteriorWall {
                     polygon_uid: s.polygon_uid.clone(),
                     zone_idx,
@@ -344,7 +342,6 @@ impl SimModule for EnergyModule {
                     is_ground_coupled: false,
                     h_in_w_per_m2_k: h_in,
                     h_out_w_per_m2_k: h_out,
-                    capacity_j_per_k,
                     solver,
                 });
                 self.fvm_polygon_uids.insert(s.polygon_uid.clone());
@@ -502,23 +499,14 @@ impl SimModule for EnergyModule {
             self.config.thermal.thermal_capacity_j_per_m3_k
         };
 
+        // When FVM walls and/or internal mass slabs are present, all structural
+        // mass is explicitly modeled. Use pure air capacity (rho * cp) instead of
+        // the lumped volumetric capacity to avoid double-counting.
         if ((!self.fvm_walls.is_empty()) || (!self.internal_mass_surfaces.is_empty()))
             && self.total_volume_m3 > 0.0
             && cap_j_per_m3_k > 0.0
         {
-            let fvm_capacity_total_j_per_k: f64 =
-                self.fvm_walls.iter().map(|w| w.capacity_j_per_k).sum();
-            let internal_mass_capacity_total_j_per_k: f64 = self
-                .internal_mass_surfaces
-                .iter()
-                .map(|m| m.solver.total_capacity_j_per_k())
-                .sum();
-            let lumped_total_j_per_k = self.total_volume_m3 * cap_j_per_m3_k;
-            let air_total_j_per_k = 1.2 * 1005.0 * self.total_volume_m3;
-            let explicit = fvm_capacity_total_j_per_k + internal_mass_capacity_total_j_per_k;
-            let remaining = (lumped_total_j_per_k - explicit).max(0.0);
-            let effective_total = air_total_j_per_k + remaining;
-            cap_j_per_m3_k = effective_total / self.total_volume_m3;
+            cap_j_per_m3_k = 1.2 * 1005.0; // pure air: rho*cp [J/(m³·K)]
         }
 
         self.model = Some(match self.config.model_kind {

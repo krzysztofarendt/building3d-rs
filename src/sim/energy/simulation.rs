@@ -1101,16 +1101,8 @@ pub fn run_transient_simulation_with_options(
     let mut fvm_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
         std::collections::HashMap::new();
     let has_fvm_walls = !fvm_walls.is_empty();
-    let fvm_capacity_total_j_per_k: f64 = fvm_walls
-        .iter()
-        .map(|w| w.solver.total_capacity_j_per_k())
-        .sum();
 
-    let (mut internal_mass_surfaces, internal_mass_capacity_total_j_per_k) = {
-        let m = collect_internal_mass_surfaces(building, base_config);
-        let cap: f64 = m.iter().map(|s| s.solver.total_capacity_j_per_k()).sum();
-        (m, cap)
-    };
+    let mut internal_mass_surfaces = collect_internal_mass_surfaces(building, base_config);
     let mut internal_mass_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
         std::collections::HashMap::new();
     let has_internal_mass = !internal_mass_surfaces.is_empty();
@@ -1200,23 +1192,16 @@ pub fn run_transient_simulation_with_options(
     // Infiltration conductance: rho * cp * V * ACH / 3600.
     let infiltration_cond = 1.2 * 1005.0 * volume * base_config.infiltration_ach / 3600.0;
 
-    // Lumped thermal capacity from building volume.
+    // Zone air node thermal capacity.
     //
-    // Historically this represented "all mass" in a single lump, and defaults to a
-    // tuning value (e.g. 50 kJ/(m^3*K)).
-    //
-    // When per-surface FVM walls are enabled, the envelope mass is already represented
-    // explicitly in those wall meshes. To avoid double-counting, subtract the FVM wall
-    // capacity from the lumped capacity, leaving:
-    // - mandatory zone air capacity (rho*cp*V),
-    // - plus any *remaining* non-FVM capacity (interior mass/furnishings), if the user
-    //   configured it.
-    let air_capacity_min = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
+    // When FVM walls and/or internal mass slabs are present, all structural mass
+    // is explicitly modeled. The lumped air node should then be pure air only
+    // (rho * cp * V). Otherwise, fall back to the user-configured volumetric
+    // capacity which represents a simplified "all mass" lump.
+    let air_capacity_j_per_k = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
     let mut thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
     if has_fvm_walls || has_internal_mass {
-        let explicit = fvm_capacity_total_j_per_k + internal_mass_capacity_total_j_per_k;
-        let extra = (thermal_capacity - explicit).max(0.0);
-        thermal_capacity = air_capacity_min + extra;
+        thermal_capacity = air_capacity_j_per_k;
     }
 
     let k_env = ua_total + infiltration_cond;
@@ -1230,7 +1215,7 @@ pub fn run_transient_simulation_with_options(
         && k_env.is_finite()
         && k_env >= 0.0
         && !has_internal_mass
-        && (!has_fvm_walls || (thermal_capacity - air_capacity_min) > 1.0);
+        && (!has_fvm_walls || (thermal_capacity - air_capacity_j_per_k) > 1.0);
 
     // When FVM exterior walls are enabled, the envelope conduction + mass is already represented
     // explicitly via per-surface wall solvers. In that case, avoid routing the remaining
