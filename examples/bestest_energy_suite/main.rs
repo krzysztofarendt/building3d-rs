@@ -148,28 +148,31 @@ fn bestest_600_constructions() -> (
         ],
     );
 
-    // Double Pane Window: approximate layers.
+    // Double Pane Window: ASHRAE 140-2020 glass properties.
+    // The layered construction is kept for capacity estimation; actual heat
+    // transfer uses the U-value override below (ISO 15099 convection+radiation
+    // in the gap cannot be represented by a simple conductivity layer).
     let window = WallConstruction::new(
-        "Double Pane Window (approx)",
+        "Double Pane Window",
         vec![
             Layer {
                 name: "Glass".to_string(),
-                thickness: 0.003175,
-                conductivity: 1.06,
+                thickness: 0.003048,
+                conductivity: 1.0,
                 density: 2500.0,
                 specific_heat: 750.0,
             },
             Layer {
                 name: "Air gap (approx)".to_string(),
-                thickness: 0.013,
+                thickness: 0.012,
                 conductivity: 0.026,
                 density: 0.0,
                 specific_heat: 0.0,
             },
             Layer {
                 name: "Glass".to_string(),
-                thickness: 0.003175,
-                conductivity: 1.06,
+                thickness: 0.003048,
+                conductivity: 1.0,
                 density: 2500.0,
                 specific_heat: 750.0,
             },
@@ -355,11 +358,14 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.constructions.insert("floor".to_string(), lt_floor);
     cfg.constructions.insert("wall".to_string(), lt_wall);
 
-    // BESTEST window conduction should be treated as a whole-window U-value.
-    // Using a layered construction with a still-air gap modeled as pure conduction
-    // is far too insulating (missing convection+radiation in the gap).
+    // BESTEST window: whole-window U-value from ISO 15099 gap calculation.
+    // Double-pane clear glass (3mm, eps=0.84) with 12mm air gap: center-of-glass
+    // U ranges from ~2.8 (annual average) to ~3.0 (NFRC winter peak). Since
+    // building3d uses a fixed U year-round, 2.8 best represents the annual average.
+    // The layered construction using still-air conductivity gives only ~1.5,
+    // missing convection + radiation in the gap.
     cfg.u_value_overrides_by_path_pattern
-        .insert("window".to_string(), 1.8);
+        .insert("window".to_string(), 2.8);
 
     // BESTEST case floors are ground-coupled in the reference model.
     cfg.ground_temperature_c = Some(10.0);
@@ -404,7 +410,10 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
 fn solar_config_for_case_600() -> SolarGainConfig {
     let mut solar = SolarGainConfig::new();
     solar.glazing_patterns = vec!["window".to_string()];
-    // From `Glass Type 1` solar transmittance in the IDF (approximate SHGC).
+    // BESTEST Glass Type 1 solar transmittance (single-pane, ASHRAE 140-2020).
+    // Used as an approximation of the double-pane assembly SHGC (~0.76 at
+    // normal incidence) because the single-pane angular polynomial already
+    // accounts for most of the angular transmittance reduction.
     solar.default_shgc = 0.86156;
     // Small physics refinements (still simplified vs EnergyPlus):
     // - ground-reflected shortwave using a constant albedo

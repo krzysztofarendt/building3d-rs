@@ -291,20 +291,31 @@ deduction logic may not be fully correct.
 | **5** | Gap 6: Zone capacity audit | Prevent double-counting | DONE |
 | **6** | Gap 5: Ground coupling | Marginal improvement | |
 
-After Phase 5 (zone capacity audit), Case 600 is within ~16% heating / ~1%
-cooling and Case 900 within ~55% heating / ~11% cooling. Phase 5 simplified
-the lumped air node capacity: when FVM walls and/or internal mass slabs are
-present, all structural mass is explicitly modeled, so the air node uses pure
-air capacity (rho * cp * V) instead of subtracting explicit capacity from the
-lumped estimate. The prior deduction logic was mathematically correct (the
-~143 kJ/K remainder equaled window glass construction mass), but including
-window glass mass in the air node was inconsistent since windows are modeled
-as steady-state (no FVM solver, no thermal mass). The effect is small
-(~143 kJ/K removed from ~300 kJ/K total), but the principle matters for
-correctness and predictability. Case 900's +54% heating error is NOT caused
-by capacity double-counting; it was introduced by Phase 4 (window MRT) adding
-correct radiative heat loss that exposes other gaps (thermal mass dynamics,
-h_in calibration, or ground coupling).
+After correcting the window U-value (1.8 → 2.8 W/m²K) and updating glass
+properties to ASHRAE 140-2020, Case 600 is within ~7% heating / ~7% cooling
+(both within the ±10% target). Case 900 worsened to +119% heating / -23%
+cooling because the corrected window conductance exposed fundamental issues
+in the heavyweight thermal model.
+
+The previous window U-value of 1.8 W/m²K was far too low: a double-pane clear
+glass window (3mm, emissivity 0.84, 12mm air gap) has center-of-glass U of
+~2.8 W/m²K (ISO conditions) to ~3.0 (NFRC winter peak), because the sealed
+air gap transfers heat via convection + radiation, not just conduction. The
+layered construction (still-air k=0.026) gave only ~1.5 W/m²K. Using 2.8 as
+an annual-average U best represents a fixed-U model.
+
+The SHGC remains at 0.86 (single-pane Glass Type 1 transmittance) rather than
+the double-pane assembly SHGC of ~0.76, because the single-pane angular
+polynomial model already reduces the effective transmittance at oblique angles.
+Fixing SHGC to 0.76 without a matching double-pane angular model would
+double-count the multi-pane correction and under-predict solar gains.
+
+Phase 5 (zone capacity audit) simplified the air node to pure air capacity
+when FVM/mass handles all structural mass (small effect: ~143 kJ/K removed).
+
+Case 900's large error is NOT caused by window properties or capacity. The
+heavyweight model's thermal mass dynamics, simplified MRT, and lack of coupled
+interior surface heat balance are the dominant remaining gaps.
 
 ### 4.2 Validation Strategy
 
