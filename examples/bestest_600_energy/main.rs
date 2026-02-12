@@ -3,10 +3,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use building3d::sim::energy::config::ThermalConfig;
+use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
-use building3d::sim::energy::simulation::run_transient_simulation;
+use building3d::sim::energy::simulation::{
+    TransientSimulationOptions, run_transient_simulation_with_options,
+};
 use building3d::sim::energy::solar_bridge::SolarGainConfig;
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::materials::Layer;
@@ -382,6 +384,32 @@ fn main() -> Result<()> {
     // BESTEST case floors are ground-coupled in the reference model.
     cfg.ground_temperature_c = Some(10.0);
 
+    // Surface-aware policy for transmitted solar + radiant internal gains.
+    cfg.use_surface_aware_solar_distribution = true;
+    cfg.distribute_transmitted_solar_to_fvm_walls = false;
+    cfg.transmitted_solar_to_air_fraction = 0.0;
+    cfg.internal_gains_to_mass_fraction = 0.6;
+
+    // Interior radiative exchange (convective vs radiative split) for FVM walls/mass.
+    cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+    cfg.use_interior_radiative_exchange = true;
+    cfg.interior_radiation_fraction = 0.6;
+
+    // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
+    let floor_area_m2 = building
+        .get_polygon("zone_one/space/floor/floor")
+        .map(|p| p.area())
+        .unwrap_or(48.0);
+    if let Some(floor) = cfg.constructions.get("floor").cloned() {
+        cfg.internal_mass_surfaces.push(InternalMassSurface {
+            name: "floor_mass".to_string(),
+            zone_path_pattern: "zone_one".to_string(),
+            area_m2: floor_area_m2,
+            construction: floor,
+            boundary: InternalMassBoundary::OneSidedAdiabatic,
+        });
+    }
+
     // Derive a zone capacity estimate from envelope layer capacities.
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);
 
@@ -395,15 +423,18 @@ fn main() -> Result<()> {
     solar.ground_reflectance = 0.2;
     solar.include_incidence_angle_modifier = true;
     solar.incidence_angle_modifier_a = 0.1;
-    // Exterior opaque shortwave (sol-air coupling) helps match BESTEST cooling loads.
     solar.include_exterior_opaque_absorption = true;
-    // BESTEST case surfaces are moderately absorptive; use a representative default.
     solar.default_opaque_absorptance = 0.6;
-    // Phase 2.2: exterior longwave exchange with sky/ground.
     solar.include_exterior_longwave_exchange = true;
     solar.use_wind_speed_for_h_out = false;
-    // Phase 3: polynomial angular SHGC for single-pane clear glass.
     solar.angular_shgc_coefficients = Some(SolarGainConfig::single_pane_clear_coefficients());
+
+    let warmup_days: usize = 7;
+    let substeps_per_hour: usize = 6;
+    let options = TransientSimulationOptions {
+        warmup_hours: warmup_days * 24,
+        substeps_per_hour,
+    };
 
     println!("BESTEST 600 energy benchmark (building3d vs OpenStudio/E+ reference)");
     println!(
@@ -415,6 +446,7 @@ fn main() -> Result<()> {
         "Estimated zone capacity: {:.0} kJ/(m3·K)",
         cfg.thermal_capacity_j_per_m3_k / 1000.0
     );
+    println!("Warmup: {warmup_days} days, substeps/hour: {substeps_per_hour}");
     println!(
         "Reference annual: heating={:.1} kWh, cooling={:.1} kWh",
         annual_kwh(&REF_MONTHLY_HEATING_KWH),
@@ -422,7 +454,9 @@ fn main() -> Result<()> {
     );
     println!();
 
-    let annual = run_transient_simulation(&building, &cfg, &weather, &hvac, None, Some(&solar));
+    let annual = run_transient_simulation_with_options(
+        &building, &cfg, &weather, &hvac, None, Some(&solar), &options,
+    );
 
     let ref_annual_h = annual_kwh(&REF_MONTHLY_HEATING_KWH);
     let ref_annual_c = annual_kwh(&REF_MONTHLY_COOLING_KWH);

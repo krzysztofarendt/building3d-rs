@@ -114,6 +114,17 @@ struct FvmInternalMassSurface {
     solver: FvmWallSolver,
 }
 
+/// A non-FVM exterior surface (e.g. glazing) whose interior surface temperature
+/// is estimated via steady-state heat balance for inclusion in MRT.
+#[derive(Clone)]
+struct SteadyStateExteriorSurface {
+    #[allow(dead_code)]
+    zone_uid: UID,
+    area_m2: f64,
+    u_value_w_per_m2_k: f64,
+    h_in_w_per_m2_k: f64,
+}
+
 fn is_ground_coupled_exterior_surface(
     config: &ThermalConfig,
     path: &str,
@@ -260,6 +271,51 @@ fn collect_internal_mass_surfaces(
                 solver,
             });
         }
+    }
+    out
+}
+
+fn collect_steady_state_exterior_surfaces(
+    building: &Building,
+    config: &ThermalConfig,
+    index: &SurfaceIndex,
+    boundaries: &ThermalBoundaries,
+    fvm_skip_polygons: &HashSet<UID>,
+    _solar_config: Option<&SolarGainConfig>,
+) -> Vec<SteadyStateExteriorSurface> {
+    let mut out = Vec::new();
+    for s in &index.surfaces {
+        if !boundaries.is_exterior(&s.polygon_uid) {
+            continue;
+        }
+        if s.area_m2 <= 0.0 {
+            continue;
+        }
+        if fvm_skip_polygons.contains(&s.polygon_uid) {
+            continue;
+        }
+        // Skip ground-coupled surfaces.
+        if let Some(poly) = building.get_polygon(&s.path)
+            && is_ground_coupled_exterior_surface(config, &s.path, &poly.vn)
+        {
+            continue;
+        }
+        let u = config.resolve_u_value_for_surface(&s.polygon_uid, &s.path);
+        if u <= 0.0 {
+            continue;
+        }
+        let h_si_iso = 1.0 / 0.13_f64;
+        let h_in = if config.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+            config.interior_heat_transfer_coeff_w_per_m2_k.max(h_si_iso)
+        } else {
+            h_si_iso
+        };
+        out.push(SteadyStateExteriorSurface {
+            zone_uid: s.zone_uid.clone(),
+            area_m2: s.area_m2,
+            u_value_w_per_m2_k: u,
+            h_in_w_per_m2_k: h_in,
+        });
     }
     out
 }
@@ -1058,6 +1114,15 @@ pub fn run_transient_simulation_with_options(
         std::collections::HashMap::new();
     let has_internal_mass = !internal_mass_surfaces.is_empty();
 
+    let ss_exterior_surfaces = collect_steady_state_exterior_surfaces(
+        building,
+        base_config,
+        &index,
+        &boundaries,
+        &fvm_skip_polygons,
+        solar_config,
+    );
+
     // Precompute eligible interior-surface areas per zone for distributing surface sources
     // (transmitted solar + radiant internal gains). This includes:
     // - interior faces of FVM exterior walls (eligible opaque exterior polygons),
@@ -1528,6 +1593,24 @@ pub fn run_transient_simulation_with_options(
                         num += h_rad * m.area_m2 * m.solver.exterior_surface_temp();
                         den += h_rad * m.area_m2;
                     }
+                }
+
+                // Steady-state exterior surfaces (e.g. windows): estimate interior
+                // surface temp from T_surf = T_air - U/(U+h_in) * (T_air - T_out).
+                for ss in &ss_exterior_surfaces {
+                    if ss.area_m2 <= 0.0 {
+                        continue;
+                    }
+                    let h_rad = ss.h_in_w_per_m2_k.max(1e-9) * f_rad;
+                    if h_rad <= 0.0 {
+                        continue;
+                    }
+                    let ratio =
+                        ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
+                    let t_surf =
+                        t_air_start_c - ratio * (t_air_start_c - record.dry_bulb_temperature);
+                    num += h_rad * ss.area_m2 * t_surf;
+                    den += h_rad * ss.area_m2;
                 }
 
                 if den > 0.0 { num / den } else { t_air_start_c }

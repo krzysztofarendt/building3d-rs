@@ -88,6 +88,7 @@ pub struct EnergyModule {
     fvm_polygon_uids: HashSet<crate::UID>,
     ground_ua_by_zone_w_per_k: Vec<f64>,
     internal_mass_surfaces: Vec<FvmInternalMassSurface>,
+    steady_state_exterior_surfaces: Vec<SteadyStateExteriorSurface>,
 }
 
 enum EnergyModel {
@@ -114,6 +115,15 @@ struct FvmInternalMassSurface {
     solver: FvmWallSolver,
 }
 
+/// A non-FVM exterior surface (e.g. glazing) whose interior surface temperature
+/// is estimated via steady-state heat balance for inclusion in MRT.
+struct SteadyStateExteriorSurface {
+    zone_idx: usize,
+    area_m2: f64,
+    u_value_w_per_m2_k: f64,
+    h_in_w_per_m2_k: f64,
+}
+
 impl EnergyModule {
     pub fn new(config: EnergyModuleConfig) -> Self {
         Self {
@@ -129,6 +139,7 @@ impl EnergyModule {
             fvm_polygon_uids: HashSet::new(),
             ground_ua_by_zone_w_per_k: vec![],
             internal_mass_surfaces: vec![],
+            steady_state_exterior_surfaces: vec![],
         }
     }
 
@@ -376,6 +387,61 @@ impl SimModule for EnergyModule {
             }
         }
 
+        // Collect non-FVM exterior surfaces (e.g. glazing, U-value-only surfaces) for
+        // steady-state interior surface temperature in MRT.
+        self.steady_state_exterior_surfaces.clear();
+        for s in &ctx.surface_index.surfaces {
+            if !boundaries.is_exterior(&s.polygon_uid) {
+                continue;
+            }
+            if s.area_m2 <= 0.0 {
+                continue;
+            }
+            // Skip surfaces already modeled by FVM solvers.
+            if self.fvm_polygon_uids.contains(&s.polygon_uid) {
+                continue;
+            }
+            // Skip ground-coupled surfaces (they exchange with ground, not outdoor air).
+            if self.config.thermal.ground_temperature_c.is_some()
+                && self
+                    .config
+                    .thermal
+                    .ground_surface_patterns
+                    .iter()
+                    .any(|p| s.path.contains(p.as_str()))
+                && let Some(poly) = ctx.building.get_polygon(&s.path)
+                && poly.vn.dz <= -0.5
+            {
+                continue;
+            }
+            let Some(&zone_idx) = self.polygon_uid_to_zone_idx.get(&s.polygon_uid) else {
+                continue;
+            };
+            let u = self
+                .config
+                .thermal
+                .resolve_u_value_for_surface(&s.polygon_uid, &s.path);
+            if u <= 0.0 {
+                continue;
+            }
+            let h_si_iso = 1.0 / 0.13_f64;
+            let h_in = if self.config.thermal.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
+                self.config
+                    .thermal
+                    .interior_heat_transfer_coeff_w_per_m2_k
+                    .max(h_si_iso)
+            } else {
+                h_si_iso
+            };
+            self.steady_state_exterior_surfaces
+                .push(SteadyStateExteriorSurface {
+                    zone_idx,
+                    area_m2: s.area_m2,
+                    u_value_w_per_m2_k: u,
+                    h_in_w_per_m2_k: h_in,
+                });
+        }
+
         self.internal_mass_surfaces.clear();
         if !self.config.thermal.internal_mass_surfaces.is_empty() {
             for (zone_idx, zone) in ctx.building.zones().iter().enumerate() {
@@ -546,6 +612,27 @@ impl SimModule for EnergyModule {
                     num[m.zone_idx] += h_rad * m.area_m2 * m.solver.exterior_surface_temp();
                     den[m.zone_idx] += h_rad * m.area_m2;
                 }
+            }
+
+            // Steady-state exterior surfaces (e.g. windows): estimate interior
+            // surface temp from T_surf = T_air - U/(U+h_in) * (T_air - T_out).
+            for ss in &self.steady_state_exterior_surfaces {
+                if ss.area_m2 <= 0.0 {
+                    continue;
+                }
+                let h_rad = ss.h_in_w_per_m2_k.max(1e-9) * f_rad;
+                if h_rad <= 0.0 {
+                    continue;
+                }
+                let t_air_zone = air_temps
+                    .get(ss.zone_idx)
+                    .copied()
+                    .unwrap_or(self.config.thermal.indoor_temperature);
+                let ratio =
+                    ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
+                let t_surf = t_air_zone - ratio * (t_air_zone - outdoor_temp_c);
+                num[ss.zone_idx] += h_rad * ss.area_m2 * t_surf;
+                den[ss.zone_idx] += h_rad * ss.area_m2;
             }
 
             for i in 0..n {
