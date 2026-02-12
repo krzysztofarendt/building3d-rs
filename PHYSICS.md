@@ -115,7 +115,8 @@ facing-graph overlay keyed by polygon UID:
 - **1D heat conduction** only (no lateral flow within wall layers)
 - **No per-surface interior temperature nodes** (except FVM wall faces)
 - **Simplified interior longwave radiation exchange** (area-weighted MRT from FVM
-  wall faces, internal mass slabs, and steady-state window surfaces)
+  wall faces, internal mass slabs, and steady-state window surfaces; uses proper
+  half-cell-interpolated surface temperatures, not cell centroids)
 - **Simplified exterior LW radiation** (sky/ground exchange enabled on FVM walls;
   uses air temperature for outgoing radiation, not surface temperature)
 - **Constant h_out** from ISO 6946 R_se (wind-dependent model available but disabled
@@ -136,7 +137,7 @@ facing-graph overlay keyed by polygon UID:
 | Aspect | EnergyPlus | building3d |
 |--------|-----------|------------|
 | **Exterior surface balance** | Full separate-term balance: absorbed solar + LW radiation (sky/ground/air/surrounding surfaces) + wind-dependent convection + conduction. Each term computed independently. No sol-air lumping. | FVM walls: absorbed solar + LW sky/ground exchange as BC fluxes. Non-FVM: sol-air `(U/h_out) * (alpha*I - eps*delta_R)`. Constant h_out from ISO 6946 R_se (wind model available). |
-| **Interior surface balance** | Full grey-interchange LW model (ScriptF/CarrollMRT) between all zone surfaces. Each surface has its own temperature node. | Simplified area-weighted MRT from FVM wall faces, internal mass slabs, and steady-state window surfaces. |
+| **Interior surface balance** | Full grey-interchange LW model (ScriptF/CarrollMRT) between all zone surfaces. Each surface has its own temperature node. | Simplified area-weighted MRT from FVM wall faces (proper surface temps via half-cell interpolation), internal mass slabs, and steady-state window surfaces. |
 | **Wall conduction** | Conduction Transfer Functions (CTF) from state-space pre-computation, or Conduction Finite Difference (CondFD). Both capture exact distributed thermal mass. | 1D FVM (similar to CondFD) for eligible exterior opaque surfaces. Windows and inter-zone partitions use steady U*A. |
 | **Solar distribution** | Beam solar distributed to surfaces proportional to `Area * Absorptance`. Full ray-tracing option available. | Fraction-based: `transmitted_solar_to_air_fraction` + remainder to mass node or internal mass slabs. Not geometry-aware. |
 | **Zone air balance** | `C_z * dT/dt = convective_gains + sum(h_i*A_i*(T_si - T_z)) + infiltration + HVAC`. 3rd-order backward difference. Predictor-corrector with HVAC. | Backward Euler on lumped or 2-node model. HVAC applied as ideal loads. |
@@ -176,31 +177,35 @@ Logan TMY3 EPW file.
 
 | Case | Metric | Annual Error vs E+ | Primary Cause |
 |------|--------|-------------------|---------------|
-| 600 | Heating | -29.3% | Remaining gap from simplified h_out + no interior LW exchange |
-| 600 | Cooling | +18.3% | Solar over-prediction (simplified distribution, no interior LW) |
-| 900 | Heating | +20.7% | LW sky loss + thermal mass dynamics over-predicting heating |
-| 900 | Cooling | +9.2% | Improved by routing solar to internal mass slabs |
+| 600 | Heating | +12.5% | Corrected MRT removed compensating error; remaining gap from constant h_in/h_out, simplified solar distribution |
+| 600 | Cooling | -33.0% | Lower MRT reduces cooling; no dynamic convection, simplified solar distribution |
+| 900 | Heating | +101.9% | Heavyweight thermal mass dynamics, no coupled surface solve, constant convection coefficients |
+| 900 | Cooling | -24.5% | Thermal mass not releasing stored solar effectively; no dynamic h_in |
 
 ### 3.2 Monthly Pattern Analysis
 
-**Case 600 heating (-29.3%):** building3d under-predicts heating. Exterior LW sky
-exchange is now included on FVM walls, which improved this from -34.3% to -29.3%.
-Remaining gap likely from constant h_out and missing interior LW radiation exchange.
+**Case 600 heating (+12.5%):** The MRT centroid fix (Phase 6) corrected surface
+temperatures used in radiation exchange, removing a compensating error that had
+masked ~5% of heating demand. The corrected MRT is colder than the centroid
+approximation, increasing radiative heat loss through walls. Remaining gap from
+constant convection coefficients (fixed 8.29 vs TARP's dT-dependent 2-8 W/m²K)
+and simplified solar distribution.
 
-**Case 600 cooling (+18.3%):** Over-prediction in summer from solar gains being too
-high. The angular SHGC polynomial (Phase 3) had negligible effect because the
-Fresnel+absorption curve for single-pane glass closely matches the ASHRAE IAM.
-Remaining gap is primarily from simplified solar distribution and missing interior
-LW radiation exchange.
+**Case 600 cooling (-33.0%):** Under-predicts cooling. The corrected MRT reduces
+effective interior surface temperatures, which decreases cooling demand. The
+remaining gap is dominated by missing dynamic convection coefficients and
+simplified solar distribution (bulk to mass node vs per-surface tracking).
 
-**Case 900 heating (+20.7%):** Over-predicts heating. The LW sky correction increased
-heating demand beyond the reference. May indicate the LW term is too strong without
-a coupled surface temperature solve, or that the thermal mass seasonal buffering
-needs tuning. Slightly improved from +21.7% by the polynomial angular model.
+**Case 900 heating (+101.9%):** Improved from +119% by the MRT fix. The corrected
+surface temperatures better represent heavyweight wall dynamics, but the model
+still over-predicts heating significantly. Remaining causes: no coupled interior
+surface temperature solve, constant convection coefficients, and no dynamic
+h_in that would increase convective coupling when dT is large.
 
-**Case 900 cooling (+9.2%):** Significantly improved from +22.2% by routing
-transmitted solar to internal mass slabs (FVM floor) rather than directly to zone
-air. The thermal lag from the FVM slab delays solar release.
+**Case 900 cooling (-24.5%):** Under-predicts cooling. Thermal mass should absorb
+solar during the day and release it via convection + radiation, but the release
+dynamics are dampened by the sequential (non-iterative) MRT solve and constant
+convection coefficients.
 
 ### 3.3 Compensating Errors
 
@@ -289,13 +294,13 @@ deduction logic may not be fully correct.
 | **3** | Gap 4: Angular SHGC | Improve seasonal accuracy | DONE (negligible effect) |
 | **4** | Gap 3: Interior LW exchange (windows in MRT) | Improve Case 600 heating | DONE |
 | **5** | Gap 6: Zone capacity audit | Prevent double-counting | DONE |
-| **6** | Gap 5: Ground coupling | Marginal improvement | |
+| **6** | MRT surface temperature fix | Fix centroid-vs-surface bug | DONE |
+| **7** | Gap 5: Ground coupling | Marginal improvement | |
 
 After correcting the window U-value (1.8 → 2.8 W/m²K) and updating glass
-properties to ASHRAE 140-2020, Case 600 is within ~7% heating / ~7% cooling
-(both within the ±10% target). Case 900 worsened to +119% heating / -23%
-cooling because the corrected window conductance exposed fundamental issues
-in the heavyweight thermal model.
+properties to ASHRAE 140-2020, Case 600 was within ~7% heating / ~7% cooling.
+The MRT centroid fix (Phase 6) then moved Case 600 to +12.5% heating / -33%
+cooling as it removed a compensating error in the radiation exchange.
 
 The previous window U-value of 1.8 W/m²K was far too low: a double-pane clear
 glass window (3mm, emissivity 0.84, 12mm air gap) has center-of-glass U of
@@ -313,9 +318,15 @@ double-count the multi-pane correction and under-predict solar gains.
 Phase 5 (zone capacity audit) simplified the air node to pure air capacity
 when FVM/mass handles all structural mass (small effect: ~143 kJ/K removed).
 
-Case 900's large error is NOT caused by window properties or capacity. The
-heavyweight model's thermal mass dynamics, simplified MRT, and lack of coupled
-interior surface heat balance are the dominant remaining gaps.
+Phase 6 (MRT fix) corrected the MRT computation to use proper half-cell-
+interpolated surface temperatures instead of cell centroid temperatures. The
+centroid of the innermost FVM cell is offset from the actual surface by half
+the cell thickness (up to 25mm for heavyweight concrete). This caused the MRT
+to overstate surface temperatures, masking real radiative heat losses. The fix
+improved Case 900 heating from +119% to +102% but worsened Case 600 by
+removing a compensating error. The dominant remaining gaps are constant
+convection coefficients (fixed h_in vs TARP dT-dependent model), no coupled
+surface temperature iteration, and simplified solar distribution.
 
 ### 4.2 Validation Strategy
 
