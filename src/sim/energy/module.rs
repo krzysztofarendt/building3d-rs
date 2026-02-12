@@ -108,6 +108,8 @@ struct FvmExteriorWall {
     cos_tilt: f64,
     h_min_iso_interior: f64,
     solver: FvmWallSolver,
+    /// Cached interior surface temperature from the last solver step.
+    cached_interior_surface_temp_c: f64,
 }
 
 struct FvmInternalMassSurface {
@@ -118,6 +120,10 @@ struct FvmInternalMassSurface {
     cos_tilt: f64,
     h_min_iso: f64,
     solver: FvmWallSolver,
+    /// Cached interior surface temperature from the last solver step.
+    cached_interior_surface_temp_c: f64,
+    /// Cached exterior surface temperature (only meaningful for TwoSided).
+    cached_exterior_surface_temp_c: f64,
 }
 
 /// A non-FVM exterior surface (e.g. glazing) whose interior surface temperature
@@ -378,6 +384,7 @@ impl SimModule for EnergyModule {
 
                 let mesh = build_1d_mesh(construction, s.area_m2);
                 let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
+                let init_temp = solver.interior_surface_temp();
                 self.fvm_walls.push(FvmExteriorWall {
                     polygon_uid: s.polygon_uid.clone(),
                     zone_idx,
@@ -388,6 +395,7 @@ impl SimModule for EnergyModule {
                     cos_tilt,
                     h_min_iso_interior: h_si_iso,
                     solver,
+                    cached_interior_surface_temp_c: init_temp,
                 });
                 self.fvm_polygon_uids.insert(s.polygon_uid.clone());
             }
@@ -516,6 +524,8 @@ impl SimModule for EnergyModule {
                     };
                     let mesh = build_1d_mesh(&m.construction, m.area_m2);
                     let solver = FvmWallSolver::new(mesh, self.config.thermal.indoor_temperature);
+                    let init_temp_in = solver.interior_surface_temp();
+                    let init_temp_out = solver.exterior_surface_temp();
                     self.internal_mass_surfaces.push(FvmInternalMassSurface {
                         zone_idx,
                         area_m2: m.area_m2,
@@ -524,6 +534,8 @@ impl SimModule for EnergyModule {
                         cos_tilt: m.cos_tilt,
                         h_min_iso: h_si_iso,
                         solver,
+                        cached_interior_surface_temp_c: init_temp_in,
+                        cached_exterior_surface_temp_c: init_temp_out,
                     });
                 }
             }
@@ -640,7 +652,7 @@ impl SimModule for EnergyModule {
                 if h_rad <= 0.0 {
                     continue;
                 }
-                num[w.zone_idx] += h_rad * w.area_m2 * w.solver.interior_surface_temp();
+                num[w.zone_idx] += h_rad * w.area_m2 * w.cached_interior_surface_temp_c;
                 den[w.zone_idx] += h_rad * w.area_m2;
             }
             for m in &self.internal_mass_surfaces {
@@ -651,10 +663,10 @@ impl SimModule for EnergyModule {
                 if h_rad <= 0.0 {
                     continue;
                 }
-                num[m.zone_idx] += h_rad * m.area_m2 * m.solver.interior_surface_temp();
+                num[m.zone_idx] += h_rad * m.area_m2 * m.cached_interior_surface_temp_c;
                 den[m.zone_idx] += h_rad * m.area_m2;
                 if matches!(m.boundary, InternalMassBoundary::TwoSided) {
-                    num[m.zone_idx] += h_rad * m.area_m2 * m.solver.exterior_surface_temp();
+                    num[m.zone_idx] += h_rad * m.area_m2 * m.cached_exterior_surface_temp_c;
                     den[m.zone_idx] += h_rad * m.area_m2;
                 }
             }
@@ -802,11 +814,19 @@ impl SimModule for EnergyModule {
                 s.solver
                     .step(self.config.dt_s, &bc_exterior, &bc_interior, &[]);
 
+                // Cache proper surface temperatures for MRT computation next substep.
+                s.cached_interior_surface_temp_c =
+                    s.solver.interior_surface_temperature(&bc_interior);
+                if matches!(s.boundary, InternalMassBoundary::TwoSided) {
+                    s.cached_exterior_surface_temp_c =
+                        s.solver.exterior_surface_temperature(&bc_exterior);
+                }
+
                 let mut q_to_air_w = 0.0;
-                let t_surf_in = s.solver.interior_surface_temperature(&bc_interior);
+                let t_surf_in = s.cached_interior_surface_temp_c;
                 q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
                 if matches!(s.boundary, InternalMassBoundary::TwoSided) {
-                    let t_surf_out = s.solver.exterior_surface_temperature(&bc_exterior);
+                    let t_surf_out = s.cached_exterior_surface_temp_c;
                     q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
                 }
                 q_to_air_w += direct_to_air_w;
@@ -904,7 +924,9 @@ impl SimModule for EnergyModule {
                 };
 
                 w.solver.step(self.config.dt_s, &bc_out, &bc_in, &[]);
-                let t_surf = w.solver.interior_surface_temperature(&bc_in);
+                w.cached_interior_surface_temp_c =
+                    w.solver.interior_surface_temperature(&bc_in);
+                let t_surf = w.cached_interior_surface_temp_c;
                 let q_in_w = h_in_conv * (t_surf - t_air) * w.area_m2;
                 if let Some(g) = air_gains.get_mut(w.zone_idx) {
                     *g += q_in_w;

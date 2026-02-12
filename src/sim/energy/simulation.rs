@@ -104,6 +104,9 @@ struct FvmExteriorWall {
     h_out_w_per_m2_k: f64,
     h_min_iso_interior: f64,
     solver: FvmWallSolver,
+    /// Cached interior surface temperature from the last solver step.
+    /// Uses proper half-cell interpolation (not cell centroid).
+    cached_interior_surface_temp_c: f64,
 }
 
 #[derive(Clone)]
@@ -115,6 +118,10 @@ struct FvmInternalMassSurface {
     cos_tilt: f64,
     h_min_iso: f64,
     solver: FvmWallSolver,
+    /// Cached interior surface temperature from the last solver step.
+    cached_interior_surface_temp_c: f64,
+    /// Cached exterior surface temperature (only meaningful for TwoSided).
+    cached_exterior_surface_temp_c: f64,
 }
 
 /// A non-FVM exterior surface (e.g. glazing) whose interior surface temperature
@@ -220,6 +227,7 @@ fn collect_fvm_exterior_walls(
         let mesh = build_1d_mesh(construction, s.area_m2);
         let solver = FvmWallSolver::new(mesh, config.indoor_temperature);
 
+        let init_temp = solver.interior_surface_temp();
         walls.push(FvmExteriorWall {
             zone_uid: s.zone_uid.clone(),
             path: s.path.clone(),
@@ -230,6 +238,7 @@ fn collect_fvm_exterior_walls(
             h_out_w_per_m2_k: h_out,
             h_min_iso_interior: h_si_iso,
             solver,
+            cached_interior_surface_temp_c: init_temp,
         });
         skip.insert(s.polygon_uid.clone());
     }
@@ -269,6 +278,8 @@ fn collect_internal_mass_surfaces(
 
             let mesh = build_1d_mesh(&m.construction, m.area_m2);
             let solver = FvmWallSolver::new(mesh, config.indoor_temperature);
+            let init_temp_in = solver.interior_surface_temp();
+            let init_temp_out = solver.exterior_surface_temp();
             out.push(FvmInternalMassSurface {
                 zone_uid: zone.uid.clone(),
                 area_m2: m.area_m2,
@@ -277,6 +288,8 @@ fn collect_internal_mass_surfaces(
                 cos_tilt: m.cos_tilt,
                 h_min_iso: h_si_iso,
                 solver,
+                cached_interior_surface_temp_c: init_temp_in,
+                cached_exterior_surface_temp_c: init_temp_out,
             });
         }
     }
@@ -540,8 +553,11 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
 
         w.solver.step(dt_s, &bc_exterior, &bc_interior, &[]);
 
+        // Cache proper surface temperature for MRT computation next substep.
+        w.cached_interior_surface_temp_c = w.solver.interior_surface_temperature(&bc_interior);
+
         // Report only the **convective** heat transfer to zone air.
-        let t_surf = w.solver.interior_surface_temperature(&bc_interior);
+        let t_surf = w.cached_interior_surface_temp_c;
         let q_conv_w_per_m2 = h_in_conv * (t_surf - t_air);
         if q_conv_w_per_m2 != 0.0 {
             *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) += q_conv_w_per_m2 * w.area_m2;
@@ -651,13 +667,20 @@ fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(
 
         s.solver.step(dt_s, &bc_exterior, &bc_interior, &[]);
 
+        // Cache proper surface temperatures for MRT computation next substep.
+        s.cached_interior_surface_temp_c = s.solver.interior_surface_temperature(&bc_interior);
+        if matches!(s.boundary, InternalMassBoundary::TwoSided) {
+            s.cached_exterior_surface_temp_c =
+                s.solver.exterior_surface_temperature(&bc_exterior);
+        }
+
         let mut q_to_air_w = 0.0;
         // Interior face convective transfer to air.
-        let t_surf_in = s.solver.interior_surface_temperature(&bc_interior);
+        let t_surf_in = s.cached_interior_surface_temp_c;
         q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
         // Exterior face (only if it is coupled to zone air).
         if matches!(s.boundary, InternalMassBoundary::TwoSided) {
-            let t_surf_out = s.solver.exterior_surface_temperature(&bc_exterior);
+            let t_surf_out = s.cached_exterior_surface_temp_c;
             q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
         }
         q_to_air_w += direct_to_air_w;
@@ -1603,7 +1626,7 @@ pub fn run_transient_simulation_with_options(
                     if h_rad <= 0.0 {
                         continue;
                     }
-                    num += h_rad * w.area_m2 * w.solver.interior_surface_temp();
+                    num += h_rad * w.area_m2 * w.cached_interior_surface_temp_c;
                     den += h_rad * w.area_m2;
                 }
                 for m in &internal_mass_surfaces {
@@ -1614,10 +1637,10 @@ pub fn run_transient_simulation_with_options(
                     if h_rad <= 0.0 {
                         continue;
                     }
-                    num += h_rad * m.area_m2 * m.solver.interior_surface_temp();
+                    num += h_rad * m.area_m2 * m.cached_interior_surface_temp_c;
                     den += h_rad * m.area_m2;
                     if matches!(m.boundary, InternalMassBoundary::TwoSided) {
-                        num += h_rad * m.area_m2 * m.solver.exterior_surface_temp();
+                        num += h_rad * m.area_m2 * m.cached_exterior_surface_temp_c;
                         den += h_rad * m.area_m2;
                     }
                 }
@@ -3231,6 +3254,7 @@ mod tests {
             },
         );
         let mesh = build_1d_mesh(&construction, 10.0);
+        let solver = FvmWallSolver::new(mesh, 20.0);
         let wall = FvmExteriorWall {
             zone_uid: UID::from("zone"),
             path: "zone/solid/roof/poly".to_string(),
@@ -3240,7 +3264,8 @@ mod tests {
             h_in_w_per_m2_k: 8.0,
             h_out_w_per_m2_k: 8.0,
             h_min_iso_interior: 8.0,
-            solver: FvmWallSolver::new(mesh, 20.0),
+            cached_interior_surface_temp_c: solver.interior_surface_temp(),
+            solver,
         };
 
         let mut walls_no_tilt = vec![wall.clone()];
