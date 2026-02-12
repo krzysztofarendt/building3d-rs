@@ -1,264 +1,200 @@
-# FVM Heat Transfer: Implementation Plan
+# FVM Heat Transfer: Current Implementation
 
-## Goal
+This document describes the implemented Finite Volume Method (FVM) heat-transfer
+stack in `building3d` as it exists in code today.
 
-Add a Finite Volume Method (FVM) heat transfer solver to building3d, starting
-with 1D conduction through wall layers and designed so the same method extends
-to 3D volumetric conduction on tetrahedral meshes.
+## Scope
 
-## Why FVM
+Implemented:
+- 1D transient conduction through layered wall constructions.
+- 3D transient conduction on tetrahedral meshes.
+- Implicit solvers for both dense 1D tridiagonal and generic sparse topologies.
+- Integration of 1D per-surface FVM walls into energy simulations.
+- Integration of optional internal mass slabs (also 1D FVM) into energy simulations.
 
-- **Same method in 1D and 3D.** The algorithm (cells, faces, conductances,
-  implicit solve) is identical — only the mesh changes.
-- **Exact energy conservation** by construction: every watt leaving one cell
-  enters its neighbor.
-- **Natural fit for heat transfer.** FVM is derived from the integral form of
-  the conservation law, not from function approximation (FEM) or pointwise
-  derivatives (FDM).
-- **Simple implementation.** The diffusion equation on any mesh reduces to
-  assembling a sparse symmetric matrix and solving a linear system.
+Not currently wired into building energy runtime:
+- 3D FVM is available as mesh+solver APIs and example code, but energy simulation
+  integration uses 1D per-surface wall solvers.
 
-## The heat equation
+## Governing Discretization
 
-```
-ρ c_p ∂T/∂t = ∇·(k ∇T) + Q
-```
-
-FVM discretizes this over each cell i with volume V_i:
+Heat equation:
 
 ```
-(ρ c_p V_i / Δt) (T_i^{n+1} - T_i^n) = Σ_{faces f} k_f A_f / d_f (T_j^{n+1} - T_i^{n+1}) + Q_i
+rho * cp * dT/dt = div(k * grad(T)) + Q
+```
+
+Cell-centered implicit FVM update:
+
+```
+(C_i / dt) * (T_i^{n+1} - T_i^n) = sum_f K_f * (T_nb^{n+1} - T_i^{n+1}) + S_i
 ```
 
 where:
-- `k_f` = face conductivity (harmonic mean of neighbors)
-- `A_f` = face area
-- `d_f` = distance between cell centroids across face f
-- `Q_i` = volumetric source term in cell i (W)
+- `C_i = rho_i * cp_i * V_i` [J/K]
+- `K_f` is face conductance [W/K]
+- `S_i` is per-cell source power [W]
 
-Rearranging gives a sparse linear system: `M T^{n+1} = b`.
+After assembly, this gives a linear system solved each timestep.
 
-## Module structure
+## Module Layout
 
 ```
 src/sim/heat_transfer/
-├── mod.rs          # Public API, trait definitions
-├── mesh.rs         # FvmMesh: cells, faces, connectivity (dimension-agnostic)
-├── mesh_1d.rs      # Build 1D mesh from WallConstruction layers
-├── solver.rs       # FVM assembly + implicit time step (shared by 1D and 3D)
-├── boundary.rs     # Boundary condition types (Dirichlet, Neumann, convective)
-└── (future) mesh_3d.rs  # Build 3D mesh from TetrahedralMesh
+├── boundary.rs       # BoundaryCondition enum
+├── mesh.rs           # FvmCell, FvmFace, FvmMesh, BOUNDARY sentinel
+├── mesh_1d.rs        # build_1d_mesh() from WallConstruction
+├── mesh_3d.rs        # build_3d_mesh(), build_3d_mesh_uniform()
+├── solver.rs         # FvmWallSolver (1D tridiagonal + Thomas)
+└── solver_sparse.rs  # FvmSparseSolver (generic sparse + PCG)
 ```
 
-## Data structures
+Public exports are re-exported from `src/sim/heat_transfer/mod.rs`.
 
-### FvmMesh (dimension-agnostic)
+## Core Data Model
 
-```rust
-pub struct FvmCell {
-    pub volume: f64,            // m^3 (1D: A_wall * dx)
-    pub conductivity: f64,      // W/(m·K)
-    pub density: f64,           // kg/m^3
-    pub specific_heat: f64,     // J/(kg·K)
-}
+`FvmMesh` is dimension-agnostic:
+- `FvmCell { volume, conductivity, density, specific_heat }`
+- `FvmFace { cell_left, cell_right, area, distance, conductance }`
+- boundary side is marked by `BOUNDARY = usize::MAX`
 
-pub struct FvmFace {
-    pub cell_left: usize,       // index into cells (or BOUNDARY sentinel)
-    pub cell_right: usize,      // index into cells (or BOUNDARY sentinel)
-    pub area: f64,              // m^2 (1D: A_wall, the polygon area)
-    pub distance: f64,          // m (centroid-to-centroid distance across face)
-    pub conductance: f64,       // W/K = k_f * A / d (precomputed)
-}
+Face conductance is precomputed and stored in each face.
 
-pub struct FvmMesh {
-    pub cells: Vec<FvmCell>,
-    pub faces: Vec<FvmFace>,
-}
-```
+## Boundary Conditions
 
-### Boundary conditions
+`BoundaryCondition` currently supports:
+- `Dirichlet { temperature }`
+- `Neumann { heat_flux }` where heat flux is positive into domain
+- `Convective { h, t_fluid }`
+- `ConvectiveWithFlux { h, t_fluid, heat_flux }`
+- `ConvectiveWithFluxToDomain { h, t_fluid, heat_flux }`
 
-```rust
-pub enum BoundaryCondition {
-    /// Fixed temperature (T = T_prescribed)
-    Dirichlet { temperature: f64 },
-    /// Fixed heat flux (q = q_prescribed, W/m^2)
-    Neumann { heat_flux: f64 },
-    /// Convective (q = h * (T_surface - T_fluid))
-    Convective { h: f64, t_fluid: f64 },
-}
-```
+`ConvectiveWithFlux` behavior:
+- surface source is split between convection and conduction using
+  `alpha = K_face / (K_face + h*A)`
+- only `alpha * heat_flux` enters the domain
 
-Convective BCs are the primary mode — exterior surfaces see outdoor air with
-h_out (~10-25 W/(m^2·K)), interior surfaces see zone air with h_in (~3-8).
+`ConvectiveWithFluxToDomain` behavior:
+- full imposed flux enters the domain (no split)
 
-### Solver interface
+## 1D Wall Meshing
 
-```rust
-pub trait HeatTransferSolver {
-    /// Advance one time step. Returns new cell temperatures.
-    fn step(
-        &mut self,
-        dt: f64,
-        bc_exterior: &BoundaryCondition,
-        bc_interior: &BoundaryCondition,
-        sources: &[f64],           // per-cell volumetric source (W)
-    ) -> &[f64];
-
-    /// Interior surface temperature (last cell).
-    fn interior_surface_temp(&self) -> f64;
-
-    /// Exterior surface temperature (first cell).
-    fn exterior_surface_temp(&self) -> f64;
-
-    /// Heat flux into zone through interior surface (W/m^2).
-    fn interior_heat_flux(&self) -> f64;
-}
-```
-
-This is the interface the zone thermal model calls. It doesn't know if the
-solver is 1D or 3D.
-
-## Step-by-step implementation
-
-### Step 1: FvmMesh and 1D mesh builder ✅
-
-Build a 1D mesh from a `WallConstruction`:
+`build_1d_mesh(construction, wall_area)` in `mesh_1d.rs`:
+- layers are ordered exterior -> interior
+- each layer is subdivided with max cell thickness `0.05 m`
+- each layer gets at least one cell
+- interior interface conductance uses series resistance:
 
 ```
-Exterior BC ─┤ cell_0 │ cell_1 │ ... │ cell_N ├─ Interior BC
-              layer 0    layer 1        layer M
+K = A / (half_dx_L / k_L + half_dx_R / k_R)
 ```
 
-Each `Layer` is subdivided into one or more cells (at least one per layer;
-thin layers get one cell, thick layers can be split for accuracy). The face
-conductance between cells in different layers uses the **series-resistance
-formula**:
+- boundary faces use half-cell distance:
+  `K = k * A / half_dx`
+
+## 1D Solver (`FvmWallSolver`)
+
+`solver.rs` implements:
+- backward-Euler implicit time stepping
+- tridiagonal matrix assembly
+- Thomas algorithm solve (O(N))
+
+API highlights:
+- `step(dt, bc_exterior, bc_interior, sources)`
+- `temperatures()`
+- `total_capacity_j_per_k()`
+- `interior_heat_flux(...)`, `exterior_heat_flux(...)`
+- `interior_surface_temperature(...)`, `exterior_surface_temperature(...)`
+- `boundary_conduction_fraction(h, is_interior)`
+
+Notes:
+- `interior_surface_temp()` / `exterior_surface_temp()` return boundary-adjacent
+  cell centroid temperatures.
+- `interior_surface_temperature(...)` / `exterior_surface_temperature(...)`
+  reconstruct actual boundary surface temperatures using half-cell resistance.
+
+## 3D Meshing (`mesh_3d.rs`)
+
+`build_3d_mesh_uniform()` and `build_3d_mesh()` convert a tetrahedral mesh to `FvmMesh`:
+- one FVM cell per tetrahedron
+- shared tetra faces become interior faces
+- unmatched tetra faces become boundary faces
+
+Interior face conductance:
 
 ```
-K = A / (half_dx_L/k_L + half_dx_R/k_R)
+K = A / (d_L / k_L + d_R / k_R)
 ```
 
-(reduces to harmonic mean when half-distances are equal).
-
-Input: `WallConstruction` (already has `Vec<Layer>` with thickness, k, ρ, c_p)
-and wall polygon area.
-
-Output: `FvmMesh` with cells and faces.
-
-Implemented in `mesh.rs` and `mesh_1d.rs`. Tests:
-- `test_single_layer_mesh`: 0.20m concrete → 4 cells, 5 faces
-- `test_three_layer_mesh`: layer subdivision and total thickness
-- `test_thin_layer_gets_one_cell`: 0.001m layer → 1 cell
-- `test_face_conductance_same_material`: K ≈ 28.0 for uniform material
-
-### Step 2: Implicit FVM solver ✅
-
-Assemble and solve the linear system using Backward Euler:
+Boundary face conductance:
 
 ```
-(C/Δt + K) T^{n+1} = (C/Δt) T^n + Q + BC contributions
+K = k * A / d
 ```
 
-In 1D this is a **tridiagonal system** — solved with Thomas algorithm (O(N)).
+with `d` equal to centroid-to-face distance of the adjacent tetrahedron.
 
-Implemented in `solver.rs`. Tests:
-- `test_thomas_algorithm`: 3×3 system
-- `test_steady_state_dirichlet`: linear profile and q = k·ΔT/L
+The builder validates:
+- property count matches tetra count
+- positive tetra volumes / face areas / distances
+- non-manifold face sharing is rejected
 
-### Step 3: Boundary condition handling ✅
+## Generic Sparse Solver (`FvmSparseSolver`)
 
-Four BC types implemented in `boundary.rs`:
+`solver_sparse.rs` provides a topology-agnostic implicit solver for `FvmMesh`:
+- sparse assembly (`diag + adjacency off-diagonals`)
+- PCG solve with Jacobi preconditioning
 
-- **Dirichlet**: modify the matrix row for the boundary cell to fix temperature.
-- **Neumann**: add the prescribed flux to the RHS of the boundary cell.
-- **Convective**: series resistance `1/(h·A) + 1/K_face` for half-cell accuracy.
-- **ConvectiveWithFlux**: convective + imposed surface source (e.g. absorbed
-  solar), with flux split between conduction and convection via
-  `boundary_conduction_fraction()`.
+Default config (`SparseSolverConfig`):
+- `max_iterations = 2000`
+- `rel_tolerance = 1e-9`
+- `abs_tolerance = 1e-12`
 
-Tests:
-- `test_steady_state_convective`: q = ΔT/R_total within 1%
-- `test_convective_multilayer_interface_temps`: surface temps with half-cell offset
-- `test_neumann_flux_reporting_sign`: sign convention verified
+Boundary handling:
+- BCs are passed as `(face_index, BoundaryCondition)` pairs
+- omitted boundary faces are adiabatic
+- applying BC on interior faces is rejected
 
-### Step 4: Validation against analytical solutions ✅
+## Energy Integration (Implemented)
 
-1. **Steady-state multi-layer wall** ✅: 3 layers with different k, convective
-   BCs. Test: `test_steady_state_multilayer`.
+1D FVM is integrated in both:
+- `src/sim/energy/module.rs` (step-based `EnergyModule`)
+- `src/sim/energy/simulation.rs` (`run_transient_simulation*`, multizone transient)
 
-2. **Transient step response** ✅: semi-infinite solid with sudden surface
-   temperature change. Compared to `T(x,t) = T_s·erfc(x/(2√(αt)))`.
-   Test: `test_transient_step_response`.
+Key behavior:
+- `ThermalConfig.use_fvm_walls` defaults to `true`
+- eligible FVM exterior surfaces are:
+  exterior + non-glazing + no explicit U-value override + resolvable construction + not ground-coupled
+- each eligible polygon gets its own `FvmWallSolver`
+- exterior absorbed shortwave/sol-air terms are applied via `ConvectiveWithFlux`
+- interior surface sources (transmitted solar/radiant gains where configured) use
+  `ConvectiveWithFluxToDomain`
+- wall-to-zone contribution is convective flux at interior surface
+- FVM polygons are excluded from steady UA network via
+  `ThermalNetwork::build_with_ignored_exterior_polygons(...)` to avoid double counting
+- explicit FVM/internal-mass capacities are subtracted from lumped zone capacity where needed
 
-3. **Periodic forcing** ✅: 24h sinusoidal Dirichlet BC on a 1m concrete wall.
-   Verified against `T(x,t) = T_mean + A₀·exp(-x/δ)·sin(ωt - x/δ)` where
-   `δ = √(2α/ω)` is the penetration depth.
-   Test: `test_periodic_forcing` — checks amplitude decay (<5% error),
-   phase lag (<500s absolute), and mean temperature at 5 cell depths.
+Related configuration flags:
+- `use_fvm_walls`
+- `internal_mass_surfaces`
+- `distribute_transmitted_solar_to_fvm_walls`
+- `use_surface_aware_solar_distribution`
+- `use_interior_radiative_exchange`
 
-### Step 5: Integration with zone thermal model ✅
+## Tests and Validation Coverage
 
-Connected FVM wall solver to the energy simulation in both `module.rs`
-(SimModule pipeline) and `simulation.rs` (annual simulation):
+Implemented test coverage includes:
+- `mesh_1d.rs`: layer subdivision, thickness conservation, conductance checks
+- `solver.rs`: Thomas solve, steady-state Dirichlet/convective/multilayer, transient
+  step response, periodic forcing, Neumann sign convention, convective-with-flux variants
+- `mesh_3d.rs`: tetra-to-FVM topology, heterogeneous conductance, manifold checks
+- `solver_sparse.rs`: generic BC behavior, flux/surface temperature reconstruction,
+  3D mesh-builder compatibility, PCG-driven solves
+- energy integration tests in `module.rs` and `simulation.rs`, including FVM-specific behavior
+- BESTEST suite paths with FVM enabled by default (`BESTEST_USE_FVM_WALLS`)
 
-1. `ThermalConfig.use_fvm_walls: bool` (default: **true**). Eligible surfaces:
-   exterior, resolved `WallConstruction`, not glazing, not U-value override,
-   not ground-coupled.
-2. Each timestep: convective BCs from zone air / outdoor temps, absorbed solar
-   via `ConvectiveWithFlux`, interior heat flux fed to zone energy balance.
-3. `ThermalNetwork::build_with_ignored_exterior_polygons()` excludes FVM
-   surfaces from steady-state UA to avoid double-counting.
-4. FVM wall capacity deducted from zone lumped capacity.
+## Examples
 
-### Step 6: BESTEST validation ✅
-
-BESTEST 600 and 900 run with FVM walls enabled by default. The
-`bestest_energy_suite` example supports `BESTEST_USE_FVM_WALLS` env var.
-
-### Step 7 (future): 3D mesh builder
-
-Build a 3D `FvmMesh` from a `TetrahedralMesh` (already exists in the codebase
-at `src/geom/mesh/tetrahedralize.rs`):
-
-- Cells = tetrahedra (volume from `tetrahedron_volume()`)
-- Faces = shared triangle faces between adjacent tetrahedra
-- Face area = triangle area
-- Distance = centroid-to-centroid distance
-- Conductance = `k_f * A_f / d_f` (harmonic mean at material interfaces)
-
-Build adjacency from the `TetrahedronIndex` list: two tetrahedra are neighbors
-if they share exactly 3 vertex indices.
-
-The solver (`solver.rs`) is reused without changes — only the matrix is no
-longer tridiagonal, so swap the Thomas algorithm for a sparse CG solver.
-
-## Dependencies
-
-- No external crates needed for 1D (Thomas algorithm is trivial)
-- For 3D sparse solve: either implement a simple CG, or add `nalgebra-sparse`
-  (evaluate later)
-
-## Key design decisions
-
-1. **FvmMesh is dimension-agnostic.** The solver sees cells and faces, never
-   coordinates. This is what makes 1D → 3D seamless.
-
-2. **One solver per surface.** Each exterior polygon gets its own 1D solver
-   instance. This is embarrassingly parallel and avoids coupling complexity
-   (lateral conduction between surfaces is negligible for most buildings).
-
-3. **Implicit time stepping only.** Backward Euler is unconditionally stable
-   at any Δt. No CFL constraint, compatible with the hourly timestep of the
-   energy simulation. Crank-Nicolson can be added later as an option for
-   second-order accuracy.
-
-4. **Series-resistance formula for face conductivity.** At interfaces between
-   layers with different k, `K = A / (half_dx_L/k_L + half_dx_R/k_R)` ensures
-   correct steady-state heat flux. Reduces to harmonic mean when cell sizes
-   are equal. This is standard for FVM on heterogeneous media.
-
-5. **Concrete solver type.** `FvmWallSolver` is used directly (no trait
-   abstraction). The zone model calls `step()` and reads
-   `interior_heat_flux()`. A trait can be added later if alternative solver
-   implementations are needed.
+- `cargo run --example sim_fvm_wall`
+- `cargo run --example sim_fvm_wall_viz`
+- `cargo run --example sim_fvm_3d`
