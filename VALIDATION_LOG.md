@@ -128,4 +128,4 @@ Reference annual values:
 - The 15% surface-retained fraction eventually absorbs into wall anyway through thermal coupling
 - ConvectiveWithFluxToDomain remains the correct BC for interior absorbed shortwave
 
-| COMMIT_HASH | Distribute solar to all interior surfaces | +13.1% | -5.7% | +63.5% | +20.6% | Floor flux diluted 3.3x; 900C much improved |
+| cd243bf | Distribute solar to all interior surfaces | +13.1% | -5.7% | +63.5% | +20.6% | Floor flux diluted 3.3x; 900C much improved |
