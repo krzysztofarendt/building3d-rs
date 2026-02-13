@@ -39,7 +39,36 @@ The tridiagonal system is solved with the Thomas algorithm (O(N)).
 FVM eligibility: exterior, has resolved `WallConstruction`, not glazing, not U-value
 override, not ground-coupled.
 
-### 1.2 Zone Thermal Models
+### 1.2 Interior Convection
+
+Two models available, selected via `InteriorConvectionModel`:
+
+**Fixed** (default 3.0 W/m²K): constant convection coefficient.
+
+**TARP** (Walton 1983, buoyancy-driven): temperature- and tilt-dependent:
+- Vertical (|cos_tilt| < 0.707): `h = 1.31 * |dT|^(1/3)`
+- Horizontal unstable (dT * cos_tilt < 0): `h = 9.482 * |dT|^(1/3) / (7.238 - |cos_tilt|)`
+- Horizontal stable: `h = 1.810 * |dT|^(1/3) / (1.382 + |cos_tilt|)`
+- Physical minimum: H_MIN = 0.1 W/m²K
+
+When TARP is active, radiative exchange is bypassed (h_conv = h_total = TARP,
+t_eff = T_air). The simplified area-weighted MRT model cannot properly return
+energy to air; a proper view-factor model would be needed to split conv/rad.
+
+### 1.3 Exterior Convection
+
+Two models available, selected via `ExteriorConvectionModel`:
+
+**Fixed**: constant from ISO 6946 R_se (~25 W/m²K).
+
+**DOE-2 simplified**: combines natural + wind-forced convection:
+- Natural: same TARP correlations as interior
+- Forced: `h_f = 3.26 + 3.89 * V_wind` (rough surface)
+- Combined: `h_ext = sqrt(h_n² + h_f²)`
+
+Wind speed read from EPW weather data via Bus coupling.
+
+### 1.5 Zone Thermal Models
 
 **AirOnly (1R1C)**: Single zone air node with lumped capacity.
 ```
@@ -55,14 +84,14 @@ absorbed solar to envelope).
 **Multi-zone coupling**: Inter-zone partitions become conductances `K_ij = U_eq * A`.
 Backward Euler yields a linear system solved per timestep (Gaussian elimination).
 
-### 1.3 Internal Mass Slabs
+### 1.6 Internal Mass Slabs
 
 Non-geometric 1D FVM slabs (e.g., floor slab) coupled to zone air via convective BCs.
 Can receive transmitted solar and radiant internal gains when
 `use_surface_aware_solar_distribution` is enabled. This provides thermal lag for
 solar gains absorbed by interior surfaces.
 
-### 1.4 Solar Gains
+### 1.7 Solar Gains
 
 Transmitted solar through glazing:
 ```
@@ -85,7 +114,7 @@ Angular transmittance modifier (two options, selected via config):
   accurate at high incidence angles (70-80°) but gives nearly identical annual
   results to ASHRAE IAM a=0.1 for single-pane glass.
 
-### 1.5 HVAC
+### 1.8 HVAC
 
 Ideal loads with heating/cooling setpoints. Implicit formulation accounts for
 concurrent envelope losses:
@@ -93,7 +122,7 @@ concurrent envelope losses:
 Q_hvac = C*(T_set - T_zone)/dt + (UA + K_inf)*(T_set - T_out) - Q_gains
 ```
 
-### 1.6 Infiltration
+### 1.9 Infiltration
 
 Constant ACH model:
 ```
@@ -102,7 +131,7 @@ Q_inf = rho * c_p * V * ACH / 3600 * (T_indoor - T_outdoor)
 
 Fixed air properties: rho = 1.2 kg/m^3, c_p = 1005 J/(kg*K).
 
-### 1.7 Surface Classification
+### 1.10 Surface Classification
 
 Polygons are classified at simulation time (not stored on geometry) using a
 facing-graph overlay keyed by polygon UID:
@@ -110,7 +139,7 @@ facing-graph overlay keyed by polygon UID:
 - **SameZoneInterface**: internal partition within a zone (excluded from envelope)
 - **InterZoneInterface**: partition between zones (coupling conductance)
 
-### 1.8 Key Assumptions
+### 1.11 Key Assumptions
 
 - **1D heat conduction** only (no lateral flow within wall layers)
 - **No per-surface interior temperature nodes** (except FVM wall faces)
@@ -119,8 +148,8 @@ facing-graph overlay keyed by polygon UID:
   half-cell-interpolated surface temperatures, not cell centroids)
 - **Simplified exterior LW radiation** (sky/ground exchange enabled on FVM walls;
   uses air temperature for outgoing radiation, not surface temperature)
-- **Constant h_out** from ISO 6946 R_se (wind-dependent model available but disabled
-  by default)
+- **Dynamic or constant h_out**: DOE-2 exterior convection available (natural +
+  wind-forced via sqrt combination); ISO 6946 R_se fixed value as fallback
 - **Constant SHGC** (no spectral dependence; polynomial angular model available)
 - **Constant infiltration** (no wind/stack pressure dependence)
 - **Constant ground temperature** boundary
@@ -136,11 +165,12 @@ facing-graph overlay keyed by polygon UID:
 
 | Aspect | EnergyPlus | building3d |
 |--------|-----------|------------|
-| **Exterior surface balance** | Full separate-term balance: absorbed solar + LW radiation (sky/ground/air/surrounding surfaces) + wind-dependent convection + conduction. Each term computed independently. No sol-air lumping. | FVM walls: absorbed solar + LW sky/ground exchange as BC fluxes. Non-FVM: sol-air `(U/h_out) * (alpha*I - eps*delta_R)`. Constant h_out from ISO 6946 R_se (wind model available). |
-| **Interior surface balance** | Full grey-interchange LW model (ScriptF/CarrollMRT) between all zone surfaces. Each surface has its own temperature node. | Simplified area-weighted MRT from FVM wall faces (proper surface temps via half-cell interpolation), internal mass slabs, and steady-state window surfaces. |
+| **Exterior surface balance** | Full separate-term balance: absorbed solar + LW radiation (sky/ground/air/surrounding surfaces) + wind-dependent convection + conduction. Each term computed independently. No sol-air lumping. | FVM walls: absorbed solar + LW sky/ground exchange as BC fluxes + DOE-2 wind-dependent convection. Non-FVM: sol-air `(U/h_out) * (alpha*I - eps*delta_R)`. |
+| **Interior surface balance** | Full grey-interchange LW model (ScriptF/CarrollMRT) between all zone surfaces. Each surface has its own temperature node. | TARP convection (dT/tilt-dependent) or simplified area-weighted MRT from FVM wall faces, internal mass slabs, and steady-state window surfaces. When TARP is active, radiative exchange is bypassed. |
 | **Wall conduction** | Conduction Transfer Functions (CTF) from state-space pre-computation, or Conduction Finite Difference (CondFD). Both capture exact distributed thermal mass. | 1D FVM (similar to CondFD) for eligible exterior opaque surfaces. Windows and inter-zone partitions use steady U*A. |
-| **Solar distribution** | Beam solar distributed to surfaces proportional to `Area * Absorptance`. Full ray-tracing option available. | Fraction-based: `transmitted_solar_to_air_fraction` + remainder to mass node or internal mass slabs. Not geometry-aware. |
+| **Solar distribution** | Beam solar distributed to surfaces proportional to `Area * Absorptance`. Full ray-tracing option available. | Fraction-based: `transmitted_solar_to_air_fraction` (default 0.4) to air, remainder to internal mass slabs (floor). Not geometry-aware. |
 | **Zone air balance** | `C_z * dT/dt = convective_gains + sum(h_i*A_i*(T_si - T_z)) + infiltration + HVAC`. 3rd-order backward difference. Predictor-corrector with HVAC. | Backward Euler on lumped or 2-node model. HVAC applied as ideal loads. |
+| **Convection** | TARP, DOE-2, MoWiTT, adaptive; windward/leeward; surface roughness | TARP interior + DOE-2 exterior (simplified, no windward/leeward) |
 | **Window thermal** | ISO 15099 layer-by-layer spectral calculation. Angular transmittance/reflectance per layer. | Bulk U-value override + constant SHGC. Polynomial angular transmittance (Fresnel-based) or ASHRAE IAM. |
 | **Ground coupling** | Kiva 2D finite difference solver with detailed soil domain. | Constant ground temperature boundary. |
 | **Infiltration** | Design flow rate, effective leakage area (Sherman-Grimsrud), flow coefficient (AIM-2), or full airflow network. | Constant ACH. |
@@ -177,35 +207,32 @@ Logan TMY3 EPW file.
 
 | Case | Metric | Annual Error vs E+ | Primary Cause |
 |------|--------|-------------------|---------------|
-| 600 | Heating | +12.5% | Corrected MRT removed compensating error; remaining gap from constant h_in/h_out, simplified solar distribution |
-| 600 | Cooling | -33.0% | Lower MRT reduces cooling; no dynamic convection, simplified solar distribution |
-| 900 | Heating | +101.9% | Heavyweight thermal mass dynamics, no coupled surface solve, constant convection coefficients |
-| 900 | Cooling | -24.5% | Thermal mass not releasing stored solar effectively; no dynamic h_in |
+| 600 | Heating | -0.7% | Nearly matched. Small residual from simplified solar distribution and no coupled surface solve. |
+| 600 | Cooling | -7.2% | Minor under-prediction. Missing geometry-aware solar distribution and no full view-factor radiation exchange. |
+| 900 | Heating | +42.7% | Heavyweight thermal mass dynamics: over-predicts heating losses through massive walls. No coupled interior surface temperature iteration. |
+| 900 | Cooling | +26.8% | Over-predicts cooling. Thermal mass stores/releases heat differently than E+'s coupled CTF solve with per-surface radiation exchange. |
 
 ### 3.2 Monthly Pattern Analysis
 
-**Case 600 heating (+12.5%):** The MRT centroid fix (Phase 6) corrected surface
-temperatures used in radiation exchange, removing a compensating error that had
-masked ~5% of heating demand. The corrected MRT is colder than the centroid
-approximation, increasing radiative heat loss through walls. Remaining gap from
-constant convection coefficients (fixed 8.29 vs TARP's dT-dependent 2-8 W/m²K)
-and simplified solar distribution.
+**Case 600 heating (-0.7%):** Nearly perfect annual match. TARP dynamic convection
+and corrected insulation thickness (0.066m) bring the model close to EnergyPlus.
+Monthly shape shows slight over-prediction in winter (Jan +31%) compensated by
+under-prediction in shoulder months (Apr -15%).
 
-**Case 600 cooling (-33.0%):** Under-predicts cooling. The corrected MRT reduces
-effective interior surface temperatures, which decreases cooling demand. The
-remaining gap is dominated by missing dynamic convection coefficients and
-simplified solar distribution (bulk to mass node vs per-surface tracking).
+**Case 600 cooling (-7.2%):** Good overall match. Summer months (Jul, Aug) are
+close; shoulder months (Jan-Mar, Oct-Dec) under-predict cooling due to
+simplified solar distribution not tracking beam direction through windows.
 
-**Case 900 heating (+101.9%):** Improved from +119% by the MRT fix. The corrected
-surface temperatures better represent heavyweight wall dynamics, but the model
-still over-predicts heating significantly. Remaining causes: no coupled interior
-surface temperature solve, constant convection coefficients, and no dynamic
-h_in that would increase convective coupling when dT is large.
+**Case 900 heating (+42.7%):** Significantly improved from +106% after fixing TARP
+h_min_iso clamp and insulation thickness. Remaining gap is in winter months where
+heavy concrete walls should store more daytime solar heat to offset nighttime
+losses. The sequential (non-iterative) thermal solve and TARP radiative bypass
+likely contribute.
 
-**Case 900 cooling (-24.5%):** Under-predicts cooling. Thermal mass should absorb
-solar during the day and release it via convection + radiation, but the release
-dynamics are dampened by the sequential (non-iterative) MRT solve and constant
-convection coefficients.
+**Case 900 cooling (+26.8%):** Over-predicts cooling, especially in summer (Jun-Aug).
+TARP dynamic convection increases coupling between warm surfaces and air, but
+without a proper view-factor radiation model, the split between convective and
+radiative pathways differs from EnergyPlus's coupled solve.
 
 ### 3.3 Compensating Errors
 
@@ -240,7 +267,12 @@ realistic thermal lag for absorbed solar.
 a full grey-interchange model (ScriptF) that redistributes heat from warm surfaces
 (sun-heated floor) to cooler surfaces (walls, ceiling) and then to air.
 
+**Status:** Partially addressed. Area-weighted MRT model exists but is bypassed when
+TARP is active because the simplified MRT loses energy through incomplete feedback.
+TARP treats all interior coupling as convection-only (h_conv = h_total = TARP).
+
 **Symptom:** Affects the rate at which stored solar heat is released from mass.
+Main contributor to remaining Case 900 deviation.
 
 **Fix:**
 1. Short term: improve the existing `use_interior_radiative_exchange` model by
@@ -295,38 +327,35 @@ deduction logic may not be fully correct.
 | **4** | Gap 3: Interior LW exchange (windows in MRT) | Improve Case 600 heating | DONE |
 | **5** | Gap 6: Zone capacity audit | Prevent double-counting | DONE |
 | **6** | MRT surface temperature fix | Fix centroid-vs-surface bug | DONE |
-| **7** | Gap 5: Ground coupling | Marginal improvement | |
+| **7** | Dynamic convection (TARP interior + DOE-2 exterior) | Fix Case 600 cooling, Case 900 | DONE |
+| **8** | TARP h_min_iso fix + insulation thickness correction | Fix TARP clamp bug + wall R-value | DONE |
+| **9** | Gap 5: Ground coupling | Marginal improvement | |
+| **10** | Gap 3: Full view-factor radiation exchange | Fix Case 900 deviation | |
 
 After correcting the window U-value (1.8 → 2.8 W/m²K) and updating glass
 properties to ASHRAE 140-2020, Case 600 was within ~7% heating / ~7% cooling.
 The MRT centroid fix (Phase 6) then moved Case 600 to +12.5% heating / -33%
 cooling as it removed a compensating error in the radiation exchange.
 
-The previous window U-value of 1.8 W/m²K was far too low: a double-pane clear
-glass window (3mm, emissivity 0.84, 12mm air gap) has center-of-glass U of
-~2.8 W/m²K (ISO conditions) to ~3.0 (NFRC winter peak), because the sealed
-air gap transfers heat via convection + radiation, not just conduction. The
-layered construction (still-air k=0.026) gave only ~1.5 W/m²K. Using 2.8 as
-an annual-average U best represents a fixed-U model.
+Phase 7 (dynamic convection) implemented TARP interior and DOE-2 exterior
+convection models, plus `transmitted_solar_to_air_fraction=0.4`. This improved
+Case 600 cooling from -53% to -25% and Case 900 cooling from -44% to -5%.
 
-The SHGC remains at 0.86 (single-pane Glass Type 1 transmittance) rather than
-the double-pane assembly SHGC of ~0.76, because the single-pane angular
-polynomial model already reduces the effective transmittance at oblique angles.
-Fixing SHGC to 0.76 without a matching double-pane angular model would
-double-count the multi-pane correction and under-predict solar gains.
+Phase 8 (bug fixes) corrected three issues:
+- TARP was clamped to h_min_iso = 7.69 W/m²K (ISO combined coefficient),
+  defeating dynamic convection entirely. Removed the clamp.
+- Case 600 fiberglass thickness was 0.0776m (RSI 1.94) instead of correct
+  0.066m (RSI 1.65) from BESTEST-GSR reference. Fixed.
+- Linearized radiation through MRT lost energy. Changed TARP mode to bypass
+  radiative exchange (h_conv = h_total = TARP, t_eff = T_air).
 
-Phase 5 (zone capacity audit) simplified the air node to pure air capacity
-when FVM/mass handles all structural mass (small effect: ~143 kJ/K removed).
+After Phase 8: Case 600 heating -0.7%, cooling -7.2% (nearly matched).
+Case 900 heating +42.7%, cooling +26.8% (improved but still significant).
 
-Phase 6 (MRT fix) corrected the MRT computation to use proper half-cell-
-interpolated surface temperatures instead of cell centroid temperatures. The
-centroid of the innermost FVM cell is offset from the actual surface by half
-the cell thickness (up to 25mm for heavyweight concrete). This caused the MRT
-to overstate surface temperatures, masking real radiative heat losses. The fix
-improved Case 900 heating from +119% to +102% but worsened Case 600 by
-removing a compensating error. The dominant remaining gaps are constant
-convection coefficients (fixed h_in vs TARP dT-dependent model), no coupled
-surface temperature iteration, and simplified solar distribution.
+The dominant remaining gap for Case 900 is the absence of a proper view-factor
+interior radiation exchange model. TARP bypasses radiation entirely, so heat
+stored in massive walls can only return to air via convection, missing the
+radiative pathway that EnergyPlus models with its ScriptF grey-interchange model.
 
 ### 4.2 Validation Strategy
 
@@ -336,8 +365,8 @@ After each phase, rerun:
 - Validate **monthly shapes + peaks**, not just annual totals
 
 Target tolerances (vs EnergyPlus single-run reference):
-- Case 600: heating +/- 10%, cooling +/- 10%
-- Case 900: heating +/- 15%, cooling +/- 15%
+- Case 600: heating +/- 10%, cooling +/- 10% -- **MET** (H: -0.7%, C: -7.2%)
+- Case 900: heating +/- 15%, cooling +/- 15% -- not yet met (H: +42.7%, C: +26.8%)
 
 These are tighter than the ASHRAE 140 inter-program spread but realistic for a
 single-reference comparison with the same EPW file.

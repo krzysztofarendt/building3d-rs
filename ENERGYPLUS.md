@@ -90,13 +90,13 @@ K_eff = 1 / (1/(h*A) + 1/K_face)
 
 ---
 
-## 3. Convection Coefficients (MAJOR GAP)
+## 3. Convection Coefficients
 
 | Aspect | EnergyPlus | Building3D | Gap |
 |--------|-----------|------------|-----|
-| **Interior** | Multiple models: TARP (buoyancy), Ceiling Diffuser, Beausoleil-Morrison (mixed), Khalifa, adaptive selection | Fixed value (default 3.0 W/m²K) | **LARGE** - E+ computes h_c from dT and surface orientation |
-| **Exterior** | DOE-2, TARP, MoWiTT, adaptive; wind speed + direction dependent; windward/leeward distinction | Fixed or simple `h_base + h_wind * V_wind` | **LARGE** - E+ uses surface roughness, geometry, wind direction |
-| **Natural convection** | `h = 1.31 * abs(dT)^(1/3)` (vertical), tilt-dependent (horizontal) | Not computed | **LARGE** |
+| **Interior** | Multiple models: TARP (buoyancy), Ceiling Diffuser, Beausoleil-Morrison (mixed), Khalifa, adaptive selection | TARP natural convection (buoyancy-driven, tilt-dependent) or fixed value | Minor - TARP covers most cases; missing ceiling diffuser and mixed convection |
+| **Exterior** | DOE-2, TARP, MoWiTT, adaptive; wind speed + direction dependent; windward/leeward distinction | DOE-2 simplified (natural + wind-forced, sqrt combination) or fixed | Moderate - no windward/leeward distinction, no surface roughness |
+| **Natural convection** | `h = 1.31 * abs(dT)^(1/3)` (vertical), tilt-dependent (horizontal) | Same TARP/Walton correlations | OK |
 
 ### EnergyPlus Interior Convection Details
 
@@ -125,9 +125,21 @@ K_eff = 1 / (1/(h*A) + 1/K_face)
 
 ### Building3D Details
 
-Fixed `h_int` (default 3.0 W/m²K) and `h_ext` (default ~25 W/m²K). Optional wind-dependent exterior: `h_out = h_base + h_wind_coeff * wind_speed`. No orientation or temperature dependence.
+**Interior:** TARP/Walton natural convection model (default) or fixed value (default 3.0 W/m²K).
+TARP correlations are the same as EnergyPlus:
+- Vertical: `h = 1.31 * |dT|^(1/3)`
+- Horizontal unstable: `h = 9.482 * |dT|^(1/3) / (7.238 - |cos(tilt)|)`
+- Horizontal stable: `h = 1.810 * |dT|^(1/3) / (1.382 + |cos(tilt)|)`
+- Floor minimum: H_MIN = 0.1 W/m²K
 
-**Impact:** Convection coefficients directly affect surface temperatures and all heat flows. A fixed 3.0 W/m²K is low for typical interior convection (E+ typically computes 2-8 W/m²K depending on dT and orientation). Exterior is typically 10-30 W/m²K in E+.
+When TARP is active, radiative exchange is bypassed (h_conv = h_total = TARP, t_eff = T_air) because the simplified area-weighted MRT model loses energy through incomplete feedback. A proper view-factor model would be needed to split convection and radiation.
+
+**Exterior:** DOE-2 simplified model (default) or fixed (~25 W/m²K from ISO R_se).
+- Natural: same TARP correlations as interior
+- Forced: `h_f = a + b * V_wind` (a=3.26, b=3.89 for rough surfaces)
+- Combined: `h_ext = sqrt(h_n² + h_f²)`
+
+No windward/leeward distinction or surface roughness categories.
 
 ---
 
@@ -180,7 +192,7 @@ h_rad = 4 * eps * sigma * T_air^3
 |--------|-----------|------------|-----|
 | **Shading** | Full 3D shadow calculation with self-shading, neighboring buildings | Optional FlatScene ray casting | Comparable when ray casting enabled |
 | **Window angular properties** | Spectral data, polynomial fits, BSDF for complex glazing | Simple SHGC with optional IAM polynomial or ASHRAE formula | Moderate - B3D lacks spectral detail |
-| **Solar distribution** | Full tracking: direct beam hits specific interior surfaces, shortwave reflected/absorbed per surface | Bulk transmitted to zone air or mass node | **SIGNIFICANT** - E+ tracks where solar lands inside the zone |
+| **Solar distribution** | Full tracking: direct beam hits specific interior surfaces, shortwave reflected/absorbed per surface | Fraction-based: configurable `transmitted_solar_to_air_fraction` to air, remainder to internal mass slabs (floor) | Moderate - B3D distributes to floor mass but not geometry-aware |
 | **Opaque absorption** | Computed per surface with sol-air temperature concept | Applied as ConvectiveWithFlux BC on FVM walls | OK - similar physics, different implementation |
 | **Ground reflectance** | Configurable, view-factor based | `GHI * rho_ground * ground_view` | OK |
 
@@ -212,7 +224,7 @@ Q_ground_reflect = GHI * rho_ground * ground_view * area * SHGC
 alpha_wall = K_face / (K_face + h_out*A)
 ```
 
-**Solar distribution:** Transmitted solar goes to zone air or mass node as bulk gain, not tracked to specific interior surfaces.
+**Solar distribution:** Transmitted solar split by `transmitted_solar_to_air_fraction` (default 0.4): fraction goes directly to zone air, remainder distributed to internal mass slabs (floor) as surface heat flux via `ConvectiveWithFluxToDomain` BCs. Provides thermal lag for absorbed solar but is not geometry-aware (does not track beam direction through windows).
 
 ---
 
@@ -325,38 +337,25 @@ Simple fixed-temperature boundary condition for ground-coupled surfaces. No deep
 
 ## Priority Recommendations to Align with EnergyPlus
 
-### HIGH PRIORITY (largest physics impact)
+### IMPLEMENTED
 
-#### 1. Dynamic Interior Convection Coefficients
+#### 1. Dynamic Interior Convection Coefficients -- DONE
 
-Implement at minimum the TARP/Walton natural convection model:
+TARP/Walton natural convection model implemented in `src/sim/energy/convection.rs`.
+Opt-in via `InteriorConvectionModel::Tarp`. Applied to FVM walls, internal mass slabs,
+and steady-state surfaces. TARP bypasses radiative exchange (simplified MRT loses energy).
 
-- Vertical walls: `h = 1.31 * |dT|^(1/3)`
-- Horizontal unstable (heated surface below): `h = 9.482 * |dT|^(1/3) / (7.238 - |cos(tilt)|)`
-- Horizontal stable: `h = 1.810 * |dT|^(1/3) / (1.382 + |cos(tilt)|)`
+#### 2. Dynamic Exterior Convection Coefficients -- DONE
 
-This replaces the fixed 3.0 W/m²K default with physically-based values that respond to temperature differences and surface orientation. Typical range: 1-8 W/m²K.
+DOE-2 simplified model implemented in `src/sim/energy/convection.rs`.
+Opt-in via `ExteriorConvectionModel::Doe2`. Combines natural (TARP) + forced
+(wind-driven) via `sqrt(h_n² + h_f²)`. Wind speed read from EPW via Bus.
 
-#### 2. Dynamic Exterior Convection Coefficients
+#### 3. Interior Solar Distribution -- DONE
 
-Implement DOE-2 or MoWiTT model combining natural + forced (wind):
-
-- Natural component: `h_n = f(dT, tilt)` (same correlations as interior)
-- Forced component: `h_f = f(wind_speed, roughness)` with windward/leeward distinction
-- Combined: `h_ext = h_natural + h_forced` or root-sum-square
-
-This replaces the fixed ~25 W/m²K with values that respond to wind conditions. Typical range: 5-35 W/m²K.
-
-#### 3. Interior Solar Distribution
-
-Track where transmitted solar beam actually lands on interior surfaces rather than dumping it all to the air/mass node. Steps:
-
-- Compute beam direction from solar position
-- Project beam through each window onto interior surfaces
-- Distribute absorbed solar to specific FVM wall interior BCs
-- Remainder (not hitting any surface) goes to floor
-
-This significantly affects surface temperatures, thermal lag, and comfort predictions.
+Transmitted solar split by `transmitted_solar_to_air_fraction` (default 0.0, recommended 0.4).
+Remainder distributed to internal mass slabs as surface heat flux. Provides thermal lag
+for absorbed solar via FVM slab conduction.
 
 ### MEDIUM PRIORITY
 
