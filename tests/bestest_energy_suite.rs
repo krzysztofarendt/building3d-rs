@@ -1,4 +1,5 @@
 use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
+use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
@@ -318,8 +319,13 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
 
     // Surface-aware policy for transmitted solar + radiant internal gains.
     cfg.use_surface_aware_solar_distribution = true;
-    cfg.transmitted_solar_to_air_fraction = 0.0;
+    cfg.transmitted_solar_to_air_fraction = 0.4;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
+
+    // Dynamic interior convection (TARP/Walton): h depends on dT and surface tilt.
+    cfg.interior_convection_model = InteriorConvectionModel::Tarp;
+    // Dynamic exterior convection (DOE-2): combined natural + wind-forced.
+    cfg.exterior_convection_model = ExteriorConvectionModel::Doe2;
 
     cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
     cfg.use_interior_radiative_exchange = true;

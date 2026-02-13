@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
+use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
@@ -380,8 +381,13 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // Do NOT distribute transmitted solar to FVM wall interior faces; route it only to
     // the floor mass slab, avoiding an unrealistic heat-loss path through wall insulation.
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
-    cfg.transmitted_solar_to_air_fraction = 0.0;
+    cfg.transmitted_solar_to_air_fraction = 0.4;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
+
+    // Dynamic interior convection (TARP/Walton): h depends on dT and surface tilt.
+    cfg.interior_convection_model = InteriorConvectionModel::Tarp;
+    // Dynamic exterior convection (DOE-2): combined natural + wind-forced.
+    cfg.exterior_convection_model = ExteriorConvectionModel::Doe2;
 
     // Use a representative combined interior coefficient for explicit internal mass slabs.
     cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
