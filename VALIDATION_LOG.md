@@ -82,4 +82,4 @@ Reference annual values:
 - Heating worsened for both cases; cooling improved slightly (solar leakage reduces cooling load)
 - Reverted: `distribute_transmitted_solar_to_fvm_walls = false`
 
-| (pending) | View-factor interior radiation (VF on, solar-to-walls=false) | +9.9% | +4.1% | +63.7% | +50.3% | Physics improved; Case 900 worse due to removed error compensation |
+| 5d9645f | View-factor interior radiation (VF on, solar-to-walls=false) | +9.9% | +4.1% | +63.7% | +50.3% | Physics improved; Case 900 worse due to removed error compensation |
