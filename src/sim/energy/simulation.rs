@@ -412,29 +412,49 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
         // Dynamic interior convection coefficient.
         let cos_tilt = w.normal.dz;
         let t_surf_prev = w.solver.interior_surface_temp();
-        let h_in_total = super::convection::interior_convection_h(
+        let h_in_base = super::convection::interior_convection_h(
             &config.interior_convection_model,
             t_surf_prev - t_air,
             cos_tilt,
             w.h_min_iso_interior,
         )
         .max(1e-9);
-        let (h_in_conv, t_eff) = if config.use_interior_radiative_exchange {
-            let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
-            let h_rad = h_in_total * f_rad;
-            let h_conv = (h_in_total - h_rad).max(0.0);
-            let t_rad = zone_radiant_temp_for(&w.zone_uid);
-            let t_eff = if h_in_total > 0.0 {
-                (h_conv * t_air + h_rad * t_rad) / h_in_total
-            } else {
-                t_air
-            };
-            (h_conv, t_eff)
-        } else {
-            (h_in_total, t_air)
-        };
 
         const SIGMA: f64 = 5.670_374_419e-8; // Stefan–Boltzmann (W/m²/K⁴)
+
+        // Separate convective (zone air coupling) from total (FVM BC) coefficient.
+        //
+        // TARP computes convection-only. Our simplified MRT model cannot
+        // properly return radiative heat to the air (no surface-to-surface
+        // feedback), so splitting into conv+rad would lose energy. Use TARP
+        // directly as the full interior coefficient: h_conv = h_total = TARP.
+        //
+        // Fixed mode treats the coefficient as combined (conv+rad from ISO)
+        // and splits by interior_radiation_fraction.
+        let (h_in_conv, h_in_total, t_eff) = if config.use_interior_radiative_exchange {
+            match config.interior_convection_model {
+                super::convection::InteriorConvectionModel::Tarp => {
+                    // TARP is convection-only; use it as the full coupling
+                    // to air. Radiative exchange requires a proper view-factor
+                    // model to avoid energy loss through incomplete MRT feedback.
+                    (h_in_base, h_in_base, t_air)
+                }
+                super::convection::InteriorConvectionModel::Fixed(_) => {
+                    let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
+                    let h_rad = h_in_base * f_rad;
+                    let h_conv = (h_in_base - h_rad).max(0.0);
+                    let t_rad = zone_radiant_temp_for(&w.zone_uid);
+                    let t_eff = if h_in_base > 0.0 {
+                        (h_conv * t_air + h_rad * t_rad) / h_in_base
+                    } else {
+                        t_air
+                    };
+                    (h_conv, h_in_base, t_eff)
+                }
+            }
+        } else {
+            (h_in_base, h_in_base, t_air)
+        };
 
         // Dynamic exterior convection coefficient.
         let t_surf_ext_prev = w.solver.exterior_surface_temp();
@@ -599,26 +619,40 @@ fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(
         let t_air = zone_air_temp_for(&s.zone_uid);
         // Dynamic interior convection coefficient for internal mass.
         let t_surf_prev = s.solver.interior_surface_temp();
-        let h_total = super::convection::interior_convection_h(
+        let h_base = super::convection::interior_convection_h(
             &config.interior_convection_model,
             t_surf_prev - t_air,
             s.cos_tilt,
             s.h_min_iso,
         )
         .max(1e-9);
-        let (h_conv, t_eff) = if config.use_interior_radiative_exchange {
-            let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
-            let h_rad = h_total * f_rad;
-            let h_conv = (h_total - h_rad).max(0.0);
-            let t_rad = zone_radiant_temp_for(&s.zone_uid);
-            let t_eff = if h_total > 0.0 {
-                (h_conv * t_air + h_rad * t_rad) / h_total
-            } else {
-                t_air
-            };
-            (h_conv, t_eff)
+
+        // Same logic as FVM walls: TARP is convection-only so we bypass
+        // radiative exchange (our simplified MRT model loses energy);
+        // Fixed = combined coefficient split by f_rad.
+        let (h_conv, h_total, t_eff) = if config.use_interior_radiative_exchange {
+            match config.interior_convection_model {
+                super::convection::InteriorConvectionModel::Tarp => {
+                    // TARP is convection-only; use it as the full coupling
+                    // to air. Radiative exchange requires a proper view-factor
+                    // model to avoid energy loss through incomplete MRT feedback.
+                    (h_base, h_base, t_air)
+                }
+                super::convection::InteriorConvectionModel::Fixed(_) => {
+                    let t_rad = zone_radiant_temp_for(&s.zone_uid);
+                    let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
+                    let h_rad = h_base * f_rad;
+                    let h_conv = (h_base - h_rad).max(0.0);
+                    let t_eff = if h_base > 0.0 {
+                        (h_conv * t_air + h_rad * t_rad) / h_base
+                    } else {
+                        t_air
+                    };
+                    (h_conv, h_base, t_eff)
+                }
+            }
         } else {
-            (h_total, t_air)
+            (h_base, h_base, t_air)
         };
 
         let mut source_flux_w_per_m2 = 0.0;

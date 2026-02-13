@@ -60,8 +60,8 @@ fn bestest_600_constructions() -> (
             },
             Layer {
                 name: "FIBERGLASS QUILT-1".to_string(),
-                // Target RSI ≈ 1.94 m²K/W (R-11 in IP units).
-                thickness: 1.94 * 0.04,
+                // BESTEST-GSR: thickness = 0.066 m, k = 0.04 → RSI = 1.65 m²K/W.
+                thickness: 0.066,
                 conductivity: 0.04,
                 density: 12.0,
                 specific_heat: 840.0,

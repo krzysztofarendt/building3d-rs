@@ -96,25 +96,31 @@ pub fn tarp_natural_h(dt: f64, cos_tilt: f64) -> f64 {
 /// Compute interior convection coefficient for a surface.
 ///
 /// When model is `Fixed`, returns the fixed value. When model is `Tarp`,
-/// uses the TARP correlation but clamps to at least `h_min_iso` (the
-/// ISO 6946 film coefficient from the construction's R_si).
+/// uses the TARP correlation with only the physical minimum `H_MIN_FLOOR`.
+///
+/// Note: the `_h_min_iso` parameter (ISO 6946 combined film coefficient,
+/// typically 1/R_si ≈ 7.69 W/m²K) is intentionally NOT used as a clamp
+/// for TARP. TARP computes convection-only values (typically 1.5–4.0
+/// W/m²K); clamping to the ISO combined coefficient (which includes
+/// ~5 W/m²K of radiation) would defeat the purpose of dynamic convection.
+/// Radiative exchange is handled separately in the simulation step.
 ///
 /// # Arguments
 /// - `model`: selected interior convection model
 /// - `dt`: `T_surface - T_air` [K]
 /// - `cos_tilt`: surface tilt cosine (polygon normal dz)
-/// - `h_min_iso`: minimum coefficient from ISO R_si [W/(m²·K)]
+/// - `_h_min_iso`: unused (kept for API stability)
 pub fn interior_convection_h(
     model: &InteriorConvectionModel,
     dt: f64,
     cos_tilt: f64,
-    h_min_iso: f64,
+    _h_min_iso: f64,
 ) -> f64 {
     match model {
         InteriorConvectionModel::Fixed(h) => *h,
         InteriorConvectionModel::Tarp => {
             let h = tarp_natural_h(dt, cos_tilt);
-            h.max(h_min_iso).max(H_MIN_FLOOR)
+            h.max(H_MIN_FLOOR)
         }
     }
 }
@@ -225,13 +231,19 @@ mod tests {
     }
 
     #[test]
-    fn test_interior_convection_tarp_clamps_to_min() {
-        // Very small dT → TARP gives tiny h, but should be clamped to h_min_iso.
-        let h_min = 5.0;
-        let h = interior_convection_h(&InteriorConvectionModel::Tarp, 0.001, 0.0, h_min);
+    fn test_interior_convection_tarp_uses_physical_minimum() {
+        // Very small dT → TARP gives tiny h, clamped to H_MIN_FLOOR (not h_min_iso).
+        // h_min_iso is intentionally ignored for TARP because it is a combined
+        // (convective + radiative) coefficient from ISO 6946.
+        let h_min_iso = 5.0;
+        let h = interior_convection_h(&InteriorConvectionModel::Tarp, 0.001, 0.0, h_min_iso);
         assert!(
-            h >= h_min - 1e-12,
-            "Should be at least h_min_iso={h_min}, got {h}"
+            h >= H_MIN_FLOOR - 1e-12,
+            "Should be at least H_MIN_FLOOR={H_MIN_FLOOR}, got {h}"
+        );
+        assert!(
+            h < h_min_iso,
+            "Should NOT be clamped to h_min_iso={h_min_iso}, got {h}"
         );
     }
 
