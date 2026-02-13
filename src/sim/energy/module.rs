@@ -653,7 +653,7 @@ impl SimModule for EnergyModule {
             .map(|w| w.0)
             .unwrap_or(0.0);
 
-        let (mut air_gains, mut env_gains, internal_mass_sources) = self.gains_by_zone_split(bus);
+        let (mut air_gains, mut env_gains, mut internal_mass_sources) = self.gains_by_zone_split(bus);
         if let Some(tg) = self.config.thermal.ground_temperature_c {
             let dt = tg - outdoor_temp_c;
             for (i, ua) in self.ground_ua_by_zone_w_per_k.iter().enumerate() {
@@ -798,6 +798,40 @@ impl SimModule for EnergyModule {
                 }
                 if let Some(a) = total_area_by_zone_m2.get_mut(s.zone_idx) {
                     *a += s.area_m2;
+                }
+            }
+
+            // When fvm_wall_solar_to_air is enabled, include FVM wall interior area
+            // in the denominator (diluting mass flux) and redirect the wall share to air.
+            if self.config.thermal.fvm_wall_solar_to_air
+                && self.config.thermal.distribute_transmitted_solar_to_fvm_walls
+            {
+                let mut wall_area_by_zone = vec![0.0_f64; n];
+                for w in &self.fvm_walls {
+                    if w.area_m2 <= 0.0 {
+                        continue;
+                    }
+                    if let Some(a) = wall_area_by_zone.get_mut(w.zone_idx) {
+                        *a += w.area_m2;
+                    }
+                }
+                for i in 0..n {
+                    let a_walls = wall_area_by_zone[i];
+                    if a_walls <= 0.0 {
+                        continue;
+                    }
+                    let a_mass = total_area_by_zone_m2[i];
+                    let a_total = a_mass + a_walls;
+                    if a_total <= 0.0 {
+                        continue;
+                    }
+                    let src = internal_mass_sources[i];
+                    if src == 0.0 {
+                        continue;
+                    }
+                    let wall_share = src * (a_walls / a_total);
+                    internal_mass_sources[i] -= wall_share;
+                    air_gains[i] += wall_share;
                 }
             }
 

@@ -381,10 +381,10 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // fraction of internal gains to surfaces.
     cfg.use_surface_aware_solar_distribution = true;
     // EnergyPlus FullInteriorAndExterior distributes ALL transmitted solar to interior
-    // surfaces (0% direct-to-air). We deposit on floor mass only (solar-to-walls causes
-    // leakage through exterior wall insulation). View-factor radiation then naturally
-    // redistributes heat from warm floor to other surfaces.
-    cfg.distribute_transmitted_solar_to_fvm_walls = false;
+    // surfaces (0% direct-to-air). Include FVM wall areas in the distribution to dilute
+    // floor flux and spread solar across all interior surfaces including walls.
+    cfg.distribute_transmitted_solar_to_fvm_walls = true;
+    cfg.fvm_wall_solar_to_air = false;
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 

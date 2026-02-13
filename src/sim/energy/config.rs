@@ -206,6 +206,15 @@ pub struct ThermalConfig {
     /// internal mass slabs, which avoids an unrealistic heat-loss path through wall
     /// insulation to outdoors.
     pub distribute_transmitted_solar_to_fvm_walls: bool,
+    /// If true AND `distribute_transmitted_solar_to_fvm_walls` is true, the wall
+    /// portion of interior surface sources (transmitted solar + radiant gains) is
+    /// redirected to zone air instead of being injected into FVM wall domains.
+    ///
+    /// This includes wall area in the solar distribution denominator (diluting the
+    /// flux on mass surfaces), while avoiding the heat-loss path through wall
+    /// insulation to outdoors. The wall mass still participates in thermal buffering
+    /// via its normal convective coupling to zone air.
+    pub fvm_wall_solar_to_air: bool,
     /// Interior surface convection model.
     ///
     /// - `Fixed(3.0)` (default): legacy constant coefficient.
@@ -264,6 +273,7 @@ impl ThermalConfig {
             internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
             distribute_transmitted_solar_to_fvm_walls: false,
+            fvm_wall_solar_to_air: false,
             interior_convection_model: InteriorConvectionModel::default(),
             exterior_convection_model: ExteriorConvectionModel::default(),
             use_view_factor_radiation: false,

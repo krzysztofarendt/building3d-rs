@@ -94,3 +94,38 @@ Reference annual values:
 
 | 5d9645f | View-factor interior radiation (VF on, solar-to-walls=false) | +9.9% | +4.1% | +63.7% | +50.3% | Physics improved; Case 900 worse due to removed error compensation |
 | 6c777c3 | Solar-to-air=0.0 (all solar to mass surfaces) | +9.2% | +3.6% | +53.5% | +42.0% | Matches EnergyPlus FullInteriorAndExterior solar distribution |
+
+### Solar distribution to all interior surfaces
+
+| Change | 600 Heat | 600 Cool | 900 Heat | 900 Cool |
+|--------|----------|----------|----------|----------|
+| Baseline (6c777c3, all solar to floor mass only) | +9.2% | +3.6% | +53.5% | +42.0% |
+| + Distribute solar to FVM walls (ConvectiveWithFluxToDomain) | +13.1% | -5.7% | +63.5% | +20.6% |
+| + Wall solar to air (redirect wall share, no mass lag) | +11.5% | +5.5% | +82.2% | +67.0% |
+| + ConvectiveWithFlux for wall solar (alpha=85% into domain) | +13.4% | -7.8% | +69.5% | +18.1% |
+
+**Solar distribution to FVM walls (adopted):**
+- `distribute_transmitted_solar_to_fvm_walls = true` includes wall interior area (~112 m²)
+  in the solar distribution denominator alongside mass area (48 m²)
+- Floor mass now receives 30% of solar (vs 100% before); walls receive 70%
+- Floor flux diluted from 23.6 W/m² avg to 7.1 W/m² → less floor overheating
+- Wall-deposited solar: ~7% leaks through insulation to outside (physically correct)
+- Case 900 cooling improved dramatically (+42% → +21%) because solar stored in wall mass
+  damps temperature peaks and wall leakage reduces cooling load
+- Case 900 heating worsened (+54% → +64%) due to wall leakage increasing heat loss
+- Case 600 barely affected (lightweight mass releases heat quickly regardless)
+- Total weighted error: 103.0 pp (vs 108.3 pp with floor-only), net improvement
+
+**Wall solar to air (rejected):**
+- `fvm_wall_solar_to_air = true` redirects 70% of solar directly to zone air
+- Bypasses ALL thermal mass buffering for the wall share → air temperature spikes
+- Both heating and cooling dramatically worsened (HVAC works harder in both seasons)
+- The floor still gets its 30% share, but this alone cannot buffer the zone
+
+**ConvectiveWithFlux for wall interior solar (rejected):**
+- Uses sol-air BC (alpha ≈ 85% into domain) instead of 100% domain injection
+- Marginally less leakage, but heating WORSE (+69.5% vs +63.5%)
+- The 15% surface-retained fraction eventually absorbs into wall anyway through thermal coupling
+- ConvectiveWithFluxToDomain remains the correct BC for interior absorbed shortwave
+
+| COMMIT_HASH | Distribute solar to all interior surfaces | +13.1% | -5.7% | +63.5% | +20.6% | Floor flux diluted 3.3x; 900C much improved |

@@ -1648,7 +1648,7 @@ pub fn run_transient_simulation_with_options(
             (solar_transmitted, 0.0)
         };
 
-        let solar_total_air_w = solar_transmitted_air_w + solar_opaque_sol_air;
+        let mut solar_total_air_w = solar_transmitted_air_w + solar_opaque_sol_air;
 
         let mut internal_mass_sources_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
             None;
@@ -1673,6 +1673,10 @@ pub fn run_transient_simulation_with_options(
             // - explicit internal mass slabs
             //
             // so that each eligible surface sees the same mean flux `w_total / A_total`.
+            //
+            // When `fvm_wall_solar_to_air` is true, the wall's share is redirected to
+            // zone air instead of being injected into FVM wall domains. This avoids the
+            // heat-loss path through wall insulation while still diluting the mass flux.
             if let Some(src_total) = internal_mass_sources_w_by_zone_uid.as_ref() {
                 let mut walls_src = std::collections::HashMap::new();
                 let mut mass_src = std::collections::HashMap::new();
@@ -1693,7 +1697,12 @@ pub fn run_transient_simulation_with_options(
                         continue;
                     }
                     if a_walls > 0.0 {
-                        walls_src.insert(zone_uid.clone(), w * (a_walls / a_total));
+                        if base_config.fvm_wall_solar_to_air {
+                            // Redirect wall share to zone air gain.
+                            solar_total_air_w += w * (a_walls / a_total);
+                        } else {
+                            walls_src.insert(zone_uid.clone(), w * (a_walls / a_total));
+                        }
                     }
                     if a_mass > 0.0 {
                         mass_src.insert(zone_uid.clone(), w * (a_mass / a_total));
