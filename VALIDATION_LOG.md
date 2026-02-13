@@ -93,4 +93,4 @@ Reference annual values:
 - Reverted: `distribute_transmitted_solar_to_fvm_walls = false`
 
 | 5d9645f | View-factor interior radiation (VF on, solar-to-walls=false) | +9.9% | +4.1% | +63.7% | +50.3% | Physics improved; Case 900 worse due to removed error compensation |
-| (pending) | Solar-to-air=0.0 (all solar to mass surfaces) | +9.2% | +3.6% | +53.5% | +42.0% | Matches EnergyPlus FullInteriorAndExterior solar distribution |
+| 6c777c3 | Solar-to-air=0.0 (all solar to mass surfaces) | +9.2% | +3.6% | +53.5% | +42.0% | Matches EnergyPlus FullInteriorAndExterior solar distribution |
