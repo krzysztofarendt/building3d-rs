@@ -57,6 +57,8 @@ Reference annual values:
 | Baseline (e9c8993, TARP bypass) | -0.7% | -7.2% | +42.7% | +26.8% |
 | + View factors (VF on, solar-to-walls=false) | +9.9% | +4.1% | +63.7% | +50.3% |
 | + Solar to FVM walls (VF on, solar-to-walls=true) | +13.3% | -0.8% | +74.6% | +41.8% |
+| + Solar-to-air=0.0 (all solar to mass, walls=false) | +9.2% | +3.6% | +53.5% | +42.0% |
+| + Solar-to-air=0.0, solar-to-walls=true | +13.0% | -5.7% | +63.5% | +20.7% |
 
 **View-factor model:**
 - Monte Carlo ray-cast computation of geometric view factors (F_ij) between interior zone surfaces
@@ -76,6 +78,14 @@ Reference annual values:
 - Root cause: the old TARP-only code (h_in ~ 2.5 W/m²K) created "phantom insulation" (R_si = 0.40 vs correct 0.13 m²K/W) that accidentally compensated for other model deficiencies
 - With correct h_in ~ 7 W/m²K: R_si drops to 0.14, increasing effective U-value ~7%, which disproportionately affects Case 900 because its reference demand is smaller (1661 vs 4325 kWh)
 
+**Solar-to-air fraction (changed from 0.4 to 0.0):**
+- Previous: 40% of transmitted solar went directly to zone air, 60% to mass surfaces
+- EnergyPlus FullInteriorAndExterior distributes ALL solar to surfaces (0% to air)
+- With solar-to-air=0.4: solar bypasses mass storage, causing weaker thermal lag
+- With solar-to-air=0.0: all solar flows through mass, improving heavyweight buffering by ~10pp
+- Case 600 barely affected (lightweight mass releases heat quickly anyway)
+- Case 900 improved: +64% → +54% heating, +50% → +42% cooling
+
 **Solar to FVM walls (rejected):**
 - `ConvectiveWithFluxToDomain` injects 100% of solar flux into wall domain
 - Solar deposited on exterior walls partially conducts through to outside = heat loss
@@ -83,3 +93,4 @@ Reference annual values:
 - Reverted: `distribute_transmitted_solar_to_fvm_walls = false`
 
 | 5d9645f | View-factor interior radiation (VF on, solar-to-walls=false) | +9.9% | +4.1% | +63.7% | +50.3% | Physics improved; Case 900 worse due to removed error compensation |
+| (pending) | Solar-to-air=0.0 (all solar to mass surfaces) | +9.2% | +3.6% | +53.5% | +42.0% | Matches EnergyPlus FullInteriorAndExterior solar distribution |

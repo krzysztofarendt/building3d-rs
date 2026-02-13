@@ -380,11 +380,12 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // most of it on interior surfaces (floor-first), and similarly deposit the radiant
     // fraction of internal gains to surfaces.
     cfg.use_surface_aware_solar_distribution = true;
-    // Distribute transmitted solar to FVM wall interior faces as well as mass slabs.
-    // With view-factor radiation (correct h_in ≈ 7-8 W/m²K), the concrete mass in
-    // heavyweight walls can absorb solar gains and buffer the zone temperature.
+    // EnergyPlus FullInteriorAndExterior distributes ALL transmitted solar to interior
+    // surfaces (0% direct-to-air). We deposit on floor mass only (solar-to-walls causes
+    // leakage through exterior wall insulation). View-factor radiation then naturally
+    // redistributes heat from warm floor to other surfaces.
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
-    cfg.transmitted_solar_to_air_fraction = 0.4;
+    cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 
     // Dynamic interior convection (TARP/Walton): h depends on dT and surface tilt.

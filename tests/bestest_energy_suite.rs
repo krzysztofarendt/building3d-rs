@@ -322,7 +322,7 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
     // Surface-aware policy for transmitted solar + radiant internal gains.
     cfg.use_surface_aware_solar_distribution = true;
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
-    cfg.transmitted_solar_to_air_fraction = 0.4;
+    cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
 
     // Dynamic interior convection (TARP/Walton): h depends on dT and surface tilt.
@@ -491,7 +491,8 @@ fn test_bestest_600_epw_reference_within_tolerance_if_present() {
 
     // Case 600 (lightweight) with view-factor interior radiation:
     // Per-surface MRT with uniform h_rad gives good agreement.
-    // Heating ~+10%, cooling ~+4%.
+    // All transmitted solar deposited on floor mass (0% to air).
+    // Heating ~+9%, cooling ~+4%.
     assert_rel_close(
         "epw_annual_heating_kwh",
         annual.annual_heating_kwh,
@@ -544,18 +545,19 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     // View factors properly model per-surface MRT with uniform h_rad (~5 W/m²K).
     // Combined h_in (TARP conv ~2-3 + rad ~4.6 ≈ 7 W/m²K) reduces interior film
     // resistance vs. the old TARP-only path (~2-3 W/m²K), increasing envelope heat
-    // transfer.  This disproportionately increases the Case 900 %deviation because
-    // the reference demand is smaller.  Heating ~+64%, cooling ~+50%.
+    // transfer.  All solar deposited on floor mass (0% to air) improves thermal
+    // lag compared to 40% direct-to-air.
+    // Heating ~+54%, cooling ~+42%.
     assert_rel_close(
         "epw_900_annual_heating_kwh",
         annual.annual_heating_kwh,
         ref_heating_kwh,
-        0.70,
+        0.60,
     );
     assert_rel_close(
         "epw_900_annual_cooling_kwh",
         annual.annual_cooling_kwh,
         ref_cooling_kwh,
-        0.55,
+        0.48,
     );
 }
