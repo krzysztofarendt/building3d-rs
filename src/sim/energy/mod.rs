@@ -11,6 +11,7 @@ pub mod result;
 pub mod schedule;
 pub mod simulation;
 pub mod solar_bridge;
+pub mod view_factors;
 pub mod weather;
 pub mod weather_module;
 pub mod zone;

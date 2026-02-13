@@ -380,8 +380,9 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // most of it on interior surfaces (floor-first), and similarly deposit the radiant
     // fraction of internal gains to surfaces.
     cfg.use_surface_aware_solar_distribution = true;
-    // Do NOT distribute transmitted solar to FVM wall interior faces; route it only to
-    // the floor mass slab, avoiding an unrealistic heat-loss path through wall insulation.
+    // Distribute transmitted solar to FVM wall interior faces as well as mass slabs.
+    // With view-factor radiation (correct h_in ≈ 7-8 W/m²K), the concrete mass in
+    // heavyweight walls can absorb solar gains and buffer the zone temperature.
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
     cfg.transmitted_solar_to_air_fraction = 0.4;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
@@ -396,6 +397,11 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // Approximate interior longwave exchange (convective vs radiative split) for FVM walls/mass.
     cfg.use_interior_radiative_exchange = true;
     cfg.interior_radiation_fraction = 0.6;
+
+    // View-factor interior longwave radiation exchange (per-surface MRT with uniform h_rad).
+    cfg.use_view_factor_radiation = true;
+    cfg.view_factor_rays_per_surface = 10_000;
+    cfg.interior_emissivity = 0.9;
 
     // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
     // This allows transmitted solar + radiant internal gains to be stored/released with lag.

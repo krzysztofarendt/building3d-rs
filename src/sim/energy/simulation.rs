@@ -21,6 +21,7 @@ use super::weather::WeatherData;
 use super::zone::calculate_heat_balance_with_boundaries;
 use crate::UID;
 use crate::sim::lighting::solar::SolarPosition;
+use super::view_factors::SurfaceHandle;
 
 #[cfg(test)]
 use super::zone::calculate_heat_balance;
@@ -96,6 +97,7 @@ fn opaque_absorptance_for_path(
 #[derive(Clone)]
 struct FvmExteriorWall {
     zone_uid: UID,
+    polygon_uid: UID,
     path: String,
     area_m2: f64,
     normal: crate::Vector,
@@ -112,6 +114,9 @@ struct FvmExteriorWall {
 #[derive(Clone)]
 struct FvmInternalMassSurface {
     zone_uid: UID,
+    /// Index of this mass surface in the config's `internal_mass_surfaces` list
+    /// (within the zone). Used as `SurfaceHandle::InternalMass { index }`.
+    mass_index: usize,
     area_m2: f64,
     boundary: InternalMassBoundary,
     h_w_per_m2_k: f64,
@@ -130,6 +135,7 @@ struct FvmInternalMassSurface {
 struct SteadyStateExteriorSurface {
     #[allow(dead_code)]
     zone_uid: UID,
+    polygon_uid: UID,
     area_m2: f64,
     u_value_w_per_m2_k: f64,
     h_in_w_per_m2_k: f64,
@@ -230,6 +236,7 @@ fn collect_fvm_exterior_walls(
         let init_temp = solver.interior_surface_temp();
         walls.push(FvmExteriorWall {
             zone_uid: s.zone_uid.clone(),
+            polygon_uid: s.polygon_uid.clone(),
             path: s.path.clone(),
             area_m2: s.area_m2,
             normal: poly.vn,
@@ -255,6 +262,7 @@ fn collect_internal_mass_surfaces(
     }
 
     let mut out = Vec::new();
+    let mut mass_index_counter = 0_usize;
     for zone in building.zones() {
         for m in &config.internal_mass_surfaces {
             if m.area_m2 <= 0.0 {
@@ -276,12 +284,16 @@ fn collect_internal_mass_surfaces(
                 h_si_iso
             };
 
+            let this_mass_index = mass_index_counter;
+            mass_index_counter += 1;
+
             let mesh = build_1d_mesh(&m.construction, m.area_m2);
             let solver = FvmWallSolver::new(mesh, config.indoor_temperature);
             let init_temp_in = solver.interior_surface_temp();
             let init_temp_out = solver.exterior_surface_temp();
             out.push(FvmInternalMassSurface {
                 zone_uid: zone.uid.clone(),
+                mass_index: this_mass_index,
                 area_m2: m.area_m2,
                 boundary: m.boundary,
                 h_w_per_m2_k: h,
@@ -337,6 +349,7 @@ fn collect_steady_state_exterior_surfaces(
             .unwrap_or(0.0);
         out.push(SteadyStateExteriorSurface {
             zone_uid: s.zone_uid.clone(),
+            polygon_uid: s.polygon_uid.clone(),
             area_m2: s.area_m2,
             u_value_w_per_m2_k: u,
             h_in_w_per_m2_k: h_in,
@@ -359,6 +372,8 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
     zone_radiant_temp_for: G,
     dt_s: f64,
     gains_out: &mut std::collections::HashMap<UID, f64>,
+    per_surface_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
+    h_r_uniform: f64,
 ) {
     gains_out.clear();
     if walls.is_empty() {
@@ -423,15 +438,23 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
         const SIGMA: f64 = 5.670_374_419e-8; // Stefan–Boltzmann (W/m²/K⁴)
 
         // Separate convective (zone air coupling) from total (FVM BC) coefficient.
-        //
-        // TARP computes convection-only. Our simplified MRT model cannot
-        // properly return radiative heat to the air (no surface-to-surface
-        // feedback), so splitting into conv+rad would lose energy. Use TARP
-        // directly as the full interior coefficient: h_conv = h_total = TARP.
-        //
-        // Fixed mode treats the coefficient as combined (conv+rad from ISO)
-        // and splits by interior_radiation_fraction.
-        let (h_in_conv, h_in_total, t_eff) = if config.use_interior_radiative_exchange {
+        let (h_in_conv, h_in_total, t_eff) = if let Some(mrts) = per_surface_mrt {
+            // View-factor path: TARP convection + uniform linearized radiation.
+            let h_conv = h_in_base;
+            let eps = config.interior_emissivity;
+            let h_rad = eps * h_r_uniform;
+            let t_mrt = mrts
+                .get(&SurfaceHandle::Polygon(w.polygon_uid.clone()))
+                .copied()
+                .unwrap_or(t_air);
+            let h_total = h_conv + h_rad;
+            let t_eff = if h_total > 0.0 {
+                (h_conv * t_air + h_rad * t_mrt) / h_total
+            } else {
+                t_air
+            };
+            (h_conv, h_total, t_eff)
+        } else if config.use_interior_radiative_exchange {
             match config.interior_convection_model {
                 super::convection::InteriorConvectionModel::Tarp => {
                     // TARP is convection-only; use it as the full coupling
@@ -576,15 +599,24 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
         // Cache proper surface temperature for MRT computation next substep.
         w.cached_interior_surface_temp_c = w.solver.interior_surface_temperature(&bc_interior);
 
-        // Report only the **convective** heat transfer to zone air.
+        // Report heat transfer to zone air.
+        // With view factors, use h_total*(T_surf - t_eff) so that energy leaving
+        // the wall's interior surface is fully accounted for in the zone balance.
+        // The radiative component (h_rad*(T_surf - T_mrt)) nets to zero over all
+        // surfaces by reciprocity, so the zone total is correct.
         let t_surf = w.cached_interior_surface_temp_c;
-        let q_conv_w_per_m2 = h_in_conv * (t_surf - t_air);
-        if q_conv_w_per_m2 != 0.0 {
-            *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) += q_conv_w_per_m2 * w.area_m2;
+        let q_w_per_m2 = if per_surface_mrt.is_some() {
+            h_in_total * (t_surf - t_eff)
+        } else {
+            h_in_conv * (t_surf - t_air)
+        };
+        if q_w_per_m2 != 0.0 {
+            *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) += q_w_per_m2 * w.area_m2;
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID) -> f64>(
     surfaces: &mut [FvmInternalMassSurface],
     config: &ThermalConfig,
@@ -593,6 +625,8 @@ fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(
     zone_radiant_temp_for: G,
     dt_s: f64,
     gains_out: &mut std::collections::HashMap<UID, f64>,
+    per_surface_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
+    h_r_uniform: f64,
 ) {
     gains_out.clear();
     if surfaces.is_empty() {
@@ -627,10 +661,26 @@ fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(
         )
         .max(1e-9);
 
-        // Same logic as FVM walls: TARP is convection-only so we bypass
-        // radiative exchange (our simplified MRT model loses energy);
-        // Fixed = combined coefficient split by f_rad.
-        let (h_conv, h_total, t_eff) = if config.use_interior_radiative_exchange {
+        // Separate convective from total coefficient (same logic as FVM walls).
+        let (h_conv, h_total, t_eff) = if let Some(mrts) = per_surface_mrt {
+            // View-factor path: TARP convection + uniform linearized radiation.
+            let h_conv = h_base;
+            let eps = config.interior_emissivity;
+            let h_rad = eps * h_r_uniform;
+            let t_mrt = mrts
+                .get(&SurfaceHandle::InternalMass {
+                    index: s.mass_index,
+                })
+                .copied()
+                .unwrap_or(t_air);
+            let h_total = h_conv + h_rad;
+            let t_eff = if h_total > 0.0 {
+                (h_conv * t_air + h_rad * t_mrt) / h_total
+            } else {
+                t_air
+            };
+            (h_conv, h_total, t_eff)
+        } else if config.use_interior_radiative_exchange {
             match config.interior_convection_model {
                 super::convection::InteriorConvectionModel::Tarp => {
                     // TARP is convection-only; use it as the full coupling
@@ -709,13 +759,22 @@ fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(
         }
 
         let mut q_to_air_w = 0.0;
-        // Interior face convective transfer to air.
+        // Interior face transfer to air.
+        // With view factors, use h_total*(T_surf - t_eff) for energy conservation.
         let t_surf_in = s.cached_interior_surface_temp_c;
-        q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
+        if per_surface_mrt.is_some() {
+            q_to_air_w += h_total * (t_surf_in - t_eff) * s.area_m2;
+        } else {
+            q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
+        }
         // Exterior face (only if it is coupled to zone air).
         if matches!(s.boundary, InternalMassBoundary::TwoSided) {
             let t_surf_out = s.cached_exterior_surface_temp_c;
-            q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
+            if per_surface_mrt.is_some() {
+                q_to_air_w += h_total * (t_surf_out - t_eff) * s.area_m2;
+            } else {
+                q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
+            }
         }
         q_to_air_w += direct_to_air_w;
 
@@ -1214,6 +1273,34 @@ pub fn run_transient_simulation_with_options(
         solar_config,
     );
 
+    // ── View-factor radiation ──
+    // When enabled, compute per-zone view factors for all interior-facing surfaces.
+    // This replaces the simplified area-weighted MRT with per-surface MRT.
+    use super::view_factors::{
+        InternalMassInfo, SurfaceHandle, ViewFactorData, compute_building_view_factors,
+        compute_per_surface_mrt, linearized_h_rad,
+    };
+    let view_factor_data: Option<ViewFactorData> = if base_config.use_view_factor_radiation {
+        let mass_infos: Vec<InternalMassInfo> = internal_mass_surfaces
+            .iter()
+            .map(|m| InternalMassInfo {
+                index: m.mass_index,
+                zone_uid: m.zone_uid.clone(),
+                cos_tilt: m.cos_tilt,
+                area_m2: m.area_m2,
+            })
+            .collect();
+        Some(compute_building_view_factors(
+            building,
+            &index,
+            &boundaries,
+            &mass_infos,
+            base_config.view_factor_rays_per_surface,
+        ))
+    } else {
+        None
+    };
+
     // Precompute eligible interior-surface areas per zone for distributing surface sources
     // (transmitted solar + radiant internal gains). This includes:
     // - interior faces of FVM exterior walls (eligible opaque exterior polygons),
@@ -1647,7 +1734,44 @@ pub fn run_transient_simulation_with_options(
 
             let t_air_start_c = t_air_for_walls;
 
-            let t_rad_guess_c = if base_config.use_interior_radiative_exchange {
+            // ── Per-surface MRT (view factors) or area-weighted MRT (legacy) ──
+            let (vf_mrt_map, vf_h_r) = if let Some(vf) = &view_factor_data {
+                // Collect surface temps for view-factor MRT computation.
+                let mut surf_temps: std::collections::HashMap<SurfaceHandle, f64> =
+                    std::collections::HashMap::new();
+                for w in &fvm_walls {
+                    surf_temps.insert(
+                        SurfaceHandle::Polygon(w.polygon_uid.clone()),
+                        w.cached_interior_surface_temp_c,
+                    );
+                }
+                for m in &internal_mass_surfaces {
+                    surf_temps.insert(
+                        SurfaceHandle::InternalMass {
+                            index: m.mass_index,
+                        },
+                        m.cached_interior_surface_temp_c,
+                    );
+                }
+                // Steady-state exterior surfaces (e.g. windows): estimate interior
+                // surface temp from T_surf = T_air - U/(U+h_in) * (T_air - T_out).
+                for ss in &ss_exterior_surfaces {
+                    let ratio =
+                        ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
+                    let t_surf =
+                        t_air_start_c - ratio * (t_air_start_c - record.dry_bulb_temperature);
+                    surf_temps.insert(SurfaceHandle::Polygon(ss.polygon_uid.clone()), t_surf);
+                }
+                let mrt_map = compute_per_surface_mrt(vf, &surf_temps);
+                let h_r = linearized_h_rad(base_config.interior_emissivity, t_air_start_c);
+                (Some(mrt_map), h_r)
+            } else {
+                (None, 0.0)
+            };
+
+            let t_rad_guess_c = if view_factor_data.is_none()
+                && base_config.use_interior_radiative_exchange
+            {
                 let f_rad = base_config.interior_radiation_fraction.clamp(0.0, 1.0);
                 let mut num = 0.0_f64;
                 let mut den = 0.0_f64;
@@ -1705,7 +1829,9 @@ pub fn run_transient_simulation_with_options(
             let step_fvm_walls_for_air_temp =
                 |air_temp_c: f64,
                  walls_start: &Vec<FvmExteriorWall>,
-                 fvm_gains_by_zone_uid: &mut std::collections::HashMap<UID, f64>|
+                 fvm_gains_by_zone_uid: &mut std::collections::HashMap<UID, f64>,
+                 vf_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
+                 h_r: f64|
                  -> (Vec<FvmExteriorWall>, f64) {
                     if walls_start.is_empty() {
                         return (vec![], 0.0);
@@ -1723,6 +1849,8 @@ pub fn run_transient_simulation_with_options(
                         |_| t_rad_guess_c,
                         dt_s,
                         fvm_gains_by_zone_uid,
+                        vf_mrt,
+                        h_r,
                     );
                     let q_fvm_walls_to_zone_w: f64 = fvm_gains_by_zone_uid.values().sum();
                     (walls, q_fvm_walls_to_zone_w)
@@ -1731,7 +1859,9 @@ pub fn run_transient_simulation_with_options(
             let step_internal_mass_for_air_temp =
                 |air_temp_c: f64,
                  masses_start: &Vec<FvmInternalMassSurface>,
-                 internal_mass_gains_by_zone_uid: &mut std::collections::HashMap<UID, f64>|
+                 internal_mass_gains_by_zone_uid: &mut std::collections::HashMap<UID, f64>,
+                 vf_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
+                 h_r: f64|
                  -> (Vec<FvmInternalMassSurface>, f64) {
                     if masses_start.is_empty() {
                         return (vec![], 0.0);
@@ -1745,6 +1875,8 @@ pub fn run_transient_simulation_with_options(
                         |_| t_rad_guess_c,
                         dt_s,
                         internal_mass_gains_by_zone_uid,
+                        vf_mrt,
+                        h_r,
                     );
                     let q_internal_mass_to_zone_w: f64 =
                         internal_mass_gains_by_zone_uid.values().sum();
@@ -1780,6 +1912,8 @@ pub fn run_transient_simulation_with_options(
                             t_air_start_c,
                             &fvm_walls,
                             &mut fvm_gains_by_zone_uid,
+                            vf_mrt_map.as_ref(),
+                            vf_h_r,
                         );
                         let gains_air_free = gains_air_internal
                             + gains_air_solar
@@ -1810,6 +1944,8 @@ pub fn run_transient_simulation_with_options(
                                 air_temp_bc,
                                 &fvm_walls,
                                 &mut fvm_gains_by_zone_uid,
+                                vf_mrt_map.as_ref(),
+                                vf_h_r,
                             )
                         } else {
                             (walls_free, q_fvm_free)
@@ -1861,6 +1997,8 @@ pub fn run_transient_simulation_with_options(
                             t_air_start_c,
                             &fvm_walls,
                             &mut fvm_gains_by_zone_uid,
+                            vf_mrt_map.as_ref(),
+                            vf_h_r,
                         );
                         let gains_air_free = gains_air_internal + gains_air_solar + q_fvm_free;
 
@@ -1887,6 +2025,8 @@ pub fn run_transient_simulation_with_options(
                                 air_temp_bc,
                                 &fvm_walls,
                                 &mut fvm_gains_by_zone_uid,
+                                vf_mrt_map.as_ref(),
+                                vf_h_r,
                             )
                         } else {
                             (walls_free, q_fvm_free)
@@ -1934,6 +2074,8 @@ pub fn run_transient_simulation_with_options(
                             t_air_start_c,
                             &fvm_walls,
                             &mut fvm_gains_by_zone_uid,
+                            vf_mrt_map.as_ref(),
+                            vf_h_r,
                         );
                         let gains_air_free = gains_air_internal + gains_air_solar + q_fvm_free;
                         let gains_surface = gains_mass_internal + gains_mass_solar;
@@ -1963,6 +2105,8 @@ pub fn run_transient_simulation_with_options(
                                 air_temp_bc,
                                 &fvm_walls,
                                 &mut fvm_gains_by_zone_uid,
+                                vf_mrt_map.as_ref(),
+                                vf_h_r,
                             )
                         } else {
                             (walls_free, q_fvm_free)
@@ -2013,11 +2157,15 @@ pub fn run_transient_simulation_with_options(
                     t_air_start_c,
                     &fvm_walls,
                     &mut fvm_gains_by_zone_uid,
+                    vf_mrt_map.as_ref(),
+                    vf_h_r,
                 );
                 let (masses_free, q_mass_free) = step_internal_mass_for_air_temp(
                     t_air_start_c,
                     &internal_mass_surfaces,
                     &mut internal_mass_gains_by_zone_uid,
+                    vf_mrt_map.as_ref(),
+                    vf_h_r,
                 );
                 let total_gains_free =
                     gains_air_w + solar_total_air_w + q_ground + q_fvm_free + q_mass_free;
@@ -2036,7 +2184,7 @@ pub fn run_transient_simulation_with_options(
                 };
 
                 let (walls_step, q_fvm_step) = if use_hvac {
-                    step_fvm_walls_for_air_temp(air_temp_bc, &fvm_walls, &mut fvm_gains_by_zone_uid)
+                    step_fvm_walls_for_air_temp(air_temp_bc, &fvm_walls, &mut fvm_gains_by_zone_uid, vf_mrt_map.as_ref(), vf_h_r)
                 } else {
                     (walls_free, q_fvm_free)
                 };
@@ -2045,6 +2193,8 @@ pub fn run_transient_simulation_with_options(
                         air_temp_bc,
                         &internal_mass_surfaces,
                         &mut internal_mass_gains_by_zone_uid,
+                        vf_mrt_map.as_ref(),
+                        vf_h_r,
                     )
                 } else {
                     (masses_free, q_mass_free)
@@ -2262,6 +2412,8 @@ pub fn run_multizone_transient_simulation(
                 },
                 3600.0,
                 &mut fvm_gains_by_zone_uid,
+                None,
+                0.0,
             );
 
             for (zone_uid, q_wall_w) in &fvm_gains_by_zone_uid {
@@ -3291,6 +3443,7 @@ mod tests {
         let solver = FvmWallSolver::new(mesh, 20.0);
         let wall = FvmExteriorWall {
             zone_uid: UID::from("zone"),
+            polygon_uid: UID::new(),
             path: "zone/solid/roof/poly".to_string(),
             area_m2: 10.0,
             normal: crate::Vector::new(0.0, 0.0, 1.0),
@@ -3341,6 +3494,8 @@ mod tests {
             |_| 20.0,
             3600.0,
             &mut gains_no_tilt,
+            None,
+            0.0,
         );
         step_fvm_exterior_walls_fill_gains_by_zone_uid(
             &mut walls_with_tilt,
@@ -3354,6 +3509,8 @@ mod tests {
             |_| 20.0,
             3600.0,
             &mut gains_with_tilt,
+            None,
+            0.0,
         );
 
         let q_no_tilt = *gains_no_tilt.get(&UID::from("zone")).unwrap_or(&0.0);

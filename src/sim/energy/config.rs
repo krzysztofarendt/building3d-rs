@@ -216,6 +216,21 @@ pub struct ThermalConfig {
     /// - `Fixed` (default): coefficient from ISO R_se.
     /// - `Doe2`: DOE-2 simplified combined natural + wind-forced convection.
     pub exterior_convection_model: ExteriorConvectionModel,
+    /// If true, compute per-surface view factors and use them for interior
+    /// longwave radiation exchange instead of the simplified area-weighted MRT.
+    ///
+    /// This replaces the `use_interior_radiative_exchange` f_rad split with a
+    /// proper energy-conserving model: uniform `h_rad` + per-surface MRT from
+    /// Monte Carlo view factors.
+    pub use_view_factor_radiation: bool,
+    /// Number of cosine-weighted rays per surface for Monte Carlo view factor
+    /// computation. More rays → more accurate F_ij but slower init.
+    pub view_factor_rays_per_surface: usize,
+    /// Interior surface emissivity for linearized radiative exchange.
+    ///
+    /// Used to compute `h_rad = 4 * eps * sigma * T_mean^3`.
+    /// Default: 0.9 (typical for building interior surfaces).
+    pub interior_emissivity: f64,
 }
 
 impl ThermalConfig {
@@ -251,6 +266,9 @@ impl ThermalConfig {
             distribute_transmitted_solar_to_fvm_walls: false,
             interior_convection_model: InteriorConvectionModel::default(),
             exterior_convection_model: ExteriorConvectionModel::default(),
+            use_view_factor_radiation: false,
+            view_factor_rays_per_surface: 10_000,
+            interior_emissivity: 0.9,
         }
     }
 
