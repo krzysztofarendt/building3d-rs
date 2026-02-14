@@ -206,6 +206,13 @@ pub struct ThermalConfig {
     /// internal mass slabs, which avoids an unrealistic heat-loss path through wall
     /// insulation to outdoors.
     pub distribute_transmitted_solar_to_fvm_walls: bool,
+    /// If true, use beam vs diffuse solar split for interior distribution.
+    ///
+    /// Beam (direct) solar is sent 100% to internal mass slabs (floor), while
+    /// diffuse solar is distributed area-proportionally across all interior
+    /// surfaces (mass + FVM walls). This approximates the geometric reality
+    /// that beam solar through windows mostly hits the floor, not walls.
+    pub use_beam_solar_distribution: bool,
     /// If true AND `distribute_transmitted_solar_to_fvm_walls` is true, the wall
     /// portion of interior surface sources (transmitted solar + radiant gains) is
     /// redirected to zone air instead of being injected into FVM wall domains.
@@ -273,6 +280,7 @@ impl ThermalConfig {
             internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
             distribute_transmitted_solar_to_fvm_walls: false,
+            use_beam_solar_distribution: false,
             fvm_wall_solar_to_air: false,
             interior_convection_model: InteriorConvectionModel::default(),
             exterior_convection_model: ExteriorConvectionModel::default(),

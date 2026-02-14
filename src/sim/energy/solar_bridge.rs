@@ -166,6 +166,22 @@ pub fn angular_transmittance_modifier(cos_incidence: f64, config: &SolarGainConf
     }
 }
 
+/// Transmitted solar split into beam (direct) and diffuse components.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TransmittedSolarSplit {
+    /// Direct (beam) component through glazing (W).
+    pub beam_w: f64,
+    /// Diffuse (sky + ground-reflected) component through glazing (W).
+    pub diffuse_w: f64,
+}
+
+impl TransmittedSolarSplit {
+    /// Total transmitted solar (W).
+    pub fn total(&self) -> f64 {
+        self.beam_w + self.diffuse_w
+    }
+}
+
 /// Parameters describing the solar conditions for a single hour.
 #[derive(Debug, Clone, Copy)]
 pub struct SolarHourParams {
@@ -216,7 +232,7 @@ pub fn compute_solar_gains(
     params: &SolarHourParams,
     config: &SolarGainConfig,
 ) -> f64 {
-    compute_solar_gains_with_materials(building, params, config, None)
+    compute_solar_gains_with_materials(building, params, config, None).total()
 }
 
 /// Computes solar gains per zone UID (W) from EPW radiation data and sun geometry.
@@ -238,7 +254,7 @@ pub fn compute_solar_gains_with_materials(
     params: &SolarHourParams,
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
-) -> f64 {
+) -> TransmittedSolarSplit {
     let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
@@ -248,7 +264,8 @@ pub fn compute_solar_gains_with_materials(
     );
     let sun_above = solar_pos.is_above_horizon();
     let sun_dir = solar_pos.to_direction();
-    let mut total_gains = 0.0;
+    let mut total_beam = 0.0;
+    let mut total_diffuse = 0.0;
 
     let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
     let use_ground = config.include_ground_reflection && rho_g > 0.0;
@@ -293,14 +310,18 @@ pub fn compute_solar_gains_with_materials(
                             }
                         }
 
-                        total_gains += (incident_direct + incident_diffuse) * area * shgc;
+                        total_beam += incident_direct * area * shgc;
+                        total_diffuse += incident_diffuse * area * shgc;
                     }
                 }
             }
         }
     }
 
-    total_gains
+    TransmittedSolarSplit {
+        beam_w: total_beam,
+        diffuse_w: total_diffuse,
+    }
 }
 
 /// Like [`compute_solar_gains_per_zone`], but also accepts a material library for

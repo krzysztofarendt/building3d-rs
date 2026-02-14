@@ -18,8 +18,8 @@ Reference annual values (OpenStudio/EnergyPlus):
 
 | Case | Heating | Cooling | Status |
 |------|---------|---------|--------|
-| 600 | **+13.1%** (4892 vs 4325 kWh) | **-5.7%** (5705 vs 6044 kWh) | Acceptable |
-| 900 | **+63.5%** (2718 vs 1661 kWh) | **+20.8%** (3017 vs 2498 kWh) | Major gap |
+| 600 | **+11.4%** (4816 vs 4325 kWh) | **-0.5%** (6013 vs 6044 kWh) | Good |
+| 900 | **+58.6%** (2635 vs 1661 kWh) | **+31.8%** (3293 vs 2498 kWh) | Major gap |
 
 Target tolerances: +/- 15% (tighter than ASHRAE 140 inter-program spread).
 Case 600 meets target. Case 900 does not.
@@ -29,69 +29,69 @@ Case 600 meets target. Case 900 does not.
 The monthly pattern reveals a **seasonal phase error** diagnostic of incorrect
 solar distribution:
 
-**Case 900 heating (annual +63.5%):**
+**Case 900 heating (annual +58.6%):**
 
 | Month | Simulated | Reference | Error | Pattern |
 |-------|-----------|-----------|-------|---------|
-| Jan | 812 kWh | 255 kWh | +218% | Winter: massive over-prediction |
-| Mar | 372 kWh | 125 kWh | +197% | Winter: massive over-prediction |
-| Apr | 135 kWh | 268 kWh | -50% | Shoulder: under-prediction |
+| Jan | 784 kWh | 255 kWh | +207% | Winter: massive over-prediction |
+| Mar | 364 kWh | 125 kWh | +190% | Winter: massive over-prediction |
+| Apr | 132 kWh | 268 kWh | -51% | Shoulder: under-prediction |
 | Oct | 36 kWh | 81 kWh | -56% | Shoulder: under-prediction |
-| Dec | 522 kWh | 308 kWh | +70% | Winter: over-prediction |
+| Dec | 499 kWh | 308 kWh | +62% | Winter: over-prediction |
 
 In winter, the model loses too much heat (solar leaking through exterior walls
 instead of being stored in mass). In shoulder months, mass should release stored
 winter solar to offset heating, but was never sufficiently charged.
 
-**Case 900 cooling (annual +20.8%):**
+**Case 900 cooling (annual +31.8%):**
 
 | Month | Simulated | Reference | Error | Pattern |
 |-------|-----------|-----------|-------|---------|
-| Jan | 4 kWh | 53 kWh | -92% | Cold months: under-prediction |
-| Jul | 738 kWh | 400 kWh | +85% | Summer peak: over-prediction |
-| Aug | 677 kWh | 513 kWh | +32% | Summer: over-prediction |
-| Jun | 397 kWh | 404 kWh | -2% | Nearly perfect |
-| Sep | 490 kWh | 493 kWh | -1% | Nearly perfect |
+| Jan | 12 kWh | 53 kWh | -77% | Cold months: under-prediction |
+| Jul | 754 kWh | 400 kWh | +89% | Summer peak: over-prediction |
+| Aug | 705 kWh | 513 kWh | +37% | Summer: over-prediction |
+| Jun | 409 kWh | 404 kWh | +1% | Nearly perfect |
+| Sep | 531 kWh | 493 kWh | +8% | Good |
 
 Summer peaks are over-predicted (too much solar reaching zone air without mass
 buffering). Shoulder months (Jun, Sep) are nearly perfect.
 
 ### 1.3 Error Budget
 
-| Error Source | 900 Heating (+64pp) | 900 Cooling (+21pp) |
+| Error Source | 900 Heating (+59pp) | 900 Cooling (+32pp) |
 |-------------|---------------------|---------------------|
-| Solar wall leakage (~484 kWh/yr) | ~29pp | ~-15pp (helps cooling) |
-| Solar distribution phase error | ~20pp | ~15pp |
+| Remaining wall solar leakage (diffuse) | ~15pp | ~-10pp (helps cooling) |
+| Solar timing / surface selection | ~20pp | ~20pp |
 | Interior film coefficient (h_in slightly low) | ~5pp | ~5pp |
-| Remaining / other | ~10pp | ~16pp |
+| Remaining / other | ~19pp | ~17pp |
 
-**Solar distribution is the dominant error** (~75% of Case 900 heating gap).
+**Beam solar distribution** (beam to floor, diffuse area-proportional) is now
+active. This reduced wall leakage vs the prior uniform area split, improving
+heating by 5pp. However, the reduced leakage also worsened cooling by 11pp
+because wall leakage was a beneficial heat-dumping path in summer.
 
-Currently 70% of transmitted solar goes to exterior FVM walls (by area: 112 m²
-walls vs 48 m² floor). ~7% of wall-deposited solar leaks through insulation to
-the exterior = ~484 kWh/yr lost. In reality, south-facing windows project solar
-onto the **floor** in winter (low sun angle) and the **north wall** in summer
-(high angle). The uniform area-proportional split ignores this geometry.
+**Trade-off:** Wall leakage simultaneously helps cooling and hurts heating.
+Without geometry-aware per-surface distribution, this tension cannot be fully
+resolved. The remaining gap requires distributing solar to the RIGHT surface
+at the RIGHT time (floor in winter, north wall mass in summer).
 
-**Thermal mass model itself is sound:** no-solar cases show only 1.7% difference
-between Case 600 (7508 kWh) and Case 900 (7380 kWh), confirming the FVM mass
-model works correctly when solar is not involved.
+**Thermal mass model is sound:** no-solar cases show only 1.7% difference
+between Case 600 (7508 kWh) and Case 900 (7378 kWh).
 
-**Envelope UA is correct:** computed 80.96 W/K matches hand-calculated 80.9 W/K.
+**Envelope UA is correct:** 80.96 W/K matches hand-calculated 80.9 W/K.
 
 ### 1.4 Prioritized Next Steps
 
 | Priority | Improvement | Expected Impact | Effort |
 |----------|------------|-----------------|--------|
-| 1 | **Floor-heavy solar weighting** | 900H: -15 to -25pp | Low |
-| | Cap wall fraction at ~30%, floor gets ~70%. Eliminates most wall leakage. | | |
-| 2 | **Sun-angle solar projection** | 900H: -20 to -30pp, 900C: -10pp | Medium |
-| | Hourly sun altitude drives floor vs north-wall split. Fixes seasonal phase. | | |
-| 3 | **North-wall-only deposition** | 900H: -10pp | Low |
-| | Deposit wall share only on north wall (no exterior face = no leakage). | | |
-
-Options 1 and 2 can be combined. Option 2 is the most physically correct and
-addresses both heating and cooling errors simultaneously.
+| 1 | **Sun-angle solar projection** | Break heating/cooling trade-off | Medium |
+| | Hourly profile angle → beam to floor (winter) or north wall (summer). | | |
+| | North wall has mass inboard of insulation = minimal leakage. | | |
+| 2 | **Exclude window-side wall from diffuse** | 900H: -5pp | Low |
+| | Solar through south windows can't hit south wall interior. Remove it | | |
+| | from diffuse distribution denominator. | | |
+| 3 | **Higher-order time integration** | ~2-3pp on all cases | Medium |
+| | 3rd-order BDF or predictor-corrector for zone air temperature. | | |
 
 ---
 
@@ -210,13 +210,17 @@ Applied as `ConvectiveWithFlux` BC on FVM walls (fraction alpha entering domain)
 
 **Interior solar distribution** (`transmitted_solar_to_air_fraction = 0.0`):
 
-All transmitted solar goes to interior surfaces, split by area:
-- Floor mass slab (48 m²): ~30% of solar via `ConvectiveWithFluxToDomain` BC
-- FVM wall interiors (~112 m²): ~70% of solar via `ConvectiveWithFluxToDomain` BC
+When `use_beam_solar_distribution = true` (recommended):
+- **Beam (direct)** component → 100% to internal mass slabs (floor)
+- **Diffuse** component → area-proportional split: floor (~30%) + FVM walls (~70%)
 - `distribute_transmitted_solar_to_fvm_walls = true`
 
-This is NOT geometry-aware. EnergyPlus traces beam solar to specific surfaces
-based on sun angle. See 1.3 for the impact of this simplification.
+This approximates EnergyPlus beam tracking: beam through south windows mostly
+hits the floor. Diffuse remains area-proportional. Reduces wall solar leakage
+compared to uniform area split, improving heating accuracy.
+
+When `use_beam_solar_distribution = false` (legacy):
+- All transmitted solar split area-proportionally between floor and FVM walls.
 
 **Solar position:** Spencer (1971) with equation-of-time and longitude correction.
 EPW hour-ending convention handled via mid-hour timestamp.
@@ -266,7 +270,7 @@ are heavily insulated (R-25), so this is a negligible term (UA_ground ~1.89 W/K)
 
 - **1D heat conduction** only (no lateral flow within wall layers)
 - **Constant material properties** (no temperature-dependent k or Cp)
-- **No geometry-aware solar distribution** (area-proportional, not beam-traced)
+- **Simplified solar distribution** (beam to floor, diffuse area-proportional; not geometry-traced)
 - **Simplified exterior LW radiation** (uses air temperature, not surface temperature)
 - **Constant SHGC** (no spectral dependence; polynomial angular model available)
 - **Constant infiltration** (no wind/stack pressure dependence)
@@ -296,7 +300,7 @@ are heavily insulated (R-25), so this is a negligible term (UA_ground ~1.89 W/K)
 
 | Aspect | EnergyPlus | building3d | Gap |
 |--------|-----------|------------|-----|
-| Solar distribution | Full beam tracking to specific surfaces | Area-proportional to floor + walls | **Major** |
+| Solar distribution | Full beam tracking to specific surfaces | Beam to floor, diffuse area-proportional | **Moderate** |
 | Window thermal | ISO 15099 multi-layer, spectral | Bulk U-value + SHGC | Large |
 | Window angular | Per-layer spectral polynomial | Single SHGC with IAM polynomial | Moderate |
 | Shading | Full 3D shadow with self-shading | FlatScene ray casting (optional) | Comparable |
@@ -346,6 +350,7 @@ BESTEST Cases 600 & 900 vs OpenStudio/EnergyPlus reference.
 | 5d9645f | View-factor interior radiation | +9.9% | +4.1% | +63.7% | +50.3% |
 | 6c777c3 | Solar-to-air=0.0 (all solar to mass) | +9.2% | +3.6% | +53.5% | +42.0% |
 | cd243bf | Distribute solar to all interior surfaces | +13.1% | -5.7% | +63.5% | +20.6% |
+| PENDING | Beam solar to floor, diffuse area-proportional | +11.4% | -0.5% | +58.6% | +31.8% |
 
 ### 4.2 Ablation: Dynamic Convection (on top of 536a19f)
 
@@ -382,6 +387,13 @@ via 7% wall leakage.
 | + Wall solar (ConvectiveWithFluxToDomain) | +13.1% | -5.7% | +63.5% | +20.6% |
 | + Wall solar to air (redirect to zone air) | +11.5% | +5.5% | +82.2% | +67.0% |
 | + ConvectiveWithFlux (alpha=85% into domain) | +13.4% | -7.8% | +69.5% | +18.1% |
+| + Beam to floor, diffuse area-proportional | +11.4% | -0.5% | +58.6% | +31.8% |
+
+Beam solar distribution: beam (direct) component goes 100% to floor mass, diffuse
+component is area-proportional between floor and walls. Reduces wall leakage in
+winter (heating improves), but also reduces beneficial leakage in summer (cooling
+worsens). Case 600 nearly matched. Net total absolute error improves from 2482 to
+2291 kWh (-8%).
 
 ---
 

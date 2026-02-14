@@ -384,6 +384,7 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // surfaces (0% direct-to-air). Include FVM wall areas in the distribution to dilute
     // floor flux and spread solar across all interior surfaces including walls.
     cfg.distribute_transmitted_solar_to_fvm_walls = true;
+    cfg.use_beam_solar_distribution = true;
     cfg.fvm_wall_solar_to_air = false;
     cfg.transmitted_solar_to_air_fraction = 0.0;
     cfg.internal_gains_to_mass_fraction = 0.6; // from BESTEST-GSR "OtherEquipment" radiant fraction
@@ -751,7 +752,8 @@ fn compute_case_diagnostics(
             &params,
             solar_cfg,
             cfg.material_library.as_ref(),
-        );
+        )
+        .total();
         solar_transmitted_wh += transmitted_w;
         monthly_solar_transmitted_wh[month_idx] += transmitted_w;
 

@@ -14,8 +14,8 @@ use super::hvac::{
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
 use super::solar_bridge::{
-    SolarGainConfig, SolarHourParams, compute_solar_gains_per_zone_with_materials,
-    compute_solar_gains_with_materials,
+    SolarGainConfig, SolarHourParams, TransmittedSolarSplit,
+    compute_solar_gains_per_zone_with_materials, compute_solar_gains_with_materials,
 };
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance_with_boundaries;
@@ -1136,7 +1136,8 @@ pub fn run_annual_simulation(
                     &params,
                     sc,
                     config.material_library.as_ref(),
-                );
+                )
+                .total();
                 if sc.include_exterior_opaque_absorption || sc.include_exterior_longwave_exchange {
                     solar += compute_exterior_opaque_sol_air_gain_total_w(
                         building,
@@ -1587,6 +1588,7 @@ pub fn run_transient_simulation_with_options(
             .map(|p| p.gains_at(hour_idx))
             .unwrap_or(base_config.internal_gains);
         let mut solar_params: Option<SolarHourParams> = None;
+        let mut transmitted_split = TransmittedSolarSplit::default();
         let (solar_transmitted, solar_opaque_sol_air) = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
@@ -1603,12 +1605,13 @@ pub fn run_transient_simulation_with_options(
                     timezone: weather.timezone,
                 };
                 solar_params = Some(params);
-                let transmitted = compute_solar_gains_with_materials(
+                transmitted_split = compute_solar_gains_with_materials(
                     building,
                     &params,
                     sc,
                     base_config.material_library.as_ref(),
                 );
+                let transmitted = transmitted_split.total();
                 let opaque = if sc.include_exterior_opaque_absorption
                     || sc.include_exterior_longwave_exchange
                 {
@@ -1657,7 +1660,31 @@ pub fn run_transient_simulation_with_options(
         let mut interior_sources_mass_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
             None;
         if use_surface_sources {
-            let w_total = gains_surface_w + solar_transmitted_surface_w;
+            // When beam solar distribution is enabled, beam solar goes 100% to
+            // mass slabs (floor) while diffuse solar + internal gains are split
+            // area-proportionally between mass and FVM walls. This matches the
+            // geometry: beam through south windows mostly hits the floor.
+            let f_air = base_config
+                .transmitted_solar_to_air_fraction
+                .clamp(0.0, 1.0);
+            let (solar_beam_to_mass_w, solar_diffuse_surface_w) =
+                if base_config.use_beam_solar_distribution
+                    && base_config.distribute_transmitted_solar_to_fvm_walls
+                {
+                    // Beam → 100% to mass; diffuse → area-proportional split.
+                    (
+                        transmitted_split.beam_w * (1.0 - f_air),
+                        transmitted_split.diffuse_w * (1.0 - f_air),
+                    )
+                } else {
+                    // All solar goes through area-proportional split (previous behavior).
+                    (0.0, solar_transmitted_surface_w)
+                };
+
+            // Portion that goes through area-proportional split: internal gains + diffuse solar.
+            let w_area_split = gains_surface_w + solar_diffuse_surface_w;
+            let w_total = w_area_split + solar_beam_to_mass_w;
+
             if w_total != 0.0 {
                 // `run_transient_simulation_with_options` is building-level; treat the whole
                 // interior surface source as belonging to the (single) zone of the internal mass.
@@ -1669,21 +1696,12 @@ pub fn run_transient_simulation_with_options(
             }
 
             // Split surface sources across:
-            // - FVM exterior walls (their interior faces)
-            // - explicit internal mass slabs
-            //
-            // so that each eligible surface sees the same mean flux `w_total / A_total`.
-            //
-            // When `fvm_wall_solar_to_air` is true, the wall's share is redirected to
-            // zone air instead of being injected into FVM wall domains. This avoids the
-            // heat-loss path through wall insulation while still diluting the mass flux.
+            // - FVM exterior walls (their interior faces): only diffuse + gains portion
+            // - explicit internal mass slabs: diffuse + gains portion + all beam
             if let Some(src_total) = internal_mass_sources_w_by_zone_uid.as_ref() {
                 let mut walls_src = std::collections::HashMap::new();
                 let mut mass_src = std::collections::HashMap::new();
-                for (zone_uid, w) in src_total {
-                    if *w == 0.0 {
-                        continue;
-                    }
+                for zone_uid in src_total.keys() {
                     let a_walls = interior_source_area_walls_by_zone_uid
                         .get(zone_uid)
                         .copied()
@@ -1696,16 +1714,24 @@ pub fn run_transient_simulation_with_options(
                     if a_total <= 0.0 {
                         continue;
                     }
-                    if a_walls > 0.0 {
+                    // Wall share comes only from the area-proportional portion.
+                    let wall_w = if a_walls > 0.0 {
+                        w_area_split * (a_walls / a_total)
+                    } else {
+                        0.0
+                    };
+                    // Mass share = area-proportional mass share + all beam solar.
+                    let mass_w = w_area_split * (a_mass / a_total) + solar_beam_to_mass_w;
+
+                    if wall_w > 0.0 {
                         if base_config.fvm_wall_solar_to_air {
-                            // Redirect wall share to zone air gain.
-                            solar_total_air_w += w * (a_walls / a_total);
+                            solar_total_air_w += wall_w;
                         } else {
-                            walls_src.insert(zone_uid.clone(), w * (a_walls / a_total));
+                            walls_src.insert(zone_uid.clone(), wall_w);
                         }
                     }
-                    if a_mass > 0.0 {
-                        mass_src.insert(zone_uid.clone(), w * (a_mass / a_total));
+                    if mass_w > 0.0 {
+                        mass_src.insert(zone_uid.clone(), mass_w);
                     }
                 }
                 if !walls_src.is_empty() {
