@@ -383,7 +383,7 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     // EnergyPlus FullInteriorAndExterior distributes ALL transmitted solar to interior
     // surfaces (0% direct-to-air). Include FVM wall areas in the distribution to dilute
     // floor flux and spread solar across all interior surfaces including walls.
-    cfg.distribute_transmitted_solar_to_fvm_walls = true;
+    cfg.distribute_transmitted_solar_to_fvm_walls = false;
     cfg.use_beam_solar_distribution = true;
     cfg.fvm_wall_solar_to_air = false;
     cfg.transmitted_solar_to_air_fraction = 0.0;
@@ -401,7 +401,7 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.interior_radiation_fraction = 0.6;
 
     // View-factor interior longwave radiation exchange (per-surface MRT with uniform h_rad).
-    cfg.use_view_factor_radiation = true;
+    cfg.use_view_factor_radiation = false;
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
 
