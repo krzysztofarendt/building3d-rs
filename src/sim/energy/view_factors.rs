@@ -425,6 +425,67 @@ pub fn linearized_h_rad(emissivity: f64, t_mean_c: f64) -> f64 {
     4.0 * emissivity * SIGMA * t_k.powi(3)
 }
 
+/// Linearized radiation coefficient **without emissivity** [W/(m² K)].
+///
+/// `h_rad_base = 4 * sigma * (T_mean + 273.15)^3`
+///
+/// Use with ScriptF exchange factors which already account for emissivity.
+pub fn linearized_h_rad_base(t_mean_c: f64) -> f64 {
+    let t_k = (t_mean_c + 273.15).max(1.0);
+    4.0 * SIGMA * t_k.powi(3)
+}
+
+// ─── ScriptF (Hottel gray enclosure exchange) ────────────────────────
+
+/// Compute Hottel's ScriptF exchange factors from geometric view factors.
+///
+/// ScriptF accounts for surface emissivities and inter-reflections in a
+/// gray, diffuse enclosure.  For each pair (i, j):
+///
+///     ScriptF[i][j] = F[i][j] · ε_j / (1 − ρ_eff · (1 − ε_i))
+///
+/// where `ρ_eff = Σ_k≠i F[i][k] · (1 − ε_k)` is the effective
+/// reflectance seen from surface i (first-order Hottel approximation,
+/// matching the ep-rs implementation).
+///
+/// Returns a row-major `n × n` matrix.  Diagonal is zero.
+pub fn compute_script_f(
+    f_matrix: &[f64],
+    emissivities: &[f64],
+    n: usize,
+) -> Vec<f64> {
+    let mut sf = vec![0.0; n * n];
+
+    for i in 0..n {
+        let eps_i = emissivities[i];
+
+        // Effective reflectance seen from surface i
+        let mut rho_eff = 0.0;
+        for k in 0..n {
+            if k != i {
+                rho_eff += f_matrix[i * n + k] * (1.0 - emissivities[k]);
+            }
+        }
+
+        let denom = 1.0 - rho_eff * (1.0 - eps_i);
+
+        for j in 0..n {
+            if i == j {
+                sf[i * n + j] = 0.0;
+            } else {
+                let eps_j = emissivities[j];
+                sf[i * n + j] = if denom > 1e-10 {
+                    f_matrix[i * n + j] * eps_j / denom
+                } else {
+                    f_matrix[i * n + j] * eps_j
+                };
+            }
+        }
+    }
+
+    sf
+}
+
 // ─── Top-level builder ──────────────────────────────────────────────────
 
 /// Information about an internal mass surface needed for view factor computation.

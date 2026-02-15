@@ -409,6 +409,13 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
 
+    // Solar absorption/reflection: α=1.0 disables multi-bounce (100% absorbed on first hit).
+    // Set to 0.6 for EnergyPlus-like model with 60% absorption, 40% reflected/redistributed.
+    cfg.interior_solar_absorptance = std::env::var("BESTEST_SOLAR_ALPHA")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(1.0);
+
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
 
     // Floor is modeled as a layered FVM wall with ground-coupled exterior BC,

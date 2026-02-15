@@ -1827,12 +1827,22 @@ pub fn run_transient_simulation_with_options(
                 // No internal mass: all surface sources go to FVM walls.
                 // Beam solar → floor FVM walls (normal.dz <= -0.5).
                 // Diffuse + radiant gains → area-proportional across all FVM walls.
+                //
+                // EnergyPlus-style absorption/reflection model:
+                //   Beam hits floor → α absorbed, (1−α) reflected → pool.
+                //   Pool + diffuse redistributed area-proportionally; with uniform α
+                //   the infinite geometric series sums to: each surface absorbs its
+                //   area-fraction of the pool (independent of α).
+                let alpha = base_config.interior_solar_absorptance;
                 let (solar_beam_to_floor_w, solar_diffuse_surface_w) =
                     if base_config.use_beam_solar_distribution {
-                        (
-                            transmitted_split.beam_w * (1.0 - f_air),
-                            transmitted_split.diffuse_w * (1.0 - f_air),
-                        )
+                        let raw_beam = transmitted_split.beam_w * (1.0 - f_air);
+                        let raw_diffuse = transmitted_split.diffuse_w * (1.0 - f_air);
+                        // First-hit absorption: floor absorbs α of beam
+                        let floor_absorbed = alpha * raw_beam;
+                        // Reflected beam pool redistributed area-proportionally
+                        let reflected_pool = (1.0 - alpha) * raw_beam;
+                        (floor_absorbed, raw_diffuse + reflected_pool)
                     } else {
                         (0.0, solar_transmitted_surface_w)
                     };
@@ -2481,14 +2491,11 @@ pub fn run_transient_simulation_with_options(
                     direct_gains_w,
                 }];
 
-                // Radiation conditions (from view factors)
+                // Radiation conditions (from view factors + ScriptF)
                 let g_radiation = if let Some(vf) = &view_factor_data {
-                    let h_r = super::view_factors::linearized_h_rad(
-                        base_config.interior_emissivity,
-                        t_air_prev,
-                    );
-                    // Build surface areas and F matrix from VF data
-                    // For now, collect areas for the interior surface nodes
+                    // h_rad_base = 4σT³ (without ε — ScriptF includes emissivity)
+                    let h_r_base = super::view_factors::linearized_h_rad_base(t_air_prev);
+
                     let n_interior_surfaces = fvm_walls.len() + internal_mass_surfaces.len();
                     let mut areas = Vec::with_capacity(n_interior_surfaces);
                     for w in fvm_walls.iter() {
@@ -2499,29 +2506,7 @@ pub fn run_transient_simulation_with_options(
                     }
 
                     // Extract F matrix from view factor data
-                    // The VF data has per-zone matrices; we need to combine them
                     let mut f_matrix = vec![0.0; n_interior_surfaces * n_interior_surfaces];
-
-                    // Collect current surface temps for MRT
-                    let mut surf_temps: std::collections::HashMap<SurfaceHandle, f64> =
-                        std::collections::HashMap::new();
-                    for w in fvm_walls.iter() {
-                        surf_temps.insert(
-                            SurfaceHandle::Polygon(w.polygon_uid.clone()),
-                            w.cached_interior_surface_temp_c,
-                        );
-                    }
-                    for m in internal_mass_surfaces.iter() {
-                        surf_temps.insert(
-                            SurfaceHandle::InternalMass { index: m.mass_index },
-                            m.cached_interior_surface_temp_c,
-                        );
-                    }
-                    for ss in &ss_exterior_surfaces {
-                        let ratio = ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
-                        let t_surf = t_air_prev - ratio * (t_air_prev - t_out);
-                        surf_temps.insert(SurfaceHandle::Polygon(ss.polygon_uid.clone()), t_surf);
-                    }
 
                     // Build a handle-to-index map for our interior surface ordering
                     let mut handle_order: Vec<SurfaceHandle> = Vec::new();
@@ -2532,9 +2517,6 @@ pub fn run_transient_simulation_with_options(
                         handle_order.push(SurfaceHandle::InternalMass { index: m.mass_index });
                     }
 
-                    // Extract view factors from ViewFactorData
-                    // The VF data stores per-zone F_ij matrices keyed by SurfaceHandle.
-                    // We need to map from VF surface indices to our global surface indices.
                     for zone_vf in &vf.zones {
                         for i in 0..zone_vf.n {
                             let handle_i = &zone_vf.surfaces[i].handle;
@@ -2552,10 +2534,18 @@ pub fn run_transient_simulation_with_options(
                         }
                     }
 
+                    // Compute ScriptF (Hottel gray enclosure exchange factors)
+                    let emissivities = vec![base_config.interior_emissivity; n_interior_surfaces];
+                    let script_f = super::view_factors::compute_script_f(
+                        &f_matrix,
+                        &emissivities,
+                        n_interior_surfaces,
+                    );
+
                     Some(RadiationConditions {
-                        h_rad: h_r,
+                        h_rad: h_r_base,
                         surface_areas: areas,
-                        f_matrix,
+                        f_matrix: script_f,
                         n_surfaces: n_interior_surfaces,
                     })
                 } else {

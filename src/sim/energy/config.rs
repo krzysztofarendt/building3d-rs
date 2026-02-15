@@ -270,6 +270,14 @@ pub struct ThermalConfig {
     /// per-wall Thomas solve + separate air model is replaced by a dense
     /// global solve.
     pub use_global_fvm_solve: bool,
+    /// Interior solar absorptance for opaque surfaces (0..1).
+    ///
+    /// Used in the multi-bounce solar distribution model (EnergyPlus-style):
+    /// - First hit absorbs `alpha`, reflects `(1-alpha)` into a zone pool
+    /// - Pool is redistributed area-proportionally and the process repeats
+    ///
+    /// Default: 0.6 (BESTEST / EnergyPlus standard).
+    pub interior_solar_absorptance: f64,
 }
 
 impl ThermalConfig {
@@ -314,6 +322,7 @@ impl ThermalConfig {
             surface_balance_max_iterations: 4,
             surface_balance_tolerance_c: 0.1,
             use_global_fvm_solve: false,
+            interior_solar_absorptance: 0.6,
         }
     }
 
