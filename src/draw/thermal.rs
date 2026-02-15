@@ -183,6 +183,10 @@ mod tests {
             min_zone_temp_c: 0.0,
             max_zone_temp_c: 0.0,
             hourly_zone_temp_c: Vec::new(),
+            num_zones: 1,
+            per_zone_hourly_temp_c: Vec::new(),
+            per_zone_min_temp_c: Vec::new(),
+            per_zone_max_temp_c: Vec::new(),
         };
         draw_annual_timeline(&session, &result).unwrap();
     }

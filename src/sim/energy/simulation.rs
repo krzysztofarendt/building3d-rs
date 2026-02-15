@@ -48,8 +48,16 @@ pub struct AnnualResult {
     pub min_zone_temp_c: f64,
     /// Maximum zone air temperature over the year [C].
     pub max_zone_temp_c: f64,
-    /// Hourly zone air temperatures [C].
+    /// Hourly zone air temperatures [C] (building-level: zone 0 or conditioned zone).
     pub hourly_zone_temp_c: Vec<f64>,
+    /// Number of zones in the simulation.
+    pub num_zones: usize,
+    /// Per-zone hourly temperatures [C], indexed as `[zone_idx][hour]`.
+    pub per_zone_hourly_temp_c: Vec<Vec<f64>>,
+    /// Per-zone minimum temperature [C] over the year.
+    pub per_zone_min_temp_c: Vec<f64>,
+    /// Per-zone maximum temperature [C] over the year.
+    pub per_zone_max_temp_c: Vec<f64>,
 }
 
 /// Multi-zone transient simulation output (zone air node per `Zone`).
@@ -744,15 +752,14 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
             interior_source_flux_w_per_m2 = w_total / target_area;
         }
         // Floor beam solar: additional flux only for floor walls (normal.dz <= -0.5).
-        if w.normal.dz <= -0.5 {
-            if let Some(src) = floor_beam_sources_w_by_zone_uid
-                && let Some(&beam_w) = src.get(&w.zone_uid)
-                && beam_w != 0.0
-                && let Some(&floor_area) = floor_beam_area_by_zone_uid.get(&w.zone_uid)
-                && floor_area > 0.0
-            {
-                interior_source_flux_w_per_m2 += beam_w / floor_area;
-            }
+        if w.normal.dz <= -0.5
+            && let Some(src) = floor_beam_sources_w_by_zone_uid
+            && let Some(&beam_w) = src.get(&w.zone_uid)
+            && beam_w != 0.0
+            && let Some(&floor_area) = floor_beam_area_by_zone_uid.get(&w.zone_uid)
+            && floor_area > 0.0
+        {
+            interior_source_flux_w_per_m2 += beam_w / floor_area;
         }
 
         let bc_interior = if interior_source_flux_w_per_m2 != 0.0 {
@@ -1183,6 +1190,10 @@ pub fn run_annual_simulation(
         min_zone_temp_c: 0.0,
         max_zone_temp_c: 0.0,
         hourly_zone_temp_c: Vec::new(),
+        num_zones: 1,
+        per_zone_hourly_temp_c: Vec::new(),
+        per_zone_min_temp_c: Vec::new(),
+        per_zone_max_temp_c: Vec::new(),
     }
 }
 
@@ -1235,6 +1246,10 @@ pub struct TransientSimulationOptions {
     /// Optional per-hour infiltration ACH override.
     /// When `None`, uses `base_config.infiltration_ach`.
     pub hourly_infiltration_ach: Option<Vec<f64>>,
+    /// Optional per-zone HVAC setpoints (indexed by zone index in sorted zone order).
+    /// When `Some`, overrides the single `hvac` parameter for multi-zone simulations.
+    /// Free-floating zones use extreme setpoints (heating -999, cooling 999).
+    pub per_zone_hvac: Option<Vec<HvacIdealLoads>>,
 }
 
 impl Default for TransientSimulationOptions {
@@ -1245,6 +1260,7 @@ impl Default for TransientSimulationOptions {
             hourly_heating_setpoint: None,
             hourly_cooling_setpoint: None,
             hourly_infiltration_ach: None,
+            per_zone_hvac: None,
         }
     }
 }
@@ -1363,13 +1379,32 @@ pub fn run_transient_simulation_with_options(
     let mut hourly_heating = Vec::with_capacity(num_hours);
     let mut hourly_cooling = Vec::with_capacity(num_hours);
 
-    // Zone volume (used for infiltration + capacity).
-    let volume: f64 = building.zones().iter().map(|z| z.volume()).sum();
+    // ── Zone index mapping ────────────────────────────────────────────────
+    // building.zones() returns sorted by name, giving stable zone ordering.
+    let zones = building.zones();
+    let num_zones = zones.len();
+    let zone_uid_to_idx: HashMap<UID, usize> = zones
+        .iter()
+        .enumerate()
+        .map(|(i, z)| (z.uid.clone(), i))
+        .collect();
+
+    // Per-zone volumes and derived quantities.
+    let zone_volumes: Vec<f64> = zones.iter().map(|z| z.volume()).collect();
+    let volume: f64 = zone_volumes.iter().sum();
+
+    let base_infiltration_ach = base_config.infiltration_ach;
+    let zone_air_capacities: Vec<f64> = zone_volumes.iter().map(|v| 1.2 * 1005.0 * v).collect();
+    let zone_infiltration_conds: Vec<f64> = zone_volumes
+        .iter()
+        .map(|v| 1.2 * 1005.0 * v * base_infiltration_ach / 3600.0)
+        .collect();
 
     // Compute building-level UA breakdown from exterior surfaces.
     let mut ua_total = 0.0;
-    let mut ua_glazing = 0.0;
     let mut ua_ground = 0.0;
+    // Per-zone glazing UA for the global solver.
+    let mut zone_glazing_ua = vec![0.0_f64; num_zones];
     for s in &index.surfaces {
         if !boundaries.is_exterior(&s.polygon_uid) {
             continue;
@@ -1381,7 +1416,8 @@ pub fn run_transient_simulation_with_options(
         let ua = (u * s.area_m2).max(0.0);
         ua_total += ua;
         if looks_like_glazing(&s.path, base_config, solar_config) {
-            ua_glazing += ua;
+            let zi = zone_uid_to_idx.get(&s.zone_uid).copied().unwrap_or(0);
+            zone_glazing_ua[zi] += ua;
         }
 
         if base_config.ground_temperature_c.is_some()
@@ -1399,12 +1435,9 @@ pub fn run_transient_simulation_with_options(
         }
     }
 
-    // Infiltration conductance: rho * cp * V * ACH / 3600.
-    let base_infiltration_ach = base_config.infiltration_ach;
-    let infiltration_cond = 1.2 * 1005.0 * volume * base_infiltration_ach / 3600.0;
-
-    // Zone air node thermal capacity (air only). Envelope mass is represented by FVM walls.
-    let air_capacity_j_per_k = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
+    // For backward compat, single-zone aggregates.
+    let infiltration_cond: f64 = zone_infiltration_conds.iter().sum();
+    let air_capacity_j_per_k: f64 = zone_air_capacities.iter().sum();
     let thermal_capacity = air_capacity_j_per_k;
 
     let substeps_per_hour = options.substeps_per_hour.max(1);
@@ -1427,8 +1460,95 @@ pub fn run_transient_simulation_with_options(
     let mut min_zone_temp = f64::MAX;
     let mut max_zone_temp = f64::MIN;
     let mut hourly_zone_temp: Vec<f64> = Vec::with_capacity(num_hours);
+    let mut per_zone_hourly_temp: Vec<Vec<f64>> = vec![Vec::with_capacity(num_hours); num_zones];
+    let mut per_zone_min_temp = vec![f64::MAX; num_zones];
+    let mut per_zone_max_temp = vec![f64::MIN; num_zones];
 
     let warmup_hours = options.warmup_hours.min(num_hours);
+
+    // ── Collect inter-zone partition walls ────────────────────────────────
+    use super::boundary::ThermalSurfaceKind;
+    let mut interzone_fvm_walls: Vec<FvmExteriorWall> = Vec::new();
+    // Track which zone UID is on the "other" side of each inter-zone wall.
+    let mut interzone_exterior_zone_uids: Vec<UID> = Vec::new();
+    {
+        let mut seen_pairs: HashSet<(UID, UID)> = HashSet::new();
+        for (uid1, uid2) in &boundaries.facing_pairs {
+            if boundaries.kind(uid1) != ThermalSurfaceKind::InterZoneInterface {
+                continue;
+            }
+            // Avoid double-counting: pick one polygon per pair.
+            // Use both orderings in the set since UID doesn't impl Ord.
+            let key = (uid1.clone(), uid2.clone());
+            let key_rev = (uid2.clone(), uid1.clone());
+            if seen_pairs.contains(&key) || seen_pairs.contains(&key_rev) {
+                continue;
+            }
+            seen_pairs.insert(key);
+            // Use uid1 as the reference polygon.
+            let Some(sref1) = index.surfaces.iter().find(|s| &s.polygon_uid == uid1) else {
+                continue;
+            };
+            let Some(sref2) = index.surfaces.iter().find(|s| &s.polygon_uid == uid2) else {
+                continue;
+            };
+            if sref1.area_m2 <= 0.0 {
+                continue;
+            }
+            let Some(construction) = base_config.resolve_construction(&sref1.path) else {
+                // Try uid2's path as fallback.
+                let Some(c2) = base_config.resolve_construction(&sref2.path) else {
+                    continue;
+                };
+                let mesh = build_1d_mesh(c2, sref1.area_m2);
+                let solver = FvmWallSolver::new(mesh, base_config.indoor_temperature);
+                let init_temp = solver.interior_surface_temp();
+                let poly = building.get_polygon(&sref1.path);
+                let normal = poly
+                    .map(|p| p.vn)
+                    .unwrap_or(crate::Vector::new(0.0, 0.0, 1.0));
+                interzone_fvm_walls.push(FvmExteriorWall {
+                    zone_uid: sref1.zone_uid.clone(),
+                    polygon_uid: sref1.polygon_uid.clone(),
+                    path: sref1.path.clone(),
+                    area_m2: sref1.area_m2,
+                    normal,
+                    is_ground_coupled: false,
+                    h_out_w_per_m2_k: 0.0,
+                    h_min_iso_interior: 1.0 / 0.13,
+                    solver,
+                    cached_interior_surface_temp_c: init_temp,
+                });
+                interzone_exterior_zone_uids.push(sref2.zone_uid.clone());
+                continue;
+            };
+            let mesh = build_1d_mesh(construction, sref1.area_m2);
+            let solver = FvmWallSolver::new(mesh, base_config.indoor_temperature);
+            let init_temp = solver.interior_surface_temp();
+            let poly = building.get_polygon(&sref1.path);
+            let normal = poly
+                .map(|p| p.vn)
+                .unwrap_or(crate::Vector::new(0.0, 0.0, 1.0));
+            interzone_fvm_walls.push(FvmExteriorWall {
+                zone_uid: sref1.zone_uid.clone(),
+                polygon_uid: sref1.polygon_uid.clone(),
+                path: sref1.path.clone(),
+                area_m2: sref1.area_m2,
+                normal,
+                is_ground_coupled: false,
+                h_out_w_per_m2_k: 0.0,
+                h_min_iso_interior: if construction.r_si > 0.0 {
+                    1.0 / construction.r_si
+                } else {
+                    1.0 / 0.13
+                },
+                solver,
+                cached_interior_surface_temp_c: init_temp,
+            });
+            interzone_exterior_zone_uids.push(sref2.zone_uid.clone());
+        }
+    }
+    let _has_interzone_walls = !interzone_fvm_walls.is_empty();
 
     // ── Global FVM solver initialization ────────────────────────────────
     use super::global_solve::{
@@ -1441,40 +1561,62 @@ pub fn run_transient_simulation_with_options(
         let wall_infos: Vec<FvmWallInfo> = {
             let mut infos = Vec::new();
             for w in &fvm_walls {
+                let zi = zone_uid_to_idx.get(&w.zone_uid).copied().unwrap_or(0);
                 infos.push(FvmWallInfo {
                     solver: &w.solver,
-                    zone_idx: 0, // single zone for now
+                    zone_idx: zi,
                     area_m2: w.area_m2,
                     has_exterior_surface: false,
                     exterior_adiabatic: false,
+                    exterior_zone_idx: None,
                 });
             }
             for m in &internal_mass_surfaces {
+                let zi = zone_uid_to_idx.get(&m.zone_uid).copied().unwrap_or(0);
                 infos.push(FvmWallInfo {
                     solver: &m.solver,
-                    zone_idx: 0,
+                    zone_idx: zi,
                     area_m2: m.area_m2,
                     has_exterior_surface: matches!(m.boundary, InternalMassBoundary::TwoSided),
                     exterior_adiabatic: matches!(
                         m.boundary,
                         InternalMassBoundary::OneSidedAdiabatic
                     ),
+                    exterior_zone_idx: None,
+                });
+            }
+            // Inter-zone partition walls: TwoSided with exterior_zone_idx set.
+            for (iw_idx, iw) in interzone_fvm_walls.iter().enumerate() {
+                let zi = zone_uid_to_idx.get(&iw.zone_uid).copied().unwrap_or(0);
+                let ext_zi = zone_uid_to_idx
+                    .get(&interzone_exterior_zone_uids[iw_idx])
+                    .copied()
+                    .unwrap_or(0);
+                infos.push(FvmWallInfo {
+                    solver: &iw.solver,
+                    zone_idx: zi,
+                    area_m2: iw.area_m2,
+                    has_exterior_surface: true,
+                    exterior_adiabatic: false,
+                    exterior_zone_idx: Some(ext_zi),
                 });
             }
             infos
         };
 
         let mut steady_infos: Vec<SteadySurfaceInfo> = Vec::new();
-        let mut explicit_glazing_ua = 0.0_f64;
+        let mut explicit_glazing_ua_per_zone = vec![0.0_f64; num_zones];
         for (ss_idx, ss) in ss_exterior_surfaces.iter().enumerate() {
             if ss.area_m2 <= 0.0 || ss.u_value_w_per_m2_k <= 0.0 || ss.h_in_w_per_m2_k <= 0.0 {
                 continue;
             }
+            let zi = zone_uid_to_idx.get(&ss.zone_uid).copied().unwrap_or(0);
             if ss.is_glazing {
-                explicit_glazing_ua += ss.u_value_w_per_m2_k * ss.area_m2;
+                explicit_glazing_ua_per_zone[zi] += ss.u_value_w_per_m2_k * ss.area_m2;
+                zone_glazing_ua[zi] += ss.u_value_w_per_m2_k * ss.area_m2;
             }
             steady_infos.push(SteadySurfaceInfo {
-                zone_idx: 0, // single-zone path for now
+                zone_idx: zi,
                 area_m2: ss.area_m2,
                 h_in_w_per_m2_k: ss.h_in_w_per_m2_k,
                 u_to_out_w_per_m2_k: ss.u_value_w_per_m2_k,
@@ -1482,17 +1624,20 @@ pub fn run_transient_simulation_with_options(
             global_ss_surface_map.push(ss_idx);
         }
 
-        // If a glazing surface is represented explicitly as a steady-state node,
-        // remove its UA from the air-node lumped glazing path to avoid double-counting.
-        let glazing_ua_residual = (ua_glazing - explicit_glazing_ua).max(0.0);
+        // Per-zone glazing UA residual (after subtracting explicitly represented glazing).
+        let zone_glazing_ua_residual: Vec<f64> = zone_glazing_ua
+            .iter()
+            .zip(explicit_glazing_ua_per_zone.iter())
+            .map(|(total, explicit)| (total - explicit).max(0.0))
+            .collect();
 
         let topo = global_solve::build_topology_with_steady(
             &wall_infos,
             &steady_infos,
-            1, // single zone
-            &[air_capacity_j_per_k],
-            &[infiltration_cond],
-            &[glazing_ua_residual],
+            num_zones,
+            &zone_air_capacities,
+            &zone_infiltration_conds,
+            &zone_glazing_ua_residual,
         );
 
         // Extract initial temperatures
@@ -1504,9 +1649,12 @@ pub fn run_transient_simulation_with_options(
             for m in &internal_mass_surfaces {
                 s.push(&m.solver);
             }
+            for iw in &interzone_fvm_walls {
+                s.push(&iw.solver);
+            }
             s
         };
-        let t_air_init = model_1r1c.zone_temperature;
+        let air_temps_init: Vec<f64> = vec![model_1r1c.zone_temperature; num_zones];
         let mut steady_temps = Vec::with_capacity(global_ss_surface_map.len());
         for &ss_idx in &global_ss_surface_map {
             steady_temps.push(ss_exterior_surfaces[ss_idx].cached_interior_surface_temp_c);
@@ -1514,7 +1662,7 @@ pub fn run_transient_simulation_with_options(
         let temps = global_solve::extract_temperatures_with_steady(
             &topo,
             &solvers,
-            &[t_air_init],
+            &air_temps_init,
             &steady_temps,
         );
         (topo, temps)
@@ -1525,10 +1673,13 @@ pub fn run_transient_simulation_with_options(
                              report: bool,
                              hour_hvac: &HvacIdealLoads,
                              hour_infiltration_ach: f64| {
-        // Apply per-hour infiltration ACH override.
+        // Apply per-hour infiltration ACH override (per-zone).
         let hour_infiltration_cond = 1.2 * 1005.0 * volume * hour_infiltration_ach / 3600.0;
         model_1r1c.infiltration_conductance = hour_infiltration_cond;
-        global_topology.air_nodes[0].infiltration_k = hour_infiltration_cond;
+        for air in &mut global_topology.air_nodes {
+            let zv = zone_volumes.get(air.zone_idx).copied().unwrap_or(0.0);
+            air.infiltration_k = 1.2 * 1005.0 * zv * hour_infiltration_ach / 3600.0;
+        }
         let gains = gains_profile
             .map(|p| p.gains_at(hour_idx))
             .unwrap_or(base_config.internal_gains);
@@ -2005,12 +2156,31 @@ pub fn run_transient_simulation_with_options(
                     });
                 }
 
-                // Air conditions
-                let direct_gains_w = gains_air_w + solar_total_air_w + q_ground;
-                let g_air_conds = vec![AirStepConditions {
-                    outdoor_temp_c: t_out,
-                    direct_gains_w,
-                }];
+                // Air conditions (per-zone)
+                let g_air_conds: Vec<AirStepConditions> = if num_zones == 1 {
+                    let direct_gains_w = gains_air_w + solar_total_air_w + q_ground;
+                    vec![AirStepConditions {
+                        outdoor_temp_c: t_out,
+                        direct_gains_w,
+                    }]
+                } else {
+                    // Multi-zone: distribute internal gains proportional to zone volume,
+                    // solar gains are already zone-specific via glazing transmissions.
+                    let total_direct = gains_air_w + solar_total_air_w + q_ground;
+                    (0..num_zones)
+                        .map(|zi| {
+                            let frac = if volume > 0.0 {
+                                zone_volumes[zi] / volume
+                            } else {
+                                1.0 / num_zones as f64
+                            };
+                            AirStepConditions {
+                                outdoor_temp_c: t_out,
+                                direct_gains_w: total_direct * frac,
+                            }
+                        })
+                        .collect()
+                };
 
                 // Radiation conditions (from view factors + ScriptF)
                 let g_radiation = if let Some(vf) = &view_factor_data {
@@ -2090,18 +2260,21 @@ pub fn run_transient_simulation_with_options(
                 let g_wall_infos: Vec<FvmWallInfo> = {
                     let mut infos = Vec::new();
                     for w in fvm_walls.iter() {
+                        let zi = zone_uid_to_idx.get(&w.zone_uid).copied().unwrap_or(0);
                         infos.push(FvmWallInfo {
                             solver: &w.solver,
-                            zone_idx: 0,
+                            zone_idx: zi,
                             area_m2: w.area_m2,
                             has_exterior_surface: false,
                             exterior_adiabatic: false,
+                            exterior_zone_idx: None,
                         });
                     }
                     for m in internal_mass_surfaces.iter() {
+                        let zi = zone_uid_to_idx.get(&m.zone_uid).copied().unwrap_or(0);
                         infos.push(FvmWallInfo {
                             solver: &m.solver,
-                            zone_idx: 0,
+                            zone_idx: zi,
                             area_m2: m.area_m2,
                             has_exterior_surface: matches!(
                                 m.boundary,
@@ -2111,10 +2284,54 @@ pub fn run_transient_simulation_with_options(
                                 m.boundary,
                                 InternalMassBoundary::OneSidedAdiabatic
                             ),
+                            exterior_zone_idx: None,
+                        });
+                    }
+                    for (iw_idx, iw) in interzone_fvm_walls.iter().enumerate() {
+                        let zi = zone_uid_to_idx.get(&iw.zone_uid).copied().unwrap_or(0);
+                        let ext_zi = zone_uid_to_idx
+                            .get(&interzone_exterior_zone_uids[iw_idx])
+                            .copied()
+                            .unwrap_or(0);
+                        infos.push(FvmWallInfo {
+                            solver: &iw.solver,
+                            zone_idx: zi,
+                            area_m2: iw.area_m2,
+                            has_exterior_surface: true,
+                            exterior_adiabatic: false,
+                            exterior_zone_idx: Some(ext_zi),
                         });
                     }
                     infos
                 };
+
+                // Build per-zone HVAC for global solve
+                let g_per_zone_hvac: Vec<HvacIdealLoads> =
+                    if let Some(ref pzh) = options.per_zone_hvac {
+                        pzh.clone()
+                    } else {
+                        vec![hour_hvac.clone(); num_zones]
+                    };
+
+                // Wall conditions for inter-zone partition walls
+                for iw in interzone_fvm_walls.iter() {
+                    let t_surf_prev = iw.solver.interior_surface_temp();
+                    let h_in_base = super::convection::interior_convection_h(
+                        &base_config.interior_convection_model,
+                        t_surf_prev - t_air_prev,
+                        iw.normal.dz,
+                        iw.h_min_iso_interior,
+                    )
+                    .max(1e-9);
+                    g_wall_conds.push(WallStepConditions {
+                        ext_k_eff: 0.0,
+                        ext_t_drive: t_air_prev,
+                        ext_source_w: 0.0,
+                        h_conv: h_in_base,
+                        h_total: h_in_base,
+                        int_source_w: 0.0,
+                    });
+                }
 
                 // Solve
                 let result = global_solve::step_global(
@@ -2123,7 +2340,7 @@ pub fn run_transient_simulation_with_options(
                     &g_wall_conds,
                     &g_air_conds,
                     g_radiation.as_ref(),
-                    hour_hvac,
+                    &g_per_zone_hvac,
                     dt_s,
                     &g_wall_infos,
                 );
@@ -2147,6 +2364,15 @@ pub fn run_transient_simulation_with_options(
                     m.cached_interior_surface_temp_c =
                         global_temps[topo.surfaces[wall_topo.surface_idx].global_idx];
                 }
+                let n_fvm_plus_mass = n_fvm + internal_mass_surfaces.len();
+                for (iw_idx, iw) in interzone_fvm_walls.iter_mut().enumerate() {
+                    let wall_topo = &topo.walls[n_fvm_plus_mass + iw_idx];
+                    let cell_temps = &global_temps
+                        [wall_topo.cell_offset..wall_topo.cell_offset + wall_topo.n_cells];
+                    iw.solver.set_temperatures(cell_temps);
+                    iw.cached_interior_surface_temp_c =
+                        global_temps[topo.surfaces[wall_topo.surface_idx].global_idx];
+                }
                 for (steady_idx, &ss_idx) in global_ss_surface_map.iter().enumerate() {
                     if let Some(ss_topo) = topo.steady_surfaces.get(steady_idx) {
                         ss_exterior_surfaces[ss_idx].cached_interior_surface_temp_c =
@@ -2154,12 +2380,13 @@ pub fn run_transient_simulation_with_options(
                     }
                 }
 
-                // Update air model temperature
+                // Update air model temperature (use zone 0 for backward compat)
                 let t_air_new = global_temps[topo.air_nodes[0].global_idx];
                 model.zone_temperature = t_air_new;
 
-                let q_heating = result.heating_w_per_zone[0];
-                let q_cooling = result.cooling_w_per_zone[0];
+                // Sum heating/cooling across all zones
+                let q_heating: f64 = result.heating_w_per_zone.iter().sum();
+                let q_cooling: f64 = result.cooling_w_per_zone.iter().sum();
                 (q_heating, q_cooling)
             };
 
@@ -2180,6 +2407,19 @@ pub fn run_transient_simulation_with_options(
             }
             if t_zone > max_zone_temp {
                 max_zone_temp = t_zone;
+            }
+
+            // Per-zone temperature tracking
+            for air in global_topology.air_nodes.iter() {
+                let zi = air.zone_idx;
+                let t_zi = global_temps[air.global_idx];
+                per_zone_hourly_temp[zi].push(t_zi);
+                if t_zi < per_zone_min_temp[zi] {
+                    per_zone_min_temp[zi] = t_zi;
+                }
+                if t_zi > per_zone_max_temp[zi] {
+                    per_zone_max_temp[zi] = t_zi;
+                }
             }
 
             annual_heating += hour_heating_wh;
@@ -2222,6 +2462,16 @@ pub fn run_transient_simulation_with_options(
 
     let to_kwh = 1.0 / 1000.0;
 
+    // Fix up per-zone min/max sentinel values.
+    for zi in 0..num_zones {
+        if per_zone_min_temp[zi] == f64::MAX {
+            per_zone_min_temp[zi] = 0.0;
+        }
+        if per_zone_max_temp[zi] == f64::MIN {
+            per_zone_max_temp[zi] = 0.0;
+        }
+    }
+
     AnnualResult {
         hourly_heating,
         hourly_cooling,
@@ -2234,6 +2484,10 @@ pub fn run_transient_simulation_with_options(
         min_zone_temp_c: min_zone_temp,
         max_zone_temp_c: max_zone_temp,
         hourly_zone_temp_c: hourly_zone_temp,
+        num_zones,
+        per_zone_hourly_temp_c: per_zone_hourly_temp,
+        per_zone_min_temp_c: per_zone_min_temp,
+        per_zone_max_temp_c: per_zone_max_temp,
     }
 }
 
@@ -2463,6 +2717,10 @@ pub fn run_multizone_transient_simulation(
         min_zone_temp_c: 0.0,
         max_zone_temp_c: 0.0,
         hourly_zone_temp_c: Vec::new(),
+        num_zones: 1,
+        per_zone_hourly_temp_c: Vec::new(),
+        per_zone_min_temp_c: Vec::new(),
+        per_zone_max_temp_c: Vec::new(),
     };
 
     Ok(MultiZoneAnnualResult {
@@ -2598,6 +2856,10 @@ pub fn run_multizone_steady_simulation(
         min_zone_temp_c: 0.0,
         max_zone_temp_c: 0.0,
         hourly_zone_temp_c: Vec::new(),
+        num_zones: 1,
+        per_zone_hourly_temp_c: Vec::new(),
+        per_zone_min_temp_c: Vec::new(),
+        per_zone_max_temp_c: Vec::new(),
     };
 
     Ok(MultiZoneAnnualResult {

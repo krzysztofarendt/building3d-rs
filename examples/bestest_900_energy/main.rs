@@ -438,6 +438,10 @@ fn base_options() -> TransientSimulationOptions {
     TransientSimulationOptions {
         warmup_hours: warmup_days.saturating_mul(24),
         substeps_per_hour,
+        hourly_heating_setpoint: None,
+        hourly_cooling_setpoint: None,
+        hourly_infiltration_ach: None,
+        per_zone_hvac: None,
     }
 }
 

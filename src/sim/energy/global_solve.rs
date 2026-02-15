@@ -160,10 +160,14 @@ pub struct FvmWallInfo<'a> {
     pub solver: &'a FvmWallSolver,
     pub zone_idx: usize,
     pub area_m2: f64,
-    /// True if this wall has a second surface node (e.g. TwoSided internal mass).
+    /// True if this wall has a second surface node (e.g. TwoSided internal mass or inter-zone partition).
     pub has_exterior_surface: bool,
     /// True if exterior face is adiabatic (OneSidedAdiabatic internal mass).
     pub exterior_adiabatic: bool,
+    /// Zone index for the exterior surface node (inter-zone partition walls).
+    /// When `Some`, the exterior surface node connects to this zone's air node
+    /// instead of `zone_idx`.
+    pub exterior_zone_idx: Option<usize>,
 }
 
 /// Information for a steady-state exterior surface represented as a global node.
@@ -271,16 +275,18 @@ pub fn build_topology_with_steady(
         // (walls vec is mutable through index, but we built it above)
         idx += 1;
 
-        // For TwoSided internal mass: add a second surface node on the exterior side
+        // For TwoSided internal mass or inter-zone partition: add a second surface node
+        // on the exterior side. For inter-zone walls, this node couples to the other zone.
         if info.has_exterior_surface {
             let outer_cell_global_idx = wall.cell_offset;
             let si2 = surfaces.len();
+            let ext_zone = info.exterior_zone_idx.unwrap_or(info.zone_idx);
             surfaces.push(SurfaceTopology {
                 surface_idx: si2,
                 global_idx: idx,
                 wall_idx: wi,
                 inner_cell_global_idx: outer_cell_global_idx,
-                zone_idx: info.zone_idx,
+                zone_idx: ext_zone,
                 area_m2: info.area_m2,
                 k_face: wall.ext_boundary_face_k,
             });
@@ -379,7 +385,7 @@ pub fn step_global(
     wall_conditions: &[WallStepConditions],
     air_conditions: &[AirStepConditions],
     radiation: Option<&RadiationConditions>,
-    hvac: &HvacIdealLoads,
+    per_zone_hvac: &[HvacIdealLoads],
     dt_s: f64,
     wall_infos: &[FvmWallInfo],
 ) -> GlobalStepResult {
@@ -413,14 +419,16 @@ pub fn step_global(
     let mut zone_needs_hvac = vec![false; n_zones];
 
     for air in &topo.air_nodes {
+        let zi = air.zone_idx;
+        let hvac = &per_zone_hvac[zi];
         let t_free = free_temps[air.global_idx];
         if t_free < hvac.heating_setpoint {
-            zone_needs_hvac[air.zone_idx] = true;
-            fixed_air_temps[air.zone_idx] = hvac.heating_setpoint;
+            zone_needs_hvac[zi] = true;
+            fixed_air_temps[zi] = hvac.heating_setpoint;
             need_hvac = true;
         } else if t_free > hvac.cooling_setpoint {
-            zone_needs_hvac[air.zone_idx] = true;
-            fixed_air_temps[air.zone_idx] = hvac.cooling_setpoint;
+            zone_needs_hvac[zi] = true;
+            fixed_air_temps[zi] = hvac.cooling_setpoint;
             need_hvac = true;
         }
     }
@@ -601,7 +609,9 @@ fn solve_system(
                 a_mat[gi_surf][gi_ext] -= k_face;
 
                 // Surface node <-> air node coupling (convective)
-                let air_gi = topo.air_nodes[wall.zone_idx].global_idx;
+                // For inter-zone walls, use the exterior surface's zone_idx
+                // (which points to the other zone).
+                let air_gi = topo.air_nodes[ext_surf.zone_idx].global_idx;
                 let h_conv_a = wc.h_conv * ext_surf.area_m2;
                 a_mat[gi_surf][gi_surf] += h_conv_a;
                 a_mat[gi_surf][air_gi] -= h_conv_a;
@@ -849,6 +859,7 @@ mod tests {
             area_m2: area,
             has_exterior_surface: false,
             exterior_adiabatic: false,
+            exterior_zone_idx: None,
         }];
 
         let h_out = 25.0;
@@ -894,7 +905,7 @@ mod tests {
                 &[wc.clone()],
                 &[ac.clone()],
                 None,
-                &hvac,
+                &[hvac.clone()],
                 1e6,
                 &wall_infos,
             );
@@ -927,6 +938,7 @@ mod tests {
                 area_m2: area,
                 has_exterior_surface: false,
                 exterior_adiabatic: false,
+                exterior_zone_idx: None,
             },
             FvmWallInfo {
                 solver: &solver2,
@@ -934,6 +946,7 @@ mod tests {
                 area_m2: area,
                 has_exterior_surface: false,
                 exterior_adiabatic: false,
+                exterior_zone_idx: None,
             },
         ];
 
@@ -973,7 +986,7 @@ mod tests {
                 &wcs,
                 &[ac.clone()],
                 None,
-                &hvac,
+                &[hvac.clone()],
                 1e6,
                 &wall_infos,
             );
@@ -1001,6 +1014,7 @@ mod tests {
                 area_m2: area,
                 has_exterior_surface: false,
                 exterior_adiabatic: false,
+                exterior_zone_idx: None,
             },
             FvmWallInfo {
                 solver: &solver2,
@@ -1008,6 +1022,7 @@ mod tests {
                 area_m2: area,
                 has_exterior_surface: false,
                 exterior_adiabatic: false,
+                exterior_zone_idx: None,
             },
         ];
 
@@ -1049,7 +1064,7 @@ mod tests {
                 &[wc.clone(), wc.clone()],
                 &[ac.clone()],
                 Some(&rad),
-                &hvac,
+                &[hvac.clone()],
                 1e5,
                 &wall_infos,
             );
@@ -1077,6 +1092,7 @@ mod tests {
             area_m2: area,
             has_exterior_surface: false,
             exterior_adiabatic: false,
+            exterior_zone_idx: None,
         }];
 
         let t_out = -20.0;
@@ -1114,7 +1130,7 @@ mod tests {
                 &[wc.clone()],
                 &[ac.clone()],
                 None,
-                &hvac,
+                &[hvac.clone()],
                 600.0,
                 &wall_infos,
             );
@@ -1182,6 +1198,7 @@ mod tests {
             area_m2: area,
             has_exterior_surface: false,
             exterior_adiabatic: false,
+            exterior_zone_idx: None,
         }];
 
         // Use large air capacity and fix air at 20°C via HVAC
@@ -1214,7 +1231,7 @@ mod tests {
                 &[wc.clone()],
                 &[ac.clone()],
                 None,
-                &hvac,
+                &[hvac.clone()],
                 dt,
                 &wall_infos,
             );

@@ -582,6 +582,7 @@ enum CaseMassKind {
 enum GeometryKind {
     South,
     EastWest,
+    Sunspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -703,6 +704,194 @@ fn build_case_620_geometry() -> Result<Building> {
     )?;
     let zone = Zone::new("zone_one", vec![solid])?;
     Building::new("bestest_case_620", vec![zone])
+}
+
+// ── Case 960: Two-zone sunspace geometry ──
+
+/// Helper to create a rectangle polygon at a given y position facing north (+y).
+fn poly_rect_y_north(name: &str, x0: f64, x1: f64, z0: f64, z1: f64, y: f64) -> Result<Polygon> {
+    Polygon::new(
+        name,
+        vec![
+            Point::new(x1, y, z0),
+            Point::new(x0, y, z0),
+            Point::new(x0, y, z1),
+            Point::new(x1, y, z1),
+        ],
+        Some(building3d::Vector::new(0.0, 1.0, 0.0)),
+    )
+}
+
+/// Helper to create a rectangle polygon at a given y position facing south (-y).
+fn poly_rect_y_south(name: &str, x0: f64, x1: f64, z0: f64, z1: f64, y: f64) -> Result<Polygon> {
+    Polygon::new(
+        name,
+        vec![
+            Point::new(x0, y, z0),
+            Point::new(x1, y, z0),
+            Point::new(x1, y, z1),
+            Point::new(x0, y, z1),
+        ],
+        Some(building3d::Vector::new(0.0, -1.0, 0.0)),
+    )
+}
+
+fn build_case_960_geometry() -> Result<Building> {
+    let x = 8.0;
+    let z = 2.7;
+    let y_sun = 2.0; // sunspace depth (south)
+    let y_back = 6.0; // back zone depth (north)
+
+    // ── Sunspace (south zone, UNCONDITIONED): 8m x 2m x 2.7m ──
+    // y = 0..2, south wall at y=0, common wall at y=2
+    let sun_floor = Polygon::new(
+        "floor",
+        vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(0.0, y_sun, 0.0),
+            Point::new(x, y_sun, 0.0),
+            Point::new(x, 0.0, 0.0),
+        ],
+        None,
+    )?;
+    let sun_ceiling = Polygon::new(
+        "ceiling",
+        vec![
+            Point::new(0.0, 0.0, z),
+            Point::new(x, 0.0, z),
+            Point::new(x, y_sun, z),
+            Point::new(0.0, y_sun, z),
+        ],
+        None,
+    )?;
+
+    // South wall (y=0): two 3m x 2m windows (same as Case 600/900 layout)
+    let mut south_polys: Vec<Polygon> = Vec::new();
+    south_polys.push(poly_rect_y0("opaque_left", 0.0, 0.5, 0.0, z)?);
+    south_polys.push(poly_rect_y0("opaque_mid", 3.5, 4.5, 0.0, z)?);
+    south_polys.push(poly_rect_y0("opaque_right", 7.5, 8.0, 0.0, z)?);
+    south_polys.push(poly_rect_y0("opaque_below_w1", 0.5, 3.5, 0.0, 0.2)?);
+    south_polys.push(poly_rect_y0("opaque_above_w1", 0.5, 3.5, 2.2, z)?);
+    south_polys.push(poly_rect_y0("window_1", 0.5, 3.5, 0.2, 2.2)?);
+    south_polys.push(poly_rect_y0("opaque_below_w2", 4.5, 7.5, 0.0, 0.2)?);
+    south_polys.push(poly_rect_y0("opaque_above_w2", 4.5, 7.5, 2.2, z)?);
+    south_polys.push(poly_rect_y0("window_2", 4.5, 7.5, 0.2, 2.2)?);
+
+    // Common wall (y=2, facing north from sunspace side)
+    let sun_common = poly_rect_y_north("common_wall", 0.0, x, 0.0, z, y_sun)?;
+
+    // East wall (x=8)
+    let sun_east = Polygon::new(
+        "poly_east",
+        vec![
+            Point::new(x, 0.0, 0.0),
+            Point::new(x, y_sun, 0.0),
+            Point::new(x, y_sun, z),
+            Point::new(x, 0.0, z),
+        ],
+        Some(building3d::Vector::new(1.0, 0.0, 0.0)),
+    )?;
+    // West wall (x=0)
+    let sun_west = Polygon::new(
+        "poly_west",
+        vec![
+            Point::new(0.0, y_sun, 0.0),
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(0.0, 0.0, z),
+            Point::new(0.0, y_sun, z),
+        ],
+        Some(building3d::Vector::new(-1.0, 0.0, 0.0)),
+    )?;
+
+    let sun_solid = Solid::new(
+        "sunspace",
+        vec![
+            Wall::new("floor", vec![sun_floor])?,
+            Wall::new("wall_0", south_polys)?,
+            Wall::new("wall_1", vec![sun_east])?,
+            Wall::new("wall_2", vec![sun_common])?,
+            Wall::new("wall_3", vec![sun_west])?,
+            Wall::new("ceiling", vec![sun_ceiling])?,
+        ],
+    )?;
+
+    // ── Back zone (north, CONDITIONED): 8m x 6m x 2.7m ──
+    // y = 2..8, common wall at y=2, north wall at y=8
+    let y_north = y_sun + y_back; // 8.0
+    let back_floor = Polygon::new(
+        "floor",
+        vec![
+            Point::new(0.0, y_sun, 0.0),
+            Point::new(0.0, y_north, 0.0),
+            Point::new(x, y_north, 0.0),
+            Point::new(x, y_sun, 0.0),
+        ],
+        None,
+    )?;
+    let back_ceiling = Polygon::new(
+        "ceiling",
+        vec![
+            Point::new(0.0, y_sun, z),
+            Point::new(x, y_sun, z),
+            Point::new(x, y_north, z),
+            Point::new(0.0, y_north, z),
+        ],
+        None,
+    )?;
+
+    // Common wall (y=2, facing south from back zone side)
+    let back_common = poly_rect_y_south("common_wall", 0.0, x, 0.0, z, y_sun)?;
+
+    // East wall (x=8)
+    let back_east = Polygon::new(
+        "poly_east",
+        vec![
+            Point::new(x, y_sun, 0.0),
+            Point::new(x, y_north, 0.0),
+            Point::new(x, y_north, z),
+            Point::new(x, y_sun, z),
+        ],
+        Some(building3d::Vector::new(1.0, 0.0, 0.0)),
+    )?;
+    // North wall (y=8)
+    let back_north = Polygon::new(
+        "poly_north",
+        vec![
+            Point::new(x, y_north, 0.0),
+            Point::new(0.0, y_north, 0.0),
+            Point::new(0.0, y_north, z),
+            Point::new(x, y_north, z),
+        ],
+        Some(building3d::Vector::new(0.0, 1.0, 0.0)),
+    )?;
+    // West wall (x=0)
+    let back_west = Polygon::new(
+        "poly_west",
+        vec![
+            Point::new(0.0, y_north, 0.0),
+            Point::new(0.0, y_sun, 0.0),
+            Point::new(0.0, y_sun, z),
+            Point::new(0.0, y_north, z),
+        ],
+        Some(building3d::Vector::new(-1.0, 0.0, 0.0)),
+    )?;
+
+    let back_solid = Solid::new(
+        "back",
+        vec![
+            Wall::new("floor", vec![back_floor])?,
+            Wall::new("wall_0", vec![back_common])?,
+            Wall::new("wall_1", vec![back_east])?,
+            Wall::new("wall_2", vec![back_north])?,
+            Wall::new("wall_3", vec![back_west])?,
+            Wall::new("ceiling", vec![back_ceiling])?,
+        ],
+    )?;
+
+    // Zone names sorted: z_back (idx 0), z_sun (idx 1)
+    let z_sun = Zone::new("z_sun", vec![sun_solid])?;
+    let z_back = Zone::new("z_back", vec![back_solid])?;
+    Building::new("bestest_960", vec![z_sun, z_back])
 }
 
 // ── Overhang/fin shading configurations ──
@@ -1341,9 +1530,10 @@ fn main() -> Result<()> {
         .with_context(|| format!("read EPW at {} (run download_data.sh?)", epw_path.display()))?;
     let weather = WeatherData::from_epw(&epw_content).context("parse EPW")?;
 
-    // Build both geometry variants.
+    // Build geometry variants.
     let building_south = build_case_600_geometry()?;
     let building_ew = build_case_620_geometry()?;
+    let building_960 = build_case_960_geometry()?;
 
     let base_cfg_south = {
         let mut c = config_for_case_600(&building_south);
@@ -1377,8 +1567,8 @@ fn main() -> Result<()> {
         make_case_spec("950", Heavy, South, SK::None, NightVent),
         make_case_spec("900FF", Heavy, South, SK::None, FreeFloat),
         make_case_spec("950FF", Heavy, South, SK::None, FreeFloatNightVent),
-        // ── Case 960: two-zone sunspace (TODO) ──
-        make_case_spec("960", Heavy, South, SK::None, Normal),
+        // ── Case 960: two-zone sunspace ──
+        make_case_spec("960", Heavy, Sunspace, SK::None, Normal),
     ];
 
     println!("BESTEST ASHRAE 140 energy suite (building3d vs OpenStudio/E+ reference)");
@@ -1421,29 +1611,73 @@ fn main() -> Result<()> {
     let mut outputs: Vec<(CaseSpec, AnnualResult)> = Vec::new();
     let mut diag_rows: Vec<(CaseSpec, AnnualResult, CaseDiagnostics)> = Vec::new();
 
-    for spec in &suite {
-        // ── Skip case 960 (multi-zone sunspace, not yet implemented) ──
-        if spec.name == "960" {
-            println!(
-                "Case {:>12}: SKIP (multi-zone sunspace not yet implemented)",
-                spec.name
-            );
-            continue;
-        }
+    // Case 960 config: sunspace uses heavyweight walls/floor (900-series)
+    // for the sunspace zone, lightweight walls for the back zone, and a
+    // concrete block partition for the common wall.
+    let base_cfg_960 = {
+        let mut c = config_for_case_600(&building_960);
+        c.use_fvm_walls = true;
 
+        // Back zone (z_back): lightweight constructions (Case 600)
+        // These match by substring on paths containing "z_back"
+        let (lt_wall, lt_roof, lt_floor, window) = bestest_600_constructions();
+        c.constructions
+            .insert("z_back/back/wall".to_string(), lt_wall);
+        c.constructions
+            .insert("z_back/back/floor".to_string(), lt_floor.clone());
+
+        // Sunspace (z_sun): heavyweight constructions (Case 900)
+        let (hw_wall, _hw_roof, hw_floor, _hw_window) = bestest_900_constructions();
+        c.constructions
+            .insert("z_sun/sunspace/wall_0".to_string(), hw_wall.clone());
+        c.constructions
+            .insert("z_sun/sunspace/wall_1".to_string(), hw_wall.clone());
+        c.constructions
+            .insert("z_sun/sunspace/wall_3".to_string(), hw_wall);
+        c.constructions
+            .insert("z_sun/sunspace/floor".to_string(), hw_floor);
+
+        // Both zones: lightweight roof
+        c.constructions.insert("ceiling".to_string(), lt_roof);
+        // Windows (only on sunspace south wall)
+        c.constructions.insert("window".to_string(), window);
+
+        // Common wall (partition): concrete block
+        // Thickness: 0.200 m, k = 0.510 W/(mK), c = 1000 J/(kgK), rho = 1400 kg/m³
+        let partition = WallConstruction::new(
+            "COMMON_WALL",
+            vec![Layer {
+                name: "CONCRETE BLOCK".to_string(),
+                thickness: 0.200,
+                conductivity: 0.510,
+                density: 1400.0,
+                specific_heat: 1000.0,
+            }],
+        );
+        c.constructions.insert("common_wall".to_string(), partition);
+
+        // Ground-coupled floors
+        c.ground_temperature_c = Some(10.0);
+
+        c
+    };
+
+    for spec in &suite {
         // Select geometry.
         let building = match spec.geometry_kind {
             South => &building_south,
             EastWest => &building_ew,
+            Sunspace => &building_960,
         };
         let base_cfg = match spec.geometry_kind {
             South => &base_cfg_south,
             EastWest => &base_cfg_ew,
+            Sunspace => &base_cfg_960,
         };
 
-        // Apply heavyweight constructions.
+        // Apply heavyweight constructions (skip for Sunspace; base_cfg_960 is pre-configured).
         let mut cfg = base_cfg.clone();
-        if spec.mass_kind == Heavy {
+        if spec.mass_kind == Heavy && spec.geometry_kind != Sunspace {
             let (wall, roof, floor, window) = bestest_900_constructions();
             cfg.constructions.insert("window".to_string(), window);
             cfg.constructions.insert("ceiling".to_string(), roof);
@@ -1511,12 +1745,23 @@ fn main() -> Result<()> {
             }
         }
 
+        // Per-zone HVAC for Case 960: z_back (idx 0) conditioned, z_sun (idx 1) free-float.
+        let per_zone_hvac = if spec.geometry_kind == Sunspace {
+            Some(vec![
+                HvacIdealLoads::with_setpoints(20.0, 27.0), // z_back: conditioned
+                HvacIdealLoads::with_setpoints(-999.0, 999.0), // z_sun: free-float
+            ])
+        } else {
+            None
+        };
+
         let options = TransientSimulationOptions {
             warmup_hours: warmup_days.saturating_mul(24),
             substeps_per_hour,
             hourly_heating_setpoint,
             hourly_cooling_setpoint,
             hourly_infiltration_ach,
+            per_zone_hvac,
         };
 
         let solar = if spec.solar {
@@ -1578,6 +1823,16 @@ fn main() -> Result<()> {
                 );
             }
             println!();
+
+            // For Case 960, also show sunspace free-float temperature range.
+            if spec.geometry_kind == Sunspace && annual.num_zones >= 2 {
+                let sun_min = annual.per_zone_min_temp_c.get(1).copied().unwrap_or(0.0);
+                let sun_max = annual.per_zone_max_temp_c.get(1).copied().unwrap_or(0.0);
+                println!(
+                    "             sunspace: Tmin={:7.2} C, Tmax={:7.2} C",
+                    sun_min, sun_max
+                );
+            }
 
             if spec.solar {
                 if let Ok(diag) =
