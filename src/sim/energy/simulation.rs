@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::Building;
 
@@ -16,13 +16,15 @@ use super::hvac::{
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
 use super::solar_bridge::{
-    SolarGainConfig, SolarHourParams, TransmittedSolarSplit,
-    compute_solar_gains_per_zone_with_materials, compute_solar_gains_with_materials,
+    GlazingTransmission, SolarGainConfig, SolarHourParams, TransmittedSolarSplit,
+    compute_glazing_transmissions_with_materials, compute_solar_gains_per_zone_with_materials,
+    compute_solar_gains_with_materials,
 };
 use super::view_factors::SurfaceHandle;
 use super::weather::WeatherData;
 use super::zone::calculate_heat_balance_with_boundaries;
 use crate::UID;
+use crate::sim::engine::FlatScene;
 use crate::sim::lighting::solar::SolarPosition;
 
 #[cfg(test)]
@@ -160,6 +162,165 @@ fn steady_surface_interior_temp_c(
     }
     let ratio = surface.u_value_w_per_m2_k / denom;
     t_air_c - ratio * (t_air_c - t_out_c)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn distribute_transmitted_solar_geometric_fvm(
+    transmissions: &[GlazingTransmission],
+    fvm_walls: &[FvmExteriorWall],
+    wall_centroids_by_uid: &HashMap<UID, crate::Point>,
+    scene: &FlatScene,
+    scene_uid_by_index: &[UID],
+    sun_dir: crate::Vector,
+    use_beam_distribution: bool,
+    interior_solar_absorptance: f64,
+    route_diffuse_to_air: bool,
+) -> (HashMap<UID, f64>, f64) {
+    let mut wall_sources_w: HashMap<UID, f64> = HashMap::new();
+    let mut air_residual_w = 0.0_f64;
+    if transmissions.is_empty() || fvm_walls.is_empty() {
+        return (wall_sources_w, air_residual_w);
+    }
+
+    let alpha = interior_solar_absorptance.clamp(0.0, 1.0);
+
+    let mut area_by_uid: HashMap<UID, f64> = HashMap::new();
+    let mut zone_by_uid: HashMap<UID, UID> = HashMap::new();
+    let mut candidates_by_zone_uid: HashMap<UID, Vec<UID>> = HashMap::new();
+    for w in fvm_walls {
+        if w.area_m2 <= 0.0 {
+            continue;
+        }
+        area_by_uid.insert(w.polygon_uid.clone(), w.area_m2);
+        zone_by_uid.insert(w.polygon_uid.clone(), w.zone_uid.clone());
+        candidates_by_zone_uid
+            .entry(w.zone_uid.clone())
+            .or_default()
+            .push(w.polygon_uid.clone());
+    }
+
+    for src in transmissions {
+        let mut diffuse_pool_w = src.diffuse_w.max(0.0);
+
+        // Move source slightly into the zone to avoid immediate self-hit.
+        let inward = crate::Vector::new(
+            -src.outward_normal.dx,
+            -src.outward_normal.dy,
+            -src.outward_normal.dz,
+        )
+        .normalize()
+        .unwrap_or(crate::Vector::new(0.0, 0.0, -1.0));
+        let source_pt = src.centroid + inward * 1e-3;
+
+        if use_beam_distribution && src.beam_w > 0.0 {
+            let beam_w = src.beam_w.max(0.0);
+            let ray_dir = crate::Vector::new(-sun_dir.dx, -sun_dir.dy, -sun_dir.dz);
+            if let Ok(ray_dir) = ray_dir.normalize() {
+                if let Some((hit_idx, _)) = scene.find_target_surface_global(source_pt, ray_dir) {
+                    if let Some(hit_uid) = scene_uid_by_index.get(hit_idx)
+                        && area_by_uid.contains_key(hit_uid)
+                        && zone_by_uid.get(hit_uid) == Some(&src.zone_uid)
+                    {
+                        let absorbed = alpha * beam_w;
+                        if absorbed > 0.0 {
+                            *wall_sources_w.entry(hit_uid.clone()).or_insert(0.0) += absorbed;
+                        }
+                        diffuse_pool_w += (1.0 - alpha) * beam_w;
+                    } else {
+                        diffuse_pool_w += beam_w;
+                    }
+                } else {
+                    diffuse_pool_w += beam_w;
+                }
+            } else {
+                diffuse_pool_w += beam_w;
+            }
+        } else {
+            diffuse_pool_w += src.beam_w.max(0.0);
+        }
+
+        if diffuse_pool_w <= 0.0 {
+            continue;
+        }
+        if route_diffuse_to_air {
+            air_residual_w += diffuse_pool_w;
+            continue;
+        }
+
+        let Some(candidates) = candidates_by_zone_uid.get(&src.zone_uid) else {
+            air_residual_w += diffuse_pool_w;
+            continue;
+        };
+
+        let mut weights: Vec<(UID, f64)> = Vec::new();
+        for uid in candidates {
+            let Some(&target_pt) = wall_centroids_by_uid.get(uid) else {
+                continue;
+            };
+            let to_target = crate::Vector::new(
+                target_pt.x - source_pt.x,
+                target_pt.y - source_pt.y,
+                target_pt.z - source_pt.z,
+            );
+            let dist_m = to_target.length();
+            if dist_m <= 1e-6 {
+                continue;
+            }
+            let Ok(ray_dir) = to_target.normalize() else {
+                continue;
+            };
+            let Some((hit_idx, _)) = scene.find_target_surface_global(source_pt, ray_dir) else {
+                continue;
+            };
+            let Some(hit_uid) = scene_uid_by_index.get(hit_idx) else {
+                continue;
+            };
+            if hit_uid != uid {
+                continue;
+            }
+
+            let area_m2 = area_by_uid.get(uid).copied().unwrap_or(0.0);
+            if area_m2 <= 0.0 {
+                continue;
+            }
+            let weight = area_m2 / dist_m.max(0.5).powi(2);
+            if weight > 0.0 {
+                weights.push((uid.clone(), weight));
+            }
+        }
+
+        if weights.is_empty() {
+            // Fallback: zone-local area-proportional split.
+            let area_sum: f64 = candidates
+                .iter()
+                .map(|uid| area_by_uid.get(uid).copied().unwrap_or(0.0))
+                .sum();
+            if area_sum > 0.0 {
+                for uid in candidates {
+                    let a = area_by_uid.get(uid).copied().unwrap_or(0.0);
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    *wall_sources_w.entry(uid.clone()).or_insert(0.0) +=
+                        diffuse_pool_w * (a / area_sum);
+                }
+            } else {
+                air_residual_w += diffuse_pool_w;
+            }
+            continue;
+        }
+
+        let w_sum: f64 = weights.iter().map(|(_, w)| *w).sum();
+        if w_sum > 0.0 {
+            for (uid, w) in weights {
+                *wall_sources_w.entry(uid).or_insert(0.0) += diffuse_pool_w * (w / w_sum);
+            }
+        } else {
+            air_residual_w += diffuse_pool_w;
+        }
+    }
+
+    (wall_sources_w, air_residual_w)
 }
 
 fn is_ground_coupled_exterior_surface(
@@ -392,6 +553,7 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
     solar_config: Option<&SolarGainConfig>,
     params: Option<&SolarHourParams>,
     interior_surface_sources_w_by_zone_uid: Option<&std::collections::HashMap<UID, f64>>,
+    interior_surface_sources_w_by_polygon_uid: Option<&HashMap<UID, f64>>,
     floor_beam_sources_w_by_zone_uid: Option<&std::collections::HashMap<UID, f64>>,
     outdoor_temp_c: f64,
     wind_speed: f64,
@@ -598,6 +760,13 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
         }
 
         let mut interior_source_flux_w_per_m2 = 0.0;
+        if let Some(src) = interior_surface_sources_w_by_polygon_uid
+            && let Some(&w_src) = src.get(&w.polygon_uid)
+            && w_src != 0.0
+            && w.area_m2 > 0.0
+        {
+            interior_source_flux_w_per_m2 += w_src / w.area_m2;
+        }
         if let Some(src) = interior_surface_sources_w_by_zone_uid
             && let Some(&w_total) = src.get(&w.zone_uid)
             && w_total != 0.0
@@ -1394,6 +1563,24 @@ pub fn run_transient_simulation_with_options(
             .or_insert(0.0) += m.area_m2;
     }
 
+    // Geometry cache for interior shortwave distribution.
+    let mut fvm_wall_centroids_by_uid: HashMap<UID, crate::Point> = HashMap::new();
+    for w in &fvm_walls {
+        if let Some(poly) = building.get_polygon(&w.path) {
+            fvm_wall_centroids_by_uid.insert(w.polygon_uid.clone(), poly.centroid());
+        }
+    }
+    let interior_solar_scene = if has_fvm_walls && base_config.use_surface_aware_solar_distribution
+    {
+        Some(FlatScene::new(building, 2.0, true))
+    } else {
+        None
+    };
+    let interior_solar_scene_uid_by_index: Vec<UID> = interior_solar_scene
+        .as_ref()
+        .map(|scene| scene.polygons.iter().map(|p| p.uid.clone()).collect())
+        .unwrap_or_default();
+
     let num_hours = weather.num_hours();
     let mut hourly_heating = Vec::with_capacity(num_hours);
     let mut hourly_cooling = Vec::with_capacity(num_hours);
@@ -1747,6 +1934,7 @@ pub fn run_transient_simulation_with_options(
             .unwrap_or(base_config.internal_gains);
         let mut solar_params: Option<SolarHourParams> = None;
         let mut transmitted_split = TransmittedSolarSplit::default();
+        let mut glazing_transmissions: Vec<GlazingTransmission> = Vec::new();
         let (solar_transmitted, solar_opaque_sol_air) = match solar_config {
             Some(sc) => {
                 let params = SolarHourParams {
@@ -1763,12 +1951,19 @@ pub fn run_transient_simulation_with_options(
                     timezone: weather.timezone,
                 };
                 solar_params = Some(params);
-                transmitted_split = compute_solar_gains_with_materials(
+                glazing_transmissions = compute_glazing_transmissions_with_materials(
                     building,
                     &params,
                     sc,
                     base_config.material_library.as_ref(),
                 );
+                let mut beam_w = 0.0_f64;
+                let mut diffuse_w = 0.0_f64;
+                for t in &glazing_transmissions {
+                    beam_w += t.beam_w;
+                    diffuse_w += t.diffuse_w;
+                }
+                transmitted_split = TransmittedSolarSplit { beam_w, diffuse_w };
                 let transmitted = transmitted_split.total();
                 let opaque = if sc.include_exterior_opaque_absorption
                     || sc.include_exterior_longwave_exchange
@@ -1813,6 +2008,7 @@ pub fn run_transient_simulation_with_options(
 
         let mut interior_sources_walls_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
             None;
+        let mut interior_sources_walls_w_by_polygon_uid: Option<HashMap<UID, f64>> = None;
         let mut interior_sources_mass_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> =
             None;
         let mut floor_beam_w_by_zone_uid: Option<std::collections::HashMap<UID, f64>> = None;
@@ -1885,46 +2081,91 @@ pub fn run_transient_simulation_with_options(
                     }
                 }
             } else if has_fvm_walls {
-                // No internal mass: all surface sources go to FVM walls.
-                // Beam solar → floor FVM walls (normal.dz <= -0.5).
-                // Diffuse + radiant gains → area-proportional across all FVM walls.
-                //
-                // EnergyPlus-style absorption/reflection model:
-                //   Beam hits floor → α absorbed, (1−α) reflected → pool.
-                //   Pool + diffuse redistributed area-proportionally; with uniform α
-                //   the infinite geometric series sums to: each surface absorbs its
-                //   area-fraction of the pool (independent of α).
-                let alpha = base_config.interior_solar_absorptance;
-                let (solar_beam_to_floor_w, solar_diffuse_surface_w) =
-                    if base_config.use_beam_solar_distribution {
-                        let raw_beam = transmitted_split.beam_w * (1.0 - f_air);
-                        let raw_diffuse = transmitted_split.diffuse_w * (1.0 - f_air);
-                        // First-hit absorption: floor absorbs α of beam
-                        let floor_absorbed = alpha * raw_beam;
-                        // Reflected beam pool redistributed area-proportionally
-                        let reflected_pool = (1.0 - alpha) * raw_beam;
-                        (floor_absorbed, raw_diffuse + reflected_pool)
-                    } else {
-                        (0.0, solar_transmitted_surface_w)
-                    };
+                // No internal mass: distribute radiant internal gains area-proportionally
+                // to FVM walls, and distribute transmitted solar geometrically using
+                // glazing source positions + ray visibility.
+                let mut walls_src_by_polygon_uid: HashMap<UID, f64> = HashMap::new();
 
-                let w_diffuse = gains_surface_w + solar_diffuse_surface_w;
-
-                if let Some(z) = zone_uid_opt.clone() {
-                    if w_diffuse > 0.0 {
-                        if base_config.fvm_wall_solar_to_air {
-                            solar_total_air_w += w_diffuse;
-                        } else {
-                            let mut walls_src = std::collections::HashMap::new();
-                            walls_src.insert(z.clone(), w_diffuse);
-                            interior_sources_walls_w_by_zone_uid = Some(walls_src);
+                if gains_surface_w != 0.0 {
+                    let area_sum: f64 = fvm_walls
+                        .iter()
+                        .filter(|w| w.area_m2 > 0.0)
+                        .map(|w| w.area_m2)
+                        .sum();
+                    if area_sum > 0.0 {
+                        for w in &fvm_walls {
+                            if w.area_m2 <= 0.0 {
+                                continue;
+                            }
+                            *walls_src_by_polygon_uid
+                                .entry(w.polygon_uid.clone())
+                                .or_insert(0.0) += gains_surface_w * (w.area_m2 / area_sum);
                         }
                     }
-                    if solar_beam_to_floor_w > 0.0 {
-                        let mut floor_src = std::collections::HashMap::new();
-                        floor_src.insert(z, solar_beam_to_floor_w);
-                        floor_beam_w_by_zone_uid = Some(floor_src);
+                }
+
+                if solar_transmitted_surface_w > 0.0 {
+                    let solar_pos = solar_params.as_ref().map(|p| {
+                        SolarPosition::calculate_from_local_time(
+                            p.latitude,
+                            p.longitude,
+                            p.timezone,
+                            p.day_of_year,
+                            p.local_time_hours,
+                        )
+                    });
+                    if let (Some(sp), Some(scene)) = (solar_pos, interior_solar_scene.as_ref()) {
+                        let (solar_by_polygon_uid, air_residual_w) =
+                            distribute_transmitted_solar_geometric_fvm(
+                                &glazing_transmissions,
+                                &fvm_walls,
+                                &fvm_wall_centroids_by_uid,
+                                scene,
+                                &interior_solar_scene_uid_by_index,
+                                sp.to_direction(),
+                                base_config.use_beam_solar_distribution,
+                                base_config.interior_solar_absorptance,
+                                base_config.fvm_wall_solar_to_air,
+                            );
+                        for (uid, w_src) in solar_by_polygon_uid {
+                            *walls_src_by_polygon_uid.entry(uid).or_insert(0.0) += w_src;
+                        }
+                        if air_residual_w > 0.0 {
+                            solar_total_air_w += air_residual_w;
+                        }
+                    } else if let Some(z) = zone_uid_opt.clone() {
+                        // Fallback: preserve previous area/floor heuristic if geometry
+                        // inputs are unavailable.
+                        let alpha = base_config.interior_solar_absorptance;
+                        let (solar_beam_to_floor_w, solar_diffuse_surface_w) =
+                            if base_config.use_beam_solar_distribution {
+                                let raw_beam = transmitted_split.beam_w * (1.0 - f_air);
+                                let raw_diffuse = transmitted_split.diffuse_w * (1.0 - f_air);
+                                let floor_absorbed = alpha * raw_beam;
+                                let reflected_pool = (1.0 - alpha) * raw_beam;
+                                (floor_absorbed, raw_diffuse + reflected_pool)
+                            } else {
+                                (0.0, solar_transmitted_surface_w)
+                            };
+                        if solar_diffuse_surface_w > 0.0 {
+                            if base_config.fvm_wall_solar_to_air {
+                                solar_total_air_w += solar_diffuse_surface_w;
+                            } else {
+                                let mut walls_src = std::collections::HashMap::new();
+                                walls_src.insert(z.clone(), solar_diffuse_surface_w);
+                                interior_sources_walls_w_by_zone_uid = Some(walls_src);
+                            }
+                        }
+                        if solar_beam_to_floor_w > 0.0 {
+                            let mut floor_src = std::collections::HashMap::new();
+                            floor_src.insert(z, solar_beam_to_floor_w);
+                            floor_beam_w_by_zone_uid = Some(floor_src);
+                        }
                     }
+                }
+
+                if !walls_src_by_polygon_uid.is_empty() {
+                    interior_sources_walls_w_by_polygon_uid = Some(walls_src_by_polygon_uid);
                 }
             }
         }
@@ -2074,6 +2315,7 @@ pub fn run_transient_simulation_with_options(
                         solar_config,
                         solar_params.as_ref(),
                         interior_sources_walls_w_by_zone_uid.as_ref(),
+                        interior_sources_walls_w_by_polygon_uid.as_ref(),
                         floor_beam_w_by_zone_uid.as_ref(),
                         record.dry_bulb_temperature,
                         record.wind_speed,
@@ -2509,6 +2751,11 @@ pub fn run_transient_simulation_with_options(
 
                     // Interior surface source (transmitted solar + radiant gains)
                     let mut int_source_w = 0.0;
+                    if let Some(ref src) = interior_sources_walls_w_by_polygon_uid
+                        && let Some(&w_src) = src.get(&w.polygon_uid)
+                    {
+                        int_source_w += w_src;
+                    }
                     if let Some(ref src) = interior_sources_walls_w_by_zone_uid
                         && let Some(&w_total) = src.get(&w.zone_uid)
                     {
@@ -2834,6 +3081,7 @@ pub fn run_transient_simulation_with_options(
                         solar_config,
                         solar_params.as_ref(),
                         interior_sources_walls_w_by_zone_uid.as_ref(),
+                        interior_sources_walls_w_by_polygon_uid.as_ref(),
                         floor_beam_w_by_zone_uid.as_ref(),
                         record.dry_bulb_temperature,
                         record.wind_speed,
@@ -2892,6 +3140,7 @@ pub fn run_transient_simulation_with_options(
                             solar_config,
                             solar_params.as_ref(),
                             interior_sources_walls_w_by_zone_uid.as_ref(),
+                            interior_sources_walls_w_by_polygon_uid.as_ref(),
                             floor_beam_w_by_zone_uid.as_ref(),
                             record.dry_bulb_temperature,
                             record.wind_speed,
@@ -3152,6 +3401,7 @@ pub fn run_multizone_transient_simulation(
                 base_config,
                 solar_config,
                 solar_params.as_ref(),
+                None,
                 None,
                 None,
                 record.dry_bulb_temperature,
@@ -4248,6 +4498,7 @@ mod tests {
             Some(&params),
             None,
             None,
+            None,
             0.0,
             0.0,
             |_| 20.0,
@@ -4263,6 +4514,7 @@ mod tests {
             &config,
             Some(&solar_with_tilt),
             Some(&params),
+            None,
             None,
             None,
             0.0,

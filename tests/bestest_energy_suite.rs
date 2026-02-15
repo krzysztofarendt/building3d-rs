@@ -3,7 +3,7 @@ use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
-    run_transient_simulation, run_transient_simulation_with_options, TransientSimulationOptions,
+    TransientSimulationOptions, run_transient_simulation, run_transient_simulation_with_options,
 };
 use building3d::sim::energy::solar_bridge::SolarGainConfig;
 use building3d::sim::energy::weather::WeatherData;
@@ -457,9 +457,10 @@ fn test_bestest_600_epw_reference_within_tolerance_if_present() {
     // - no VF radiation
     // - no global FVM solve
     // - no iterative surface balance
-    // Values captured from this code path against Boston TMY3.
-    let baseline_heating_kwh = 4548.631;
-    let baseline_cooling_kwh = 4892.464;
+    // Values captured from this code path (with geometric interior solar deposition)
+    // against Boston TMY3.
+    let baseline_heating_kwh = 4591.748;
+    let baseline_cooling_kwh = 4914.488;
 
     let building = build_bestest_600_geometry();
     let cfg = make_cfg_600(&building);
@@ -510,9 +511,10 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     // - no VF radiation
     // - no global FVM solve
     // - no iterative surface balance
-    // Values captured from this code path against Boston TMY3.
-    let baseline_heating_kwh = 3061.315;
-    let baseline_cooling_kwh = 2907.164;
+    // Values captured from this code path (with geometric interior solar deposition)
+    // against Boston TMY3.
+    let baseline_heating_kwh = 3168.157;
+    let baseline_cooling_kwh = 2953.968;
 
     let building = build_bestest_600_geometry();
     let cfg = make_cfg_900(&building);

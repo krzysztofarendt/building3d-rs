@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use crate::Building;
 use crate::sim::lighting::solar::SolarPosition;
 use crate::sim::materials::MaterialLibrary;
+use crate::{Building, Point, UID, Vector};
 
 /// Default Solar Heat Gain Coefficient for glazing.
 const DEFAULT_SHGC: f64 = 0.6;
@@ -155,8 +155,12 @@ pub fn angular_transmittance_modifier(cos_incidence: f64, config: &SolarGainConf
     }
     if let Some(c) = &config.angular_shgc_coefficients {
         let x = cos_incidence;
-        let val = c[0] + c[1] * x + c[2] * x * x + c[3] * x * x * x
-            + c[4] * x * x * x * x + c[5] * x * x * x * x * x;
+        let val = c[0]
+            + c[1] * x
+            + c[2] * x * x
+            + c[3] * x * x * x
+            + c[4] * x * x * x * x
+            + c[5] * x * x * x * x * x;
         val.clamp(0.0, 1.0)
     } else if config.include_incidence_angle_modifier {
         let a = config.incidence_angle_modifier_a.max(0.0);
@@ -180,6 +184,25 @@ impl TransmittedSolarSplit {
     pub fn total(&self) -> f64 {
         self.beam_w + self.diffuse_w
     }
+}
+
+/// Per-glazing transmitted solar contribution for one timestep.
+#[derive(Debug, Clone)]
+pub struct GlazingTransmission {
+    /// Zone UID containing the glazing polygon.
+    pub zone_uid: UID,
+    /// Glazing polygon UID.
+    pub polygon_uid: UID,
+    /// Polygon outward normal.
+    pub outward_normal: Vector,
+    /// Polygon centroid.
+    pub centroid: Point,
+    /// Polygon area [m²].
+    pub area_m2: f64,
+    /// Transmitted direct (beam) power [W].
+    pub beam_w: f64,
+    /// Transmitted diffuse power [W].
+    pub diffuse_w: f64,
 }
 
 /// Parameters describing the solar conditions for a single hour.
@@ -255,83 +278,27 @@ pub fn compute_solar_gains_with_materials(
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
 ) -> TransmittedSolarSplit {
-    let solar_pos = SolarPosition::calculate_from_local_time(
-        params.latitude,
-        params.longitude,
-        params.timezone,
-        params.day_of_year,
-        params.local_time_hours,
-    );
-    let sun_above = solar_pos.is_above_horizon();
-    let sun_dir = solar_pos.to_direction();
-    let mut total_beam = 0.0;
-    let mut total_diffuse = 0.0;
-
-    let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
-    let use_ground = config.include_ground_reflection && rho_g > 0.0;
-
-    let iam_diffuse = angular_transmittance_modifier(0.5, config); // cos(60°)
-
-    for zone in building.zones() {
-        for solid in zone.solids() {
-            for wall in solid.walls() {
-                for polygon in wall.polygons() {
-                    let path = format!(
-                        "{}/{}/{}/{}",
-                        zone.name, solid.name, wall.name, polygon.name
-                    );
-                    if let Some(shgc) = config.resolve_shgc(&path, material_library) {
-                        let normal = polygon.vn;
-                        let area = polygon.area();
-
-                        // Diffuse sky component: isotropic view factor (0.5 for vertical, 1.0 for horizontal up).
-                        let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
-                        let mut incident_diffuse =
-                            params.diffuse_horizontal_irradiance.max(0.0) * sky_view * iam_diffuse;
-
-                        // Ground reflected component: simple view factor approximation.
-                        if use_ground {
-                            let ground_view = 0.5 * (1.0 - normal.dz.clamp(-1.0, 1.0));
-                            incident_diffuse += params.global_horizontal_irradiance.max(0.0)
-                                * rho_g
-                                * ground_view
-                                * iam_diffuse;
-                        }
-
-                        // Direct beam component.
-                        let mut incident_direct = 0.0;
-                        if sun_above && params.direct_normal_irradiance > 0.0 {
-                            let cos_incidence = sun_dir.dot(&normal).max(0.0);
-                            if cos_incidence > 0.0 {
-                                let mut i =
-                                    params.direct_normal_irradiance.max(0.0) * cos_incidence;
-                                i *= angular_transmittance_modifier(cos_incidence, config);
-                                incident_direct = i;
-                            }
-                        }
-
-                        total_beam += incident_direct * area * shgc;
-                        total_diffuse += incident_diffuse * area * shgc;
-                    }
-                }
-            }
-        }
+    let mut total_beam = 0.0_f64;
+    let mut total_diffuse = 0.0_f64;
+    for t in
+        compute_glazing_transmissions_with_materials(building, params, config, material_library)
+    {
+        total_beam += t.beam_w;
+        total_diffuse += t.diffuse_w;
     }
-
     TransmittedSolarSplit {
         beam_w: total_beam,
         diffuse_w: total_diffuse,
     }
 }
 
-/// Like [`compute_solar_gains_per_zone`], but also accepts a material library for
-/// `is_glazing`-based surface identification.
-pub fn compute_solar_gains_per_zone_with_materials(
+/// Computes per-glazing transmitted solar contributions.
+pub fn compute_glazing_transmissions_with_materials(
     building: &Building,
     params: &SolarHourParams,
     config: &SolarGainConfig,
     material_library: Option<&MaterialLibrary>,
-) -> HashMap<crate::UID, f64> {
+) -> Vec<GlazingTransmission> {
     let solar_pos = SolarPosition::calculate_from_local_time(
         params.latitude,
         params.longitude,
@@ -341,15 +308,13 @@ pub fn compute_solar_gains_per_zone_with_materials(
     );
     let sun_above = solar_pos.is_above_horizon();
     let sun_dir = solar_pos.to_direction();
-    let mut gains: HashMap<crate::UID, f64> = HashMap::new();
+    let mut transmissions = Vec::new();
 
     let rho_g = config.ground_reflectance.clamp(0.0, 1.0);
     let use_ground = config.include_ground_reflection && rho_g > 0.0;
-
     let iam_diffuse = angular_transmittance_modifier(0.5, config); // cos(60°)
 
     for zone in building.zones() {
-        let mut zone_gains = 0.0;
         for solid in zone.solids() {
             for wall in solid.walls() {
                 for polygon in wall.polygons() {
@@ -365,11 +330,14 @@ pub fn compute_solar_gains_per_zone_with_materials(
                     if area <= 0.0 {
                         continue;
                     }
-
                     let normal = polygon.vn;
+
+                    // Diffuse sky component: isotropic view factor.
                     let sky_view = 0.5 * (1.0 + normal.dz.max(0.0));
                     let mut incident_diffuse =
                         params.diffuse_horizontal_irradiance.max(0.0) * sky_view * iam_diffuse;
+
+                    // Ground reflected component: simple view factor approximation.
                     if use_ground {
                         let ground_view = 0.5 * (1.0 - normal.dz.clamp(-1.0, 1.0));
                         incident_diffuse += params.global_horizontal_irradiance.max(0.0)
@@ -378,6 +346,7 @@ pub fn compute_solar_gains_per_zone_with_materials(
                             * iam_diffuse;
                     }
 
+                    // Direct beam component.
                     let mut incident_direct = 0.0;
                     if sun_above && params.direct_normal_irradiance > 0.0 {
                         let cos_incidence = sun_dir.dot(&normal).max(0.0);
@@ -388,13 +357,42 @@ pub fn compute_solar_gains_per_zone_with_materials(
                         }
                     }
 
-                    zone_gains += (incident_direct + incident_diffuse) * area * shgc;
+                    let beam_w = incident_direct * area * shgc;
+                    let diffuse_w = incident_diffuse * area * shgc;
+                    if beam_w <= 0.0 && diffuse_w <= 0.0 {
+                        continue;
+                    }
+
+                    transmissions.push(GlazingTransmission {
+                        zone_uid: zone.uid.clone(),
+                        polygon_uid: polygon.uid.clone(),
+                        outward_normal: normal,
+                        centroid: polygon.centroid(),
+                        area_m2: area,
+                        beam_w,
+                        diffuse_w,
+                    });
                 }
             }
         }
-        if zone_gains != 0.0 {
-            gains.insert(zone.uid.clone(), zone_gains);
-        }
+    }
+
+    transmissions
+}
+
+/// Like [`compute_solar_gains_per_zone`], but also accepts a material library for
+/// `is_glazing`-based surface identification.
+pub fn compute_solar_gains_per_zone_with_materials(
+    building: &Building,
+    params: &SolarHourParams,
+    config: &SolarGainConfig,
+    material_library: Option<&MaterialLibrary>,
+) -> HashMap<crate::UID, f64> {
+    let mut gains: HashMap<crate::UID, f64> = HashMap::new();
+    for t in
+        compute_glazing_transmissions_with_materials(building, params, config, material_library)
+    {
+        *gains.entry(t.zone_uid).or_insert(0.0) += t.beam_w + t.diffuse_w;
     }
 
     gains
