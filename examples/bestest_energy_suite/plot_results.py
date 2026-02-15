@@ -381,7 +381,7 @@ def main():
     print(f"Read {len(rows)} rows from {csv_path}")
 
     cases_600 = ["600", "610", "620", "630", "640", "650"]
-    cases_900 = ["900", "910", "920", "930", "940", "950"]
+    cases_900 = ["900", "910", "920", "930", "940", "950", "960"]
     cases_ff = ["600FF", "650FF", "900FF", "950FF"]
 
     # 1-2. Annual loads by series (2-panel each)
@@ -402,7 +402,7 @@ def main():
 
     # 6-7. Monthly profiles (cases with and without reference)
     for case in ["600", "900", "610", "620", "630", "640", "650",
-                 "910", "920", "930", "940", "950"]:
+                 "910", "920", "930", "940", "950", "960"]:
         plot_monthly(rows, case, out_dir / f"bestest_{case}_monthly.png")
 
     print("Done.")
