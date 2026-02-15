@@ -2,10 +2,30 @@
 
 ## Scope
 
-This repository currently tracks a BESTEST-inspired regression subset:
-- Case 600 (light mass)
-- Case 900 (heavy mass)
-- Diagnostic variants: `600_no_solar`, `900_no_solar`
+This repository tracks BESTEST ASHRAE 140 cases:
+
+**600-series (lightweight construction):**
+- 600 - Base case, south windows
+- 610 - South windows + overhang shading
+- 620 - East/west windows (no south)
+- 630 - East/west windows + overhang + fins shading
+- 640 - South windows, thermostat setback schedule
+- 650 - South windows, night ventilation schedule
+- 600FF - Free-float (no HVAC)
+- 650FF - Free-float with night ventilation
+
+**900-series (heavyweight construction):**
+- 900 - Base case, south windows
+- 910 - South windows + overhang shading
+- 920 - East/west windows (no south)
+- 930 - East/west windows + overhang + fins shading
+- 940 - South windows, thermostat setback schedule
+- 950 - South windows, night ventilation schedule
+- 900FF - Free-float (no HVAC)
+- 950FF - Free-float with night ventilation
+
+**Not yet implemented:**
+- 960 - Two-zone sunspace (multi-zone geometry, skipped)
 
 Weather source for regression runs:
 - Boston Logan TMY3 EPW (same EPW used by the local OpenStudio/EnergyPlus reference extraction)
@@ -21,7 +41,7 @@ Only two transient runtime modes are supported:
 
 Legacy simplified transient runtime code is removed. Historical behavior is documented in `LEGACY_SIMULATION.md`.
 
-## Current Annual Results Snapshot
+## Current Annual Results Snapshot (Base Cases 600/900)
 
 Reference annual values (OpenStudio/E+):
 - 600: heating `4324.8`, cooling `6044.1` kWh
@@ -36,6 +56,8 @@ building3d current modes:
 
 Default recommendation:
 - Use `VF=0` for best overall annual agreement across the 600/900 pair.
+
+All 16 implemented cases (610-950, FF variants) have E+ reference values and are exercised by the suite runner. Run `bestest_energy_suite` for full results CSV including all cases.
 
 ## Why Differences vs EnergyPlus Remain
 

@@ -55,16 +55,37 @@ fn main() -> anyhow::Result<()> {
 Run examples (visualization requires a Rerun viewer running at `localhost:9876`):
 
 ```bash
+# Geometry / visualization
 cargo run --example draw_faces
 cargo run --example draw_many
 cargo run --example draw_shapes
+cargo run --example draw_delaunay
+cargo run --example draw_delaunay_refined
 cargo run --example floor_plan
+
+# Ray tracing
 cargo run --example ray_2_boxes
 cargo run --example ray_teapot
 cargo run --example bench_teapot
+
+# Simulation
 cargo run --example sim_acoustics
 cargo run --example sim_lighting
+cargo run --example sim_lighting_heatmap
 cargo run --example sim_energy
+cargo run --example sim_fvm_wall
+cargo run --example sim_fvm_wall_viz
+cargo run --example sim_fvm_3d
+
+# Pipelines (composed simulation modules)
+cargo run --example pipeline_solar_energy
+cargo run --example pipeline_weather_shaded_energy
+
+# Validation
+cargo run --example bestest_600_energy
+cargo run --example bestest_900_energy
+cargo run --example bestest_energy_suite
+cargo run --example bras_cr2
 ```
 
 ## I/O

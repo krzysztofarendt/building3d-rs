@@ -18,6 +18,7 @@ Legacy simplified transient runtime code paths were removed. Historical notes ar
 ## Implemented FVM Stack
 
 `src/sim/heat_transfer/`:
+- `mesh.rs`: `FvmCell`, `FvmFace`, `FvmMesh` core mesh types
 - `mesh_1d.rs`: layered wall -> 1D FVM mesh
 - `solver.rs`: implicit tridiagonal wall solver (Thomas)
 - `mesh_3d.rs`, `solver_sparse.rs`: generic APIs (not primary BESTEST runtime path)

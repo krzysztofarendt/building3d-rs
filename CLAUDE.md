@@ -18,6 +18,8 @@ cargo test <test_name>
 cargo run --example draw_faces
 cargo run --example draw_many
 cargo run --example draw_shapes
+cargo run --example draw_delaunay
+cargo run --example draw_delaunay_refined
 cargo run --example floor_plan
 cargo run --example ray_2_boxes
 cargo run --example ray_teapot
@@ -28,7 +30,9 @@ cargo run --example sim_lighting_heatmap
 cargo run --example sim_energy
 cargo run --example sim_fvm_wall
 cargo run --example sim_fvm_wall_viz
+cargo run --example sim_fvm_3d
 cargo run --example bestest_600_energy
+cargo run --example bestest_900_energy
 cargo run --example bestest_energy_suite
 cargo run --example bras_cr2
 cargo run --example pipeline_solar_energy
@@ -211,6 +215,7 @@ Uses Rerun (localhost:9876). `RerunConfig` controls session name, entity prefix,
 ```
 src/
 ├── lib.rs              # Public API
+├── main.rs             # Demo binary
 ├── uid.rs              # UUID wrapper
 ├── name.rs             # Naming traits
 ├── vecutils.rs         # Array utilities (min, max, roll, flip)
@@ -234,7 +239,8 @@ src/
 │   ├── mesh/
 │   │   ├── mod.rs      # Mesh struct + HasMesh trait
 │   │   ├── quality.rs  # analyze_triangle(), analyze_mesh()
-│   │   └── tetrahedralize.rs  # tetrahedralize_centroid()
+│   │   ├── tetrahedralize.rs  # tetrahedralize_centroid()
+│   │   └── delaunay.rs # Delaunay tetrahedralization
 │   ├── projection.rs   # PlaneBasis for 3D ↔ 2D projection
 │   ├── segment.rs      # Line segment operations, intersections
 │   ├── triangles.rs    # Ear-clipping triangulation
@@ -286,12 +292,24 @@ src/
 │   │   ├── solar.rs    # SolarPosition
 │   │   ├── backward.rs # BackwardTracer
 │   │   └── result.rs   # LightingResult (UID-keyed)
+│   ├── heat_transfer/  # FVM heat transfer solvers
+│   │   ├── mod.rs      # Re-exports BoundaryCondition, FvmCell, FvmMesh, solvers
+│   │   ├── boundary.rs # BoundaryCondition types
+│   │   ├── mesh.rs     # FvmCell, FvmFace, FvmMesh
+│   │   ├── mesh_1d.rs  # build_1d_mesh() for layered walls
+│   │   ├── mesh_3d.rs  # build_3d_mesh(), CellThermalProperties
+│   │   ├── solver.rs   # FvmWallSolver, implicit tridiagonal (Thomas)
+│   │   └── solver_sparse.rs # FvmSparseSolver, SparseSolverConfig
 │   └── energy/
 │       ├── config.rs   # ThermalConfig
 │       ├── simulation.rs   # run_annual_simulation(), AnnualResult
 │       ├── module.rs   # EnergyModule, EnergyModuleConfig (SimModule wrapper)
 │       ├── boundary.rs # Re-exports SurfaceSemantics as ThermalBoundaries
 │       ├── construction.rs # WallConstruction, layer presets
+│       ├── convection.rs   # Convection coefficient models (TARP/Fixed)
+│       ├── global_solve.rs # Global coupled FVM + air node assembly
+│       ├── shading.rs  # Geometric shading calculations
+│       ├── view_factors.rs # Monte Carlo view factors, ScriptF exchange factors
 │       ├── weather.rs  # WeatherData, EPW parser
 │       ├── weather_module.rs # WeatherModule (publishes weather to Bus)
 │       ├── schedule.rs # InternalGainsProfile
@@ -328,6 +346,7 @@ src/
 - **Polygon intersection**: Sutherland-Hodgman clipping in `polygon/boolean.rs`
 - **Visibility**: Ray-polygon intersection tests in `visibility.rs`
 - **Tetrahedralization**: Centroid-based decomposition in `mesh/tetrahedralize.rs`
+- **Delaunay tetrahedralization**: Bowyer-Watson algorithm in `mesh/delaunay.rs`
 - **Acoustic ray tracing**: Time-stepped ray propagation with absorption/reflection in `sim/rays/`
 - **Reverberation time**: Schroeder backward integration in `sim/acoustics/metrics.rs`
 - **Forward lighting**: RGB ray tracing with bounce accumulation in `sim/lighting/`

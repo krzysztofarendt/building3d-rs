@@ -4,9 +4,9 @@
 - Export to OBJ: https://fegemo.github.io/cefet-cg/attachments/obj-spec.pdf
 - Polygon slice extrusion
 - Predefined wedge geometry
-- Ray-tracing for light
-- Extend ray-tracing to sound (scattering, diffraction)
-- Finite/Control Volume Method for energy simulation
+- ~~Ray-tracing for light~~ (done: `sim/lighting/`)
+- ~~Extend ray-tracing to sound (scattering, diffraction)~~ (done: `sim/acoustics/`, `sim/rays/`)
+- ~~Finite/Control Volume Method for energy simulation~~ (done: `sim/heat_transfer/`, `sim/energy/`)
 - Export mesh to VTK format to enable convertions with meshio:
   https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf
 
