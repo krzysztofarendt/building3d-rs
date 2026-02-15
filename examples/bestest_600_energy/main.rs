@@ -385,6 +385,7 @@ fn base_options() -> TransientSimulationOptions {
     TransientSimulationOptions {
         warmup_hours: warmup_days.saturating_mul(24),
         substeps_per_hour,
+        ..Default::default()
     }
 }
 

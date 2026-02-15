@@ -4,6 +4,8 @@ use crate::sim::lighting::solar::SolarPosition;
 use crate::sim::materials::MaterialLibrary;
 use crate::{Building, Point, UID, Vector};
 
+use super::shading::{FinGeometry, OverhangGeometry};
+
 /// Default Solar Heat Gain Coefficient for glazing.
 const DEFAULT_SHGC: f64 = 0.6;
 const DEFAULT_OPAQUE_ABSORPTANCE: f64 = 0.7;
@@ -66,6 +68,23 @@ pub struct SolarGainConfig {
     /// When `Some`, overrides the ASHRAE IAM modifier.
     /// Coefficients should sum to 1.0 (normalization at theta=0).
     pub angular_shgc_coefficients: Option<[f64; 6]>,
+    /// Per-window-pattern shading devices. Key is a substring pattern matched
+    /// against the polygon path. The shading factor multiplies only the beam
+    /// component; diffuse is unaffected.
+    pub window_shading: HashMap<String, WindowShading>,
+}
+
+/// Shading devices (overhang and/or side fins) associated with a window.
+#[derive(Debug, Clone)]
+pub struct WindowShading {
+    /// Optional overhang above the window.
+    pub overhang: Option<OverhangGeometry>,
+    /// Optional left side fin.
+    pub fin_left: Option<FinGeometry>,
+    /// Optional right side fin.
+    pub fin_right: Option<FinGeometry>,
+    /// Outward normal azimuth of the wall containing this window [degrees from north, clockwise].
+    pub surface_azimuth_deg: f64,
 }
 
 impl SolarGainConfig {
@@ -94,6 +113,7 @@ impl SolarGainConfig {
             h_out_wind_coeff_w_per_m2_k_per_m_s: 4.0,
             h_out_tilt_scale: 0.0,
             angular_shgc_coefficients: None,
+            window_shading: HashMap::new(),
         }
     }
 
@@ -139,6 +159,29 @@ impl SolarGainConfig {
 impl Default for SolarGainConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Computes the sunlit fraction for a window given its shading devices and solar position.
+fn compute_sunlit_fraction(shading: &WindowShading, solar_pos: &SolarPosition) -> f64 {
+    use super::shading::{overhang_and_fins_sunlit_fraction, overhang_sunlit_fraction};
+
+    match (&shading.overhang, &shading.fin_left, &shading.fin_right) {
+        (Some(oh), Some(fl), Some(fr)) => overhang_and_fins_sunlit_fraction(
+            oh,
+            fl,
+            fr,
+            solar_pos.altitude,
+            solar_pos.azimuth,
+            shading.surface_azimuth_deg,
+        ),
+        (Some(oh), _, _) => overhang_sunlit_fraction(
+            oh,
+            solar_pos.altitude,
+            solar_pos.azimuth,
+            shading.surface_azimuth_deg,
+        ),
+        _ => 1.0,
     }
 }
 
@@ -357,8 +400,20 @@ pub fn compute_glazing_transmissions_with_materials(
                         }
                     }
 
-                    let beam_w = incident_direct * area * shgc;
+                    let mut beam_w = incident_direct * area * shgc;
                     let diffuse_w = incident_diffuse * area * shgc;
+
+                    // Apply overhang/fin shading to beam component only.
+                    if beam_w > 0.0 && !config.window_shading.is_empty() {
+                        for (pattern, shading) in &config.window_shading {
+                            if path.contains(pattern.as_str()) {
+                                let sunlit = compute_sunlit_fraction(shading, &solar_pos);
+                                beam_w *= sunlit;
+                                break;
+                            }
+                        }
+                    }
+
                     if beam_w <= 0.0 && diffuse_w <= 0.0 {
                         continue;
                     }

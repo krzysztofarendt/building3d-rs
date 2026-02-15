@@ -471,6 +471,7 @@ fn test_bestest_600_epw_reference_within_tolerance_if_present() {
     let options = TransientSimulationOptions {
         warmup_hours: 7 * 24,
         substeps_per_hour: 6,
+        ..Default::default()
     };
     let annual = run_transient_simulation_with_options(
         &building,
@@ -526,6 +527,7 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
     let options = TransientSimulationOptions {
         warmup_hours: 7 * 24,
         substeps_per_hour: 6,
+        ..Default::default()
     };
     let annual = run_transient_simulation_with_options(
         &building,
