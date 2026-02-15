@@ -44,6 +44,12 @@ pub struct AnnualResult {
     pub monthly_heating_kwh: [f64; 12],
     /// Monthly cooling energy in kWh (12 values).
     pub monthly_cooling_kwh: [f64; 12],
+    /// Minimum zone air temperature over the year [C].
+    pub min_zone_temp_c: f64,
+    /// Maximum zone air temperature over the year [C].
+    pub max_zone_temp_c: f64,
+    /// Hourly zone air temperatures [C].
+    pub hourly_zone_temp_c: Vec<f64>,
 }
 
 /// Multi-zone transient simulation output (zone air node per `Zone`).
@@ -1184,6 +1190,9 @@ pub fn run_annual_simulation(
         peak_cooling,
         monthly_heating_kwh: monthly_heating.map(|v| v * to_kwh),
         monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
+        min_zone_temp_c: 0.0,
+        max_zone_temp_c: 0.0,
+        hourly_zone_temp_c: Vec::new(),
     }
 }
 
@@ -1212,7 +1221,7 @@ pub fn run_transient_simulation(
     )
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TransientSimulationOptions {
     /// Number of warmup hours to run before the reported simulation year.
     ///
@@ -1227,6 +1236,15 @@ pub struct TransientSimulationOptions {
     /// 6 (10-minute) or 12 (5-minute) substeps often improves stability and
     /// reduces timestep-induced bias compared to a single 1-hour step.
     pub substeps_per_hour: usize,
+    /// Optional per-hour heating setpoint override [C]. Length must be >= num_hours.
+    /// When `None`, uses `hvac.heating_setpoint`.
+    pub hourly_heating_setpoint: Option<Vec<f64>>,
+    /// Optional per-hour cooling setpoint override [C]. Length must be >= num_hours.
+    /// When `None`, uses `hvac.cooling_setpoint`.
+    pub hourly_cooling_setpoint: Option<Vec<f64>>,
+    /// Optional per-hour infiltration ACH override.
+    /// When `None`, uses `base_config.infiltration_ach`.
+    pub hourly_infiltration_ach: Option<Vec<f64>>,
 }
 
 impl Default for TransientSimulationOptions {
@@ -1234,6 +1252,9 @@ impl Default for TransientSimulationOptions {
         Self {
             warmup_hours: 0,
             substeps_per_hour: 1,
+            hourly_heating_setpoint: None,
+            hourly_cooling_setpoint: None,
+            hourly_infiltration_ach: None,
         }
     }
 }
@@ -1389,7 +1410,8 @@ pub fn run_transient_simulation_with_options(
     }
 
     // Infiltration conductance: rho * cp * V * ACH / 3600.
-    let infiltration_cond = 1.2 * 1005.0 * volume * base_config.infiltration_ach / 3600.0;
+    let base_infiltration_ach = base_config.infiltration_ach;
+    let infiltration_cond = 1.2 * 1005.0 * volume * base_infiltration_ach / 3600.0;
 
     // Zone air node thermal capacity (air only). Envelope mass is represented by FVM walls.
     let air_capacity_j_per_k = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
@@ -1412,6 +1434,9 @@ pub fn run_transient_simulation_with_options(
     let mut peak_cooling = 0.0_f64;
     let mut monthly_heating = [0.0; 12];
     let mut monthly_cooling = [0.0; 12];
+    let mut min_zone_temp = f64::MAX;
+    let mut max_zone_temp = f64::MIN;
+    let mut hourly_zone_temp: Vec<f64> = Vec::with_capacity(num_hours);
 
     let warmup_hours = options.warmup_hours.min(num_hours);
 
@@ -1421,7 +1446,7 @@ pub fn run_transient_simulation_with_options(
         SteadySurfaceInfo, WallStepConditions,
     };
     let mut global_ss_surface_map: Vec<usize> = Vec::new();
-    let (global_topology, mut global_temps): (GlobalTopology, Vec<f64>) = {
+    let (mut global_topology, mut global_temps): (GlobalTopology, Vec<f64>) = {
         // Build wall info for topology
         let wall_infos: Vec<FvmWallInfo> = {
             let mut infos = Vec::new();
@@ -1507,7 +1532,13 @@ pub fn run_transient_simulation_with_options(
 
     let mut simulate_hour = |hour_idx: usize,
                              record: &super::weather::HourlyRecord,
-                             report: bool| {
+                             report: bool,
+                             hour_hvac: &HvacIdealLoads,
+                             hour_infiltration_ach: f64| {
+        // Apply per-hour infiltration ACH override.
+        let hour_infiltration_cond = 1.2 * 1005.0 * volume * hour_infiltration_ach / 3600.0;
+        model_1r1c.infiltration_conductance = hour_infiltration_cond;
+        global_topology.air_nodes[0].infiltration_k = hour_infiltration_cond;
         let gains = gains_profile
             .map(|p| p.gains_at(hour_idx))
             .unwrap_or(base_config.internal_gains);
@@ -2102,7 +2133,7 @@ pub fn run_transient_simulation_with_options(
                     &g_wall_conds,
                     &g_air_conds,
                     g_radiation.as_ref(),
-                    hvac,
+                    hour_hvac,
                     dt_s,
                     &g_wall_infos,
                 );
@@ -2152,6 +2183,15 @@ pub fn run_transient_simulation_with_options(
             hourly_heating.push(hour_heating_wh);
             hourly_cooling.push(hour_cooling_wh);
 
+            let t_zone = model_1r1c.zone_temperature;
+            hourly_zone_temp.push(t_zone);
+            if t_zone < min_zone_temp {
+                min_zone_temp = t_zone;
+            }
+            if t_zone > max_zone_temp {
+                max_zone_temp = t_zone;
+            }
+
             annual_heating += hour_heating_wh;
             annual_cooling += hour_cooling_wh;
             peak_heating = peak_heating.max(hour_peak_heating_w);
@@ -2165,10 +2205,29 @@ pub fn run_transient_simulation_with_options(
 
     for hour_idx in 0..warmup_hours {
         let record = &weather.records[hour_idx];
-        simulate_hour(hour_idx, record, false);
+        let hour_hvac = make_hour_hvac(hvac, options, hour_idx);
+        let hour_ach = options
+            .hourly_infiltration_ach
+            .as_ref()
+            .and_then(|v| v.get(hour_idx).copied())
+            .unwrap_or(base_infiltration_ach);
+        simulate_hour(hour_idx, record, false, &hour_hvac, hour_ach);
     }
     for (hour_idx, record) in weather.records.iter().enumerate() {
-        simulate_hour(hour_idx, record, true);
+        let hour_hvac = make_hour_hvac(hvac, options, hour_idx);
+        let hour_ach = options
+            .hourly_infiltration_ach
+            .as_ref()
+            .and_then(|v| v.get(hour_idx).copied())
+            .unwrap_or(base_infiltration_ach);
+        simulate_hour(hour_idx, record, true, &hour_hvac, hour_ach);
+    }
+
+    if min_zone_temp == f64::MAX {
+        min_zone_temp = 0.0;
+    }
+    if max_zone_temp == f64::MIN {
+        max_zone_temp = 0.0;
     }
 
     let to_kwh = 1.0 / 1000.0;
@@ -2182,6 +2241,32 @@ pub fn run_transient_simulation_with_options(
         peak_cooling,
         monthly_heating_kwh: monthly_heating.map(|v| v * to_kwh),
         monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
+        min_zone_temp_c: min_zone_temp,
+        max_zone_temp_c: max_zone_temp,
+        hourly_zone_temp_c: hourly_zone_temp,
+    }
+}
+
+/// Builds a per-hour `HvacIdealLoads` from the base HVAC and optional schedule overrides.
+fn make_hour_hvac(
+    base_hvac: &HvacIdealLoads,
+    options: &TransientSimulationOptions,
+    hour_idx: usize,
+) -> HvacIdealLoads {
+    let h_set = options
+        .hourly_heating_setpoint
+        .as_ref()
+        .and_then(|v| v.get(hour_idx).copied())
+        .unwrap_or(base_hvac.heating_setpoint);
+    let c_set = options
+        .hourly_cooling_setpoint
+        .as_ref()
+        .and_then(|v| v.get(hour_idx).copied())
+        .unwrap_or(base_hvac.cooling_setpoint);
+    HvacIdealLoads {
+        heating_setpoint: h_set,
+        cooling_setpoint: c_set,
+        ..*base_hvac
     }
 }
 
@@ -2385,6 +2470,9 @@ pub fn run_multizone_transient_simulation(
         peak_cooling,
         monthly_heating_kwh: monthly_heating.map(|v| v * to_kwh),
         monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
+        min_zone_temp_c: 0.0,
+        max_zone_temp_c: 0.0,
+        hourly_zone_temp_c: Vec::new(),
     };
 
     Ok(MultiZoneAnnualResult {
@@ -2517,6 +2605,9 @@ pub fn run_multizone_steady_simulation(
         peak_cooling,
         monthly_heating_kwh: monthly_heating.map(|v| v * to_kwh),
         monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
+        min_zone_temp_c: 0.0,
+        max_zone_temp_c: 0.0,
+        hourly_zone_temp_c: Vec::new(),
     };
 
     Ok(MultiZoneAnnualResult {
@@ -3184,6 +3275,7 @@ mod tests {
         let opts_warmup = TransientSimulationOptions {
             warmup_hours: 48,
             substeps_per_hour: 1,
+            ..Default::default()
         };
 
         let result_warmup = run_transient_simulation_with_options(

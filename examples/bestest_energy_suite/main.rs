@@ -8,11 +8,12 @@ use building3d::sim::energy::config::ThermalConfig;
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::hvac::HvacIdealLoads;
+use building3d::sim::energy::shading::{FinGeometry, OverhangGeometry};
 use building3d::sim::energy::simulation::{
     AnnualResult, TransientSimulationOptions, run_transient_simulation_with_options,
 };
 use building3d::sim::energy::solar_bridge::{
-    SolarGainConfig, SolarHourParams, compute_solar_gains_with_materials,
+    SolarGainConfig, SolarHourParams, WindowShading, compute_solar_gains_with_materials,
 };
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::materials::Layer;
@@ -44,10 +45,6 @@ fn default_epw_path() -> PathBuf {
     repo_root()
         .join("examples/bestest_energy_suite/data")
         .join("USA_MA_Boston-Logan.Intl.AP.725090_TMY3.epw")
-}
-
-fn sum(monthly: &[f64; 12]) -> f64 {
-    monthly.iter().sum()
 }
 
 fn day_of_year(month: u8, day: u8) -> u16 {
@@ -448,6 +445,126 @@ fn solar_config_for_case_600() -> SolarGainConfig {
     solar
 }
 
+// ── E+ annual reference totals (kWh and W) from BESTEST-GSR workflow_results.csv ──
+#[allow(dead_code)]
+struct AnnualRef {
+    heating_kwh: f64,
+    cooling_kwh: f64,
+    peak_heating_w: f64,
+    peak_cooling_w: f64,
+}
+
+struct FreefloatRef {
+    min_temp_c: f64,
+    max_temp_c: f64,
+}
+
+fn annual_ref(case: &str) -> Option<AnnualRef> {
+    match case {
+        "600" => Some(AnnualRef {
+            heating_kwh: 4325.0,
+            cooling_kwh: 6042.0,
+            peak_heating_w: 3204.0,
+            peak_cooling_w: 6352.0,
+        }),
+        "610" => Some(AnnualRef {
+            heating_kwh: 4375.0,
+            cooling_kwh: 4344.0,
+            peak_heating_w: 3192.0,
+            peak_cooling_w: 6137.0,
+        }),
+        "620" => Some(AnnualRef {
+            heating_kwh: 4483.0,
+            cooling_kwh: 4069.0,
+            peak_heating_w: 3229.0,
+            peak_cooling_w: 4797.0,
+        }),
+        "630" => Some(AnnualRef {
+            heating_kwh: 4781.0,
+            cooling_kwh: 2842.0,
+            peak_heating_w: 3207.0,
+            peak_cooling_w: 4212.0,
+        }),
+        "640" => Some(AnnualRef {
+            heating_kwh: 2658.0,
+            cooling_kwh: 5778.0,
+            peak_heating_w: 4547.0,
+            peak_cooling_w: 6299.0,
+        }),
+        "650" => Some(AnnualRef {
+            heating_kwh: 0.0,
+            cooling_kwh: 4839.0,
+            peak_heating_w: 0.0,
+            peak_cooling_w: 6141.0,
+        }),
+        "900" => Some(AnnualRef {
+            heating_kwh: 1661.0,
+            cooling_kwh: 2492.0,
+            peak_heating_w: 2688.0,
+            peak_cooling_w: 3042.0,
+        }),
+        "910" => Some(AnnualRef {
+            heating_kwh: 1953.0,
+            cooling_kwh: 1386.0,
+            peak_heating_w: 2699.0,
+            peak_cooling_w: 2224.0,
+        }),
+        "920" => Some(AnnualRef {
+            heating_kwh: 3331.0,
+            cooling_kwh: 2733.0,
+            peak_heating_w: 2770.0,
+            peak_cooling_w: 3261.0,
+        }),
+        "930" => Some(AnnualRef {
+            heating_kwh: 3989.0,
+            cooling_kwh: 1922.0,
+            peak_heating_w: 2785.0,
+            peak_cooling_w: 2782.0,
+        }),
+        "940" => Some(AnnualRef {
+            heating_kwh: 1064.0,
+            cooling_kwh: 2428.0,
+            peak_heating_w: 3142.0,
+            peak_cooling_w: 3041.0,
+        }),
+        "950" => Some(AnnualRef {
+            heating_kwh: 0.0,
+            cooling_kwh: 694.0,
+            peak_heating_w: 0.0,
+            peak_cooling_w: 2370.0,
+        }),
+        "960" => Some(AnnualRef {
+            heating_kwh: 2703.0,
+            cooling_kwh: 903.0,
+            peak_heating_w: 2263.0,
+            peak_cooling_w: 1480.0,
+        }),
+        _ => None,
+    }
+}
+
+fn freefloat_ref(case: &str) -> Option<FreefloatRef> {
+    match case {
+        "600FF" => Some(FreefloatRef {
+            min_temp_c: -12.56,
+            max_temp_c: 63.92,
+        }),
+        "650FF" => Some(FreefloatRef {
+            min_temp_c: -17.07,
+            max_temp_c: 62.58,
+        }),
+        "900FF" => Some(FreefloatRef {
+            min_temp_c: 1.25,
+            max_temp_c: 44.30,
+        }),
+        "950FF" => Some(FreefloatRef {
+            min_temp_c: -12.81,
+            max_temp_c: 36.69,
+        }),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum RefKind {
     Ref600,
@@ -461,12 +578,37 @@ enum CaseMassKind {
     Heavy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeometryKind {
+    South,
+    EastWest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShadingKind {
+    None,
+    Overhang,
+    OverhangFins,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HvacMode {
+    Normal,
+    Setback,
+    NightVent,
+    FreeFloat,
+    FreeFloatNightVent,
+}
+
 #[derive(Debug, Clone)]
 struct CaseSpec {
     name: &'static str,
     ref_kind: RefKind,
     mass_kind: CaseMassKind,
     solar: bool,
+    geometry_kind: GeometryKind,
+    shading: ShadingKind,
+    hvac_mode: HvacMode,
 }
 
 fn reference_monthly(metric: &str, kind: RefKind) -> Option<[f64; 12]> {
@@ -479,6 +621,211 @@ fn reference_monthly(metric: &str, kind: RefKind) -> Option<[f64; 12]> {
     }
 }
 
+// ── Case 620: East/west windows (no south windows) ──
+
+fn poly_rect_east(name: &str, y0: f64, y1: f64, z0: f64, z1: f64, x: f64) -> Result<Polygon> {
+    Polygon::new(
+        name,
+        vec![
+            Point::new(x, y0, z0),
+            Point::new(x, y1, z0),
+            Point::new(x, y1, z1),
+            Point::new(x, y0, z1),
+        ],
+        Some(building3d::Vector::new(1.0, 0.0, 0.0)),
+    )
+}
+
+fn poly_rect_west(name: &str, y0: f64, y1: f64, z0: f64, z1: f64, x: f64) -> Result<Polygon> {
+    Polygon::new(
+        name,
+        vec![
+            Point::new(x, y1, z0),
+            Point::new(x, y0, z0),
+            Point::new(x, y0, z1),
+            Point::new(x, y1, z1),
+        ],
+        Some(building3d::Vector::new(-1.0, 0.0, 0.0)),
+    )
+}
+
+fn build_case_620_geometry() -> Result<Building> {
+    let x = 8.0;
+    let y = 6.0;
+    let z = 2.7;
+
+    let p0 = Point::new(0.0, 0.0, 0.0);
+    let p1 = Point::new(x, 0.0, 0.0);
+    let p2 = Point::new(x, y, 0.0);
+    let p3 = Point::new(0.0, y, 0.0);
+    let p4 = Point::new(0.0, 0.0, z);
+    let p5 = Point::new(x, 0.0, z);
+    let p6 = Point::new(x, y, z);
+    let p7 = Point::new(0.0, y, z);
+
+    let poly_floor = Polygon::new("floor", vec![p0, p3, p2, p1], Option::None)?;
+    let poly_roof = Polygon::new("ceiling", vec![p4, p5, p6, p7], Option::None)?;
+
+    // South wall: fully opaque (no windows)
+    let wall_0 = Wall::new("wall_0", vec![poly_rect_y0("poly_0", 0.0, x, 0.0, z)?])?;
+
+    // East wall (x=8): two windows, each 3m wide x 2m high, centered vertically
+    // Total glazing = 2 * 3 * 2 = 12 m² (same as case 600)
+    let mut east_polys = Vec::new();
+    east_polys.push(poly_rect_east("opaque_bottom", 0.0, y, 0.0, 0.2, x)?);
+    east_polys.push(poly_rect_east("opaque_top", 0.0, y, 2.2, z, x)?);
+    east_polys.push(poly_rect_east("opaque_left", 0.0, 1.5, 0.2, 2.2, x)?);
+    east_polys.push(poly_rect_east("window_1", 1.5, 4.5, 0.2, 2.2, x)?);
+    east_polys.push(poly_rect_east("opaque_right", 4.5, y, 0.2, 2.2, x)?);
+    let wall_1 = Wall::new("wall_1", east_polys)?;
+
+    // North wall: opaque
+    let wall_2 = Wall::new(
+        "wall_2",
+        vec![Polygon::new("poly_2", vec![p3, p7, p6, p2], Option::None)?],
+    )?;
+
+    // West wall (x=0): same window layout as east
+    let mut west_polys = Vec::new();
+    west_polys.push(poly_rect_west("opaque_bottom", 0.0, y, 0.0, 0.2, 0.0)?);
+    west_polys.push(poly_rect_west("opaque_top", 0.0, y, 2.2, z, 0.0)?);
+    west_polys.push(poly_rect_west("opaque_left", 0.0, 1.5, 0.2, 2.2, 0.0)?);
+    west_polys.push(poly_rect_west("window_2", 1.5, 4.5, 0.2, 2.2, 0.0)?);
+    west_polys.push(poly_rect_west("opaque_right", 4.5, y, 0.2, 2.2, 0.0)?);
+    let wall_3 = Wall::new("wall_3", west_polys)?;
+
+    let wall_floor = Wall::new("floor", vec![poly_floor])?;
+    let wall_roof = Wall::new("ceiling", vec![poly_roof])?;
+
+    let solid = Solid::new(
+        "space",
+        vec![wall_floor, wall_0, wall_1, wall_2, wall_3, wall_roof],
+    )?;
+    let zone = Zone::new("zone_one", vec![solid])?;
+    Building::new("bestest_case_620", vec![zone])
+}
+
+// ── Overhang/fin shading configurations ──
+
+/// BESTEST case 610/910: south overhang 1m deep, no gap.
+fn south_overhang_shading(window_height: f64, window_width: f64) -> WindowShading {
+    WindowShading {
+        overhang: Some(OverhangGeometry {
+            depth: 1.0,
+            gap: 0.0,
+            window_height,
+            window_width,
+            extension_left: 0.0,
+            extension_right: 0.0,
+        }),
+        fin_left: Option::None,
+        fin_right: Option::None,
+        surface_azimuth_deg: 180.0, // south-facing
+    }
+}
+
+/// BESTEST case 630/930: east/west windows with overhang (1m) and side fins (1m).
+fn east_overhang_fins_shading(window_height: f64, window_width: f64) -> WindowShading {
+    WindowShading {
+        overhang: Some(OverhangGeometry {
+            depth: 1.0,
+            gap: 0.0,
+            window_height,
+            window_width,
+            extension_left: 0.0,
+            extension_right: 0.0,
+        }),
+        fin_left: Some(FinGeometry {
+            depth: 1.0,
+            height: window_height,
+        }),
+        fin_right: Some(FinGeometry {
+            depth: 1.0,
+            height: window_height,
+        }),
+        surface_azimuth_deg: 90.0, // east-facing
+    }
+}
+
+fn west_overhang_fins_shading(window_height: f64, window_width: f64) -> WindowShading {
+    WindowShading {
+        overhang: Some(OverhangGeometry {
+            depth: 1.0,
+            gap: 0.0,
+            window_height,
+            window_width,
+            extension_left: 0.0,
+            extension_right: 0.0,
+        }),
+        fin_left: Some(FinGeometry {
+            depth: 1.0,
+            height: window_height,
+        }),
+        fin_right: Some(FinGeometry {
+            depth: 1.0,
+            height: window_height,
+        }),
+        surface_azimuth_deg: 270.0, // west-facing
+    }
+}
+
+// ── HVAC schedules ──
+
+/// Case 640/940: thermostat setback schedule.
+/// Heating setpoint = 10C during 23:00-07:00, 20C otherwise.
+fn make_setback_heating_schedule() -> Vec<f64> {
+    (0..8760)
+        .map(|h| {
+            let hour_of_day = h % 24;
+            if hour_of_day >= 23 || hour_of_day < 7 {
+                10.0
+            } else {
+                20.0
+            }
+        })
+        .collect()
+}
+
+/// Case 650/950: night ventilation schedule.
+/// Night ventilation of 1703.16 m³/h from 18:00-07:00, plus base 0.5 ACH.
+fn make_night_vent_infiltration_schedule(volume: f64) -> Vec<f64> {
+    let night_ach = 1703.16 / volume; // ~13.14 ACH for BESTEST zone
+    (0..8760)
+        .map(|h| {
+            let hour_of_day = h % 24;
+            if hour_of_day >= 18 || hour_of_day < 7 {
+                0.5 + night_ach
+            } else {
+                0.5
+            }
+        })
+        .collect()
+}
+
+/// Case 650/950: cooling setpoint schedule (daytime only).
+/// Cooling at 27C from 07:00-18:00, disabled (999C) otherwise.
+fn make_daytime_cooling_schedule() -> Vec<f64> {
+    (0..8760)
+        .map(|h| {
+            let hour_of_day = h % 24;
+            if hour_of_day >= 7 && hour_of_day < 18 {
+                27.0
+            } else {
+                999.0
+            }
+        })
+        .collect()
+}
+
+/// Free-float cases (no HVAC): heating disabled, cooling disabled.
+fn make_free_float_heating_schedule() -> Vec<f64> {
+    vec![-999.0; 8760]
+}
+
+fn make_free_float_cooling_schedule() -> Vec<f64> {
+    vec![999.0; 8760]
+}
+
 fn write_suite_csv(path: &Path, cases: &[(CaseSpec, AnnualResult)]) -> Result<()> {
     let mut f = fs::File::create(path).context("create results.csv")?;
     writeln!(
@@ -487,62 +834,155 @@ fn write_suite_csv(path: &Path, cases: &[(CaseSpec, AnnualResult)]) -> Result<()
     )?;
 
     for (spec, annual) in cases {
-        for metric in ["heating", "cooling"] {
-            let sim_monthly: &[f64; 12] = match metric {
-                "heating" => &annual.monthly_heating_kwh,
-                "cooling" => &annual.monthly_cooling_kwh,
-                _ => unreachable!(),
-            };
-            let reference = reference_monthly(metric, spec.ref_kind);
+        let is_ff = matches!(
+            spec.hvac_mode,
+            HvacMode::FreeFloat | HvacMode::FreeFloatNightVent
+        );
 
-            for i in 0..12 {
-                let sim = sim_monthly[i];
-                let (ref_v, err, pct) = if let Some(reference) = reference {
-                    let ref_v = reference[i];
-                    let err = sim - ref_v;
-                    let pct = if ref_v != 0.0 {
-                        100.0 * err / ref_v
+        if is_ff {
+            // Free-float cases: write min/max zone temperature instead of loads.
+            let ff_ref = freefloat_ref(spec.name);
+            let (ref_min, err_min, pct_min) = if let Some(r) = &ff_ref {
+                let e = annual.min_zone_temp_c - r.min_temp_c;
+                let p = if r.min_temp_c.abs() > 0.01 {
+                    100.0 * e / r.min_temp_c.abs()
+                } else {
+                    0.0
+                };
+                (
+                    format!("{:.3}", r.min_temp_c),
+                    format!("{:.3}", e),
+                    format!("{:.2}", p),
+                )
+            } else {
+                ("".to_string(), "".to_string(), "".to_string())
+            };
+            writeln!(
+                f,
+                "{},annual,min_zone_temp_c,{:.3},{},{},{}",
+                spec.name, annual.min_zone_temp_c, ref_min, err_min, pct_min
+            )?;
+
+            let (ref_max, err_max, pct_max) = if let Some(r) = &ff_ref {
+                let e = annual.max_zone_temp_c - r.max_temp_c;
+                let p = if r.max_temp_c.abs() > 0.01 {
+                    100.0 * e / r.max_temp_c.abs()
+                } else {
+                    0.0
+                };
+                (
+                    format!("{:.3}", r.max_temp_c),
+                    format!("{:.3}", e),
+                    format!("{:.2}", p),
+                )
+            } else {
+                ("".to_string(), "".to_string(), "".to_string())
+            };
+            writeln!(
+                f,
+                "{},annual,max_zone_temp_c,{:.3},{},{},{}",
+                spec.name, annual.max_zone_temp_c, ref_max, err_max, pct_max
+            )?;
+        } else {
+            // HVAC cases: write monthly and annual heating/cooling loads.
+            let a_ref = annual_ref(spec.name);
+            let monthly_ref = |metric: &str, kind: RefKind| -> Option<[f64; 12]> {
+                reference_monthly(metric, kind)
+            };
+
+            for metric in ["heating", "cooling"] {
+                let sim_monthly: &[f64; 12] = match metric {
+                    "heating" => &annual.monthly_heating_kwh,
+                    "cooling" => &annual.monthly_cooling_kwh,
+                    _ => unreachable!(),
+                };
+                let reference = monthly_ref(metric, spec.ref_kind);
+
+                // Monthly rows (with reference if available).
+                for i in 0..12 {
+                    let sim = sim_monthly[i];
+                    if let Some(ref_arr) = reference {
+                        let ref_v = ref_arr[i];
+                        let err = sim - ref_v;
+                        let pct = if ref_v != 0.0 {
+                            100.0 * err / ref_v
+                        } else {
+                            0.0
+                        };
+                        writeln!(
+                            f,
+                            "{},{},{},{:.3},{:.3},{:.3},{:.2}",
+                            spec.name,
+                            i + 1,
+                            metric,
+                            sim,
+                            ref_v,
+                            err,
+                            pct
+                        )?;
+                    } else {
+                        writeln!(f, "{},{},{},{:.3},,,", spec.name, i + 1, metric, sim,)?;
+                    }
+                }
+
+                // Annual row (use annual_ref for all cases).
+                let sim_a: f64 = sim_monthly.iter().sum();
+                let ref_annual = a_ref.as_ref().map(|r| match metric {
+                    "heating" => r.heating_kwh,
+                    "cooling" => r.cooling_kwh,
+                    _ => unreachable!(),
+                });
+                if let Some(ref_a) = ref_annual {
+                    let err = sim_a - ref_a;
+                    let pct = if ref_a != 0.0 {
+                        100.0 * err / ref_a
                     } else {
                         0.0
                     };
-                    (ref_v, err, pct)
+                    writeln!(
+                        f,
+                        "{},annual,{},{:.3},{:.3},{:.3},{:.2}",
+                        spec.name, metric, sim_a, ref_a, err, pct
+                    )?;
                 } else {
-                    (f64::NAN, f64::NAN, f64::NAN)
-                };
-
-                writeln!(
-                    f,
-                    "{},{},{},{:.3},{:.3},{:.3},{:.2}",
-                    spec.name,
-                    i + 1,
-                    metric,
-                    sim,
-                    ref_v,
-                    err,
-                    pct
-                )?;
+                    writeln!(f, "{},annual,{},{:.3},,,", spec.name, metric, sim_a,)?;
+                }
             }
 
-            if let Some(reference) = reference {
-                let sim_a = sim_monthly.iter().sum::<f64>();
-                let ref_a = reference.iter().sum::<f64>();
-                let err = sim_a - ref_a;
-                let pct = if ref_a != 0.0 {
-                    100.0 * err / ref_a
+            // Peak loads row (with reference if available).
+            if let Some(r) = &a_ref {
+                let pk_h_err = annual.peak_heating - r.peak_heating_w;
+                let pk_h_pct = if r.peak_heating_w > 0.0 {
+                    100.0 * pk_h_err / r.peak_heating_w
                 } else {
                     0.0
                 };
                 writeln!(
                     f,
-                    "{},{},{},{:.3},{:.3},{:.3},{:.2}",
-                    spec.name, "annual", metric, sim_a, ref_a, err, pct
+                    "{},annual,peak_heating_w,{:.1},{:.1},{:.1},{:.2}",
+                    spec.name, annual.peak_heating, r.peak_heating_w, pk_h_err, pk_h_pct
                 )?;
-            } else {
-                let sim_a = sim_monthly.iter().sum::<f64>();
+                let pk_c_err = annual.peak_cooling - r.peak_cooling_w;
+                let pk_c_pct = if r.peak_cooling_w > 0.0 {
+                    100.0 * pk_c_err / r.peak_cooling_w
+                } else {
+                    0.0
+                };
                 writeln!(
                     f,
-                    "{},{},{},{:.3},{},{},{}",
-                    spec.name, "annual", metric, sim_a, "", "", ""
+                    "{},annual,peak_cooling_w,{:.1},{:.1},{:.1},{:.2}",
+                    spec.name, annual.peak_cooling, r.peak_cooling_w, pk_c_err, pk_c_pct
+                )?;
+            } else {
+                writeln!(
+                    f,
+                    "{},annual,peak_heating_w,{:.1},,,",
+                    spec.name, annual.peak_heating
+                )?;
+                writeln!(
+                    f,
+                    "{},annual,peak_cooling_w,{:.1},,,",
+                    spec.name, annual.peak_cooling
                 )?;
             }
         }
@@ -865,7 +1305,35 @@ fn write_diagnostics_monthly_csv(path: &Path, cases: &[(CaseSpec, CaseDiagnostic
     Ok(())
 }
 
+fn make_case_spec(
+    name: &'static str,
+    mass: CaseMassKind,
+    geom: GeometryKind,
+    shading: ShadingKind,
+    hvac_mode: HvacMode,
+) -> CaseSpec {
+    let ref_kind = match name {
+        "600" => RefKind::Ref600,
+        "900" => RefKind::Ref900,
+        _ => RefKind::None,
+    };
+    CaseSpec {
+        name,
+        ref_kind,
+        mass_kind: mass,
+        solar: true,
+        geometry_kind: geom,
+        shading,
+        hvac_mode,
+    }
+}
+
 fn main() -> Result<()> {
+    use CaseMassKind::*;
+    use GeometryKind::*;
+    use HvacMode::*;
+    use ShadingKind as SK;
+
     let epw_path = std::env::var("BESTEST_600_EPW")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_epw_path());
@@ -873,51 +1341,63 @@ fn main() -> Result<()> {
         .with_context(|| format!("read EPW at {} (run download_data.sh?)", epw_path.display()))?;
     let weather = WeatherData::from_epw(&epw_content).context("parse EPW")?;
 
-    let building = build_case_600_geometry()?;
-    let mut base_cfg = config_for_case_600(&building);
-    base_cfg.use_fvm_walls = true;
+    // Build both geometry variants.
+    let building_south = build_case_600_geometry()?;
+    let building_ew = build_case_620_geometry()?;
+
+    let base_cfg_south = {
+        let mut c = config_for_case_600(&building_south);
+        c.use_fvm_walls = true;
+        c
+    };
+    let base_cfg_ew = {
+        let mut c = config_for_case_600(&building_ew);
+        c.use_fvm_walls = true;
+        c
+    };
     let solar_cfg = solar_config_for_case_600();
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
 
-    let suite = vec![
-        CaseSpec {
-            name: "600",
-            ref_kind: RefKind::Ref600,
-            mass_kind: CaseMassKind::Light,
-            solar: true,
-        },
-        CaseSpec {
-            name: "600_no_solar",
-            ref_kind: RefKind::None,
-            mass_kind: CaseMassKind::Light,
-            solar: false,
-        },
-        CaseSpec {
-            name: "900",
-            ref_kind: RefKind::Ref900,
-            mass_kind: CaseMassKind::Heavy,
-            solar: true,
-        },
-        CaseSpec {
-            name: "900_no_solar",
-            ref_kind: RefKind::None,
-            mass_kind: CaseMassKind::Heavy,
-            solar: false,
-        },
+    let suite: Vec<CaseSpec> = vec![
+        // ── 600 series (lightweight) ──
+        make_case_spec("600", Light, South, SK::None, Normal),
+        make_case_spec("610", Light, South, SK::Overhang, Normal),
+        make_case_spec("620", Light, EastWest, SK::None, Normal),
+        make_case_spec("630", Light, EastWest, SK::OverhangFins, Normal),
+        make_case_spec("640", Light, South, SK::None, Setback),
+        make_case_spec("650", Light, South, SK::None, NightVent),
+        make_case_spec("600FF", Light, South, SK::None, FreeFloat),
+        make_case_spec("650FF", Light, South, SK::None, FreeFloatNightVent),
+        // ── 900 series (heavyweight) ──
+        make_case_spec("900", Heavy, South, SK::None, Normal),
+        make_case_spec("910", Heavy, South, SK::Overhang, Normal),
+        make_case_spec("920", Heavy, EastWest, SK::None, Normal),
+        make_case_spec("930", Heavy, EastWest, SK::OverhangFins, Normal),
+        make_case_spec("940", Heavy, South, SK::None, Setback),
+        make_case_spec("950", Heavy, South, SK::None, NightVent),
+        make_case_spec("900FF", Heavy, South, SK::None, FreeFloat),
+        make_case_spec("950FF", Heavy, South, SK::None, FreeFloatNightVent),
+        // ── Case 960: two-zone sunspace (TODO) ──
+        make_case_spec("960", Heavy, South, SK::None, Normal),
     ];
 
-    println!("BESTEST energy suite (building3d vs OpenStudio/E+ reference)");
+    println!("BESTEST ASHRAE 140 energy suite (building3d vs OpenStudio/E+ reference)");
     println!(
         "Weather: {} ({} hours)",
         weather.location,
         weather.num_hours()
     );
     println!(
-        "Reference annual: 600 h={:.1} c={:.1} | 900 h={:.1} c={:.1} (kWh)",
-        sum(&REF_600_MONTHLY_HEATING_KWH),
-        sum(&REF_600_MONTHLY_COOLING_KWH),
-        sum(&REF_900_MONTHLY_HEATING_KWH),
-        sum(&REF_900_MONTHLY_COOLING_KWH),
+        "Cases: {} total ({} HVAC + {} free-float)",
+        suite.len(),
+        suite
+            .iter()
+            .filter(|s| !matches!(s.hvac_mode, FreeFloat | FreeFloatNightVent))
+            .count(),
+        suite
+            .iter()
+            .filter(|s| matches!(s.hvac_mode, FreeFloat | FreeFloatNightVent))
+            .count(),
     );
     println!("FVM walls: ON");
     println!("Global FVM solve: ON");
@@ -932,28 +1412,43 @@ fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(6)
         .max(1);
-    let options = TransientSimulationOptions {
-        warmup_hours: warmup_days.saturating_mul(24),
-        substeps_per_hour,
-    };
 
     println!("Warmup: {warmup_days} days");
     println!("Substeps per hour: {substeps_per_hour}");
-    print_ua_breakdown(&building, &base_cfg, &solar_cfg)?;
+    print_ua_breakdown(&building_south, &base_cfg_south, &solar_cfg)?;
     println!();
 
     let mut outputs: Vec<(CaseSpec, AnnualResult)> = Vec::new();
     let mut diag_rows: Vec<(CaseSpec, AnnualResult, CaseDiagnostics)> = Vec::new();
-    for spec in suite {
+
+    for spec in &suite {
+        // ── Skip case 960 (multi-zone sunspace, not yet implemented) ──
+        if spec.name == "960" {
+            println!(
+                "Case {:>12}: SKIP (multi-zone sunspace not yet implemented)",
+                spec.name
+            );
+            continue;
+        }
+
+        // Select geometry.
+        let building = match spec.geometry_kind {
+            South => &building_south,
+            EastWest => &building_ew,
+        };
+        let base_cfg = match spec.geometry_kind {
+            South => &base_cfg_south,
+            EastWest => &base_cfg_ew,
+        };
+
+        // Apply heavyweight constructions.
         let mut cfg = base_cfg.clone();
-        if spec.mass_kind == CaseMassKind::Heavy {
+        if spec.mass_kind == Heavy {
             let (wall, roof, floor, window) = bestest_900_constructions();
             cfg.constructions.insert("window".to_string(), window);
             cfg.constructions.insert("ceiling".to_string(), roof);
             cfg.constructions.insert("floor".to_string(), floor);
             cfg.constructions.insert("wall".to_string(), wall);
-
-            // Floor construction is auto-resolved for the FVM wall via config.constructions.
         }
         cfg.use_view_factor_radiation = std::env::var("BESTEST_GLOBAL_VF")
             .ok()
@@ -962,39 +1457,257 @@ fn main() -> Result<()> {
             .unwrap_or(false);
         cfg.view_factor_rays_per_surface = 10_000;
         cfg.interior_emissivity = 0.9;
+        cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
 
-        cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);
-
-        let solar = if spec.solar { Some(&solar_cfg) } else { None };
-        let annual = run_transient_simulation_with_options(
-            &building, &cfg, &weather, &hvac, None, solar, &options,
-        );
-
-        if spec.solar {
-            let diag = compute_case_diagnostics(&building, &cfg, &solar_cfg, &weather, &annual)?;
-            diag_rows.push((spec.clone(), annual.clone(), diag));
+        // Apply shading to solar config.
+        let mut case_solar_cfg = solar_cfg.clone();
+        match spec.shading {
+            SK::Overhang => {
+                // South-facing window overhang (cases 610/910).
+                let sh = south_overhang_shading(2.0, 3.0);
+                case_solar_cfg
+                    .window_shading
+                    .insert("window".to_string(), sh);
+            }
+            SK::OverhangFins => {
+                // East/west window overhang + fins (cases 630/930).
+                let sh_east = east_overhang_fins_shading(2.0, 3.0);
+                let sh_west = west_overhang_fins_shading(2.0, 3.0);
+                case_solar_cfg
+                    .window_shading
+                    .insert("window_1".to_string(), sh_east);
+                case_solar_cfg
+                    .window_shading
+                    .insert("window_2".to_string(), sh_west);
+            }
+            SK::None => {}
         }
 
-        let sim_h = annual.annual_heating_kwh;
-        let sim_c = annual.annual_cooling_kwh;
+        // Build HVAC schedules.
+        let volume: f64 = building.zones().iter().map(|z| z.volume()).sum();
+        let mut hourly_heating_setpoint: Option<Vec<f64>> = Option::None;
+        let mut hourly_cooling_setpoint: Option<Vec<f64>> = Option::None;
+        let mut hourly_infiltration_ach: Option<Vec<f64>> = Option::None;
 
-        print!(
-            "Case {:>12}: heating={:8.1} kWh, cooling={:8.1} kWh",
-            spec.name, sim_h, sim_c
+        match spec.hvac_mode {
+            Normal => {}
+            Setback => {
+                hourly_heating_setpoint = Some(make_setback_heating_schedule());
+            }
+            NightVent => {
+                // No heating, daytime cooling only, night ventilation.
+                hourly_heating_setpoint = Some(make_free_float_heating_schedule());
+                hourly_cooling_setpoint = Some(make_daytime_cooling_schedule());
+                hourly_infiltration_ach = Some(make_night_vent_infiltration_schedule(volume));
+            }
+            FreeFloat => {
+                hourly_heating_setpoint = Some(make_free_float_heating_schedule());
+                hourly_cooling_setpoint = Some(make_free_float_cooling_schedule());
+            }
+            FreeFloatNightVent => {
+                hourly_heating_setpoint = Some(make_free_float_heating_schedule());
+                hourly_cooling_setpoint = Some(make_free_float_cooling_schedule());
+                hourly_infiltration_ach = Some(make_night_vent_infiltration_schedule(volume));
+            }
+        }
+
+        let options = TransientSimulationOptions {
+            warmup_hours: warmup_days.saturating_mul(24),
+            substeps_per_hour,
+            hourly_heating_setpoint,
+            hourly_cooling_setpoint,
+            hourly_infiltration_ach,
+        };
+
+        let solar = if spec.solar {
+            Some(&case_solar_cfg)
+        } else {
+            Option::None
+        };
+        let annual = run_transient_simulation_with_options(
+            building,
+            &cfg,
+            &weather,
+            &hvac,
+            Option::None,
+            solar,
+            &options,
         );
-        if let Some(ref_h) = reference_monthly("heating", spec.ref_kind) {
-            let ref_h = sum(&ref_h);
-            let ref_c = sum(&reference_monthly("cooling", spec.ref_kind).unwrap());
+
+        let is_freefloat = matches!(spec.hvac_mode, FreeFloat | FreeFloatNightVent);
+
+        if is_freefloat {
+            // Free-float output: min/max zone temperature.
+            let sim_min = annual.min_zone_temp_c;
+            let sim_max = annual.max_zone_temp_c;
             print!(
-                " | vs ref: heating {:+6.1}%, cooling {:+6.1}%",
-                100.0 * (sim_h - ref_h) / ref_h,
-                100.0 * (sim_c - ref_c) / ref_c
+                "Case {:>12}: Tmin={:7.2} C, Tmax={:7.2} C",
+                spec.name, sim_min, sim_max
+            );
+            if let Some(ff_ref) = freefloat_ref(spec.name) {
+                print!(
+                    " | vs ref: Tmin {:+6.2}C, Tmax {:+6.2}C",
+                    sim_min - ff_ref.min_temp_c,
+                    sim_max - ff_ref.max_temp_c
+                );
+            }
+            println!();
+        } else {
+            // HVAC output: heating/cooling.
+            let sim_h = annual.annual_heating_kwh;
+            let sim_c = annual.annual_cooling_kwh;
+
+            print!(
+                "Case {:>12}: heating={:8.1} kWh, cooling={:8.1} kWh",
+                spec.name, sim_h, sim_c
+            );
+            if let Some(a_ref) = annual_ref(spec.name) {
+                let h_pct = if a_ref.heating_kwh > 0.0 {
+                    100.0 * (sim_h - a_ref.heating_kwh) / a_ref.heating_kwh
+                } else {
+                    0.0
+                };
+                let c_pct = if a_ref.cooling_kwh > 0.0 {
+                    100.0 * (sim_c - a_ref.cooling_kwh) / a_ref.cooling_kwh
+                } else {
+                    0.0
+                };
+                print!(
+                    " | vs ref: heating {:+6.1}%, cooling {:+6.1}%",
+                    h_pct, c_pct
+                );
+            }
+            println!();
+
+            if spec.solar {
+                if let Ok(diag) =
+                    compute_case_diagnostics(building, &cfg, &case_solar_cfg, &weather, &annual)
+                {
+                    diag_rows.push((spec.clone(), annual.clone(), diag));
+                }
+            }
+        }
+
+        outputs.push((spec.clone(), annual));
+    }
+
+    // ── Summary table ──
+    println!();
+    println!("=== BESTEST ASHRAE 140 Summary ===");
+    println!();
+    println!("─── HVAC Cases ───");
+    println!(
+        "{:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "Case",
+        "Htg kWh",
+        "Clg kWh",
+        "Pk Htg W",
+        "Pk Clg W",
+        "Htg err%",
+        "Clg err%",
+        "PkH err%",
+        "PkC err%"
+    );
+    let mut total_abs_dev = 0.0_f64;
+    let mut num_dev_terms = 0_u32;
+
+    for (spec, annual) in &outputs {
+        let is_ff = matches!(spec.hvac_mode, FreeFloat | FreeFloatNightVent);
+        if is_ff {
+            continue;
+        }
+        if let Some(a_ref) = annual_ref(spec.name) {
+            let h_pct = if a_ref.heating_kwh > 0.0 {
+                let v = 100.0 * (annual.annual_heating_kwh - a_ref.heating_kwh) / a_ref.heating_kwh;
+                total_abs_dev += v.abs();
+                num_dev_terms += 1;
+                format!("{:+.1}", v)
+            } else {
+                "-".to_string()
+            };
+            let c_pct = if a_ref.cooling_kwh > 0.0 {
+                let v = 100.0 * (annual.annual_cooling_kwh - a_ref.cooling_kwh) / a_ref.cooling_kwh;
+                total_abs_dev += v.abs();
+                num_dev_terms += 1;
+                format!("{:+.1}", v)
+            } else {
+                "-".to_string()
+            };
+            let pk_h_pct = if a_ref.peak_heating_w > 0.0 {
+                let v = 100.0 * (annual.peak_heating - a_ref.peak_heating_w) / a_ref.peak_heating_w;
+                format!("{:+.1}", v)
+            } else {
+                "-".to_string()
+            };
+            let pk_c_pct = if a_ref.peak_cooling_w > 0.0 {
+                let v = 100.0 * (annual.peak_cooling - a_ref.peak_cooling_w) / a_ref.peak_cooling_w;
+                format!("{:+.1}", v)
+            } else {
+                "-".to_string()
+            };
+            println!(
+                "{:>8} {:>10.1} {:>10.1} {:>10.0} {:>10.0} {:>10} {:>10} {:>10} {:>10}",
+                spec.name,
+                annual.annual_heating_kwh,
+                annual.annual_cooling_kwh,
+                annual.peak_heating,
+                annual.peak_cooling,
+                h_pct,
+                c_pct,
+                pk_h_pct,
+                pk_c_pct,
+            );
+        } else {
+            println!(
+                "{:>8} {:>10.1} {:>10.1} {:>10.0} {:>10.0} {:>10} {:>10} {:>10} {:>10}",
+                spec.name,
+                annual.annual_heating_kwh,
+                annual.annual_cooling_kwh,
+                annual.peak_heating,
+                annual.peak_cooling,
+                "-",
+                "-",
+                "-",
+                "-",
             );
         }
-        println!();
-
-        outputs.push((spec, annual));
     }
+
+    println!();
+    println!("─── Free-Float Cases ───");
+    println!(
+        "{:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "Case", "Tmin C", "Tmax C", "ref Tmin", "ref Tmax", "dTmin C", "dTmax C"
+    );
+    for (spec, annual) in &outputs {
+        let is_ff = matches!(spec.hvac_mode, FreeFloat | FreeFloatNightVent);
+        if !is_ff {
+            continue;
+        }
+        if let Some(ff_ref) = freefloat_ref(spec.name) {
+            println!(
+                "{:>8} {:>10.2} {:>10.2} {:>10.2} {:>10.2} {:>10} {:>10}",
+                spec.name,
+                annual.min_zone_temp_c,
+                annual.max_zone_temp_c,
+                ff_ref.min_temp_c,
+                ff_ref.max_temp_c,
+                format!("{:+.2}", annual.min_zone_temp_c - ff_ref.min_temp_c),
+                format!("{:+.2}", annual.max_zone_temp_c - ff_ref.max_temp_c),
+            );
+        } else {
+            println!(
+                "{:>8} {:>10.2} {:>10.2} {:>10} {:>10} {:>10} {:>10}",
+                spec.name, annual.min_zone_temp_c, annual.max_zone_temp_c, "-", "-", "-", "-",
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "Total absolute deviation (HVAC annual loads): {:.1}pp across {} terms",
+        total_abs_dev, num_dev_terms
+    );
 
     let out_path = repo_root().join("examples/bestest_energy_suite/results.csv");
     write_suite_csv(&out_path, &outputs)?;

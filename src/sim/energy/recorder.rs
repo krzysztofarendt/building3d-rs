@@ -109,6 +109,9 @@ impl MultiZoneRecorderData {
             peak_cooling,
             monthly_heating_kwh: monthly_heating.map(|v| v * to_kwh),
             monthly_cooling_kwh: monthly_cooling.map(|v| v * to_kwh),
+            min_zone_temp_c: 0.0,
+            max_zone_temp_c: 0.0,
+            hourly_zone_temp_c: Vec::new(),
         };
 
         MultiZoneAnnualResult {

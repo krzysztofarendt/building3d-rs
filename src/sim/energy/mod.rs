@@ -10,6 +10,7 @@ pub mod network;
 pub mod recorder;
 pub mod result;
 pub mod schedule;
+pub mod shading;
 pub mod simulation;
 pub mod solar_bridge;
 pub mod view_factors;

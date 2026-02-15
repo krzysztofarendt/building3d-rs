@@ -441,6 +441,7 @@ fn main() -> Result<()> {
     let options = TransientSimulationOptions {
         warmup_hours: warmup_days * 24,
         substeps_per_hour,
+        ..Default::default()
     };
 
     println!("BESTEST 600 energy benchmark (building3d vs OpenStudio/E+ reference)");

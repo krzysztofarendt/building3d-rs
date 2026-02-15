@@ -180,6 +180,9 @@ mod tests {
             peak_cooling: 50.0,
             monthly_heating_kwh: [0.0; 12],
             monthly_cooling_kwh: [0.0; 12],
+            min_zone_temp_c: 0.0,
+            max_zone_temp_c: 0.0,
+            hourly_zone_temp_c: Vec::new(),
         };
         draw_annual_timeline(&session, &result).unwrap();
     }
