@@ -244,6 +244,70 @@ guards rather than ASHRAE conformance tests.
 
 ---
 
+## Floor Modeling
+
+### ASHRAE 140 Floor Specification
+
+ASHRAE 140 Section 5.2 deliberately decouples ground heat transfer from the
+fabric tests. Ground coupling is tested separately in Section 5.2.4. The floor
+has massive R-25 insulation underneath, making it nearly adiabatic.
+
+**Floor construction:**
+
+| | Case 600 (LTFLOOR) | Case 900 (HWFLOOR) |
+|---|---|---|
+| Layer 1 (exterior) | R-25.075 m2K/W insulation (no mass) | R-25.175 m2K/W insulation (no mass) |
+| Layer 2 (interior) | 25mm timber, k=0.14, d=650, c=1200 | 80mm concrete, k=1.13, d=1400, c=1000 |
+| Floor U-value | ~0.04 W/m2K | ~0.04 W/m2K |
+| Heat loss at dT=10K, 48 m2 | ~19 W | ~19 W |
+
+The floor contributes ~1.9 W/K to the building total UA of ~81 W/K (2.3%).
+
+### Exterior Boundary Condition by Tool
+
+**EnergyPlus (NREL BESTEST-GSR)**:
+- Floor surface: `Outdoors, NoSun, NoWind` boundary condition
+- Exterior sees outdoor dry-bulb temperature (from weather file), not ground
+- Ground temperature code is commented out in the measure with the note:
+  `"disabled I don't see any mention of setting ground temps to 10C"`
+- Works because R-25 makes the exact exterior temperature irrelevant
+
+**Modelica Buildings Library (LBL)**:
+- Fixed temperature source at 283.15 K (10 C)
+- 2m deep soil conduction layer: k=1.3 W/mK, c=800 J/kgK, d=1500 kg/m3
+- Per definition on p.4 of ASHRAE 140-2007
+- Soil connects between fixed temperature source and room floor surface
+
+**building3d**:
+- `ground_temperature_c = Some(10.0)` with convective BC on exterior face
+- Floor modeled as `InternalMassSurface` with `OneSidedAdiabatic` boundary (baseline)
+- Or as FVM wall with ground-coupled exterior BC (when enabled)
+
+### Floor as Thermal Mass
+
+The floor's importance in Case 900 is its 80mm concrete slab thermal mass, not
+its heat loss path:
+- Capacity: 0.08 m * 1400 kg/m3 * 1000 J/kgK = 112,000 J/m2K
+- Total for 48 m2: 5.38 MJ/K
+- Absorbs transmitted solar during the day, releases at night
+- Damps temperature swings, reducing both heating and cooling demand
+
+### Experimental: Floor as FVM Wall
+
+Tested floor-as-FVM-wall in the sequential (non-global-solve) path:
+
+| Config | 600 Heating | 600 Cooling | 900 Heating | 900 Cooling | Total |
+|--------|-------------|-------------|-------------|-------------|-------|
+| Baseline (floor = internal mass, adiabatic) | -1.4% | -7.7% | +30.0% | +15.4% | 54.5pp |
+| Floor as FVM wall (ground-coupled) | +2.1% | -17.1% | +42.7% | -3.2% | 65.1pp |
+| Global solve, no VF | +2.4% | -15.9% | +42.8% | -1.5% | 62.6pp |
+| Global solve + VF | +5.2% | -21.6% | +56.5% | -13.3% | 96.6pp |
+
+Floor-as-FVM-wall made results worse overall (65.1pp vs 54.5pp). The adiabatic
+`InternalMassSurface` is a more faithful representation of the BESTEST intent.
+
+---
+
 ## Sources
 
 - Judkoff, R. and Neymark, J. (1995). International Energy Agency Building
@@ -258,3 +322,5 @@ guards rather than ASHRAE conformance tests.
   https://data.ashrae.org/standard140/AccompanyingSection7.html
 - Modelica Buildings Library BESTEST validation.
   https://simulationresearch.lbl.gov/modelica/releases/v7.0.0/help/Buildings_ThermalZones_Detailed_Validation_BESTEST_Cases6xx.html
+- NREL BESTEST-GSR (OpenStudio/EnergyPlus workflow).
+  https://github.com/NREL/BESTEST-GSR
