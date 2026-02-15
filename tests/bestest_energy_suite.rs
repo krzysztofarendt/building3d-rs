@@ -1,4 +1,4 @@
-use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
+use building3d::sim::energy::config::ThermalConfig;
 use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
@@ -341,18 +341,8 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
 
-    // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
-    // This allows transmitted solar + radiant internal gains to be stored/released with lag.
-    if let Some(floor) = cfg.constructions.get("floor").cloned() {
-        cfg.internal_mass_surfaces.push(InternalMassSurface {
-            name: "floor_mass".to_string(),
-            zone_path_pattern: "zone_one".to_string(),
-            area_m2: 48.0,
-            construction: floor,
-            boundary: InternalMassBoundary::OneSidedAdiabatic,
-            cos_tilt: -1.0,
-        });
-    }
+    // Floor is modeled as a layered FVM wall with ground-coupled exterior BC,
+    // auto-collected from building geometry in collect_fvm_exterior_walls().
 
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
     cfg
@@ -367,13 +357,7 @@ fn make_cfg_900(building: &Building) -> ThermalConfig {
     cfg.constructions.insert("floor".to_string(), floor);
     cfg.constructions.insert("wall".to_string(), wall);
 
-    if let Some(floor) = cfg.constructions.get("floor").cloned() {
-        for m in &mut cfg.internal_mass_surfaces {
-            if m.name == "floor_mass" {
-                m.construction = floor.clone();
-            }
-        }
-    }
+    // Floor construction is auto-resolved for the FVM wall via config.constructions.
 
     cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(building, &cfg);
     cfg

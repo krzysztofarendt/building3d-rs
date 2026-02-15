@@ -199,15 +199,6 @@ fn collect_fvm_exterior_walls(
         };
 
         let is_ground_coupled = is_ground_coupled_exterior_surface(config, &s.path, &poly.vn);
-        // Ground-coupled surfaces (e.g. floor slabs) are included as FVM walls only
-        // when iterative surface balance or global FVM solve is enabled. Otherwise
-        // they are modeled as separate internal mass slabs (legacy path).
-        if is_ground_coupled
-            && !config.use_iterative_surface_balance
-            && !config.use_global_fvm_solve
-        {
-            continue;
-        }
 
         // Interior heat transfer coefficient.
         //

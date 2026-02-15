@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use building3d::sim::energy::config::{InternalMassBoundary, InternalMassSurface, ThermalConfig};
+use building3d::sim::energy::config::ThermalConfig;
 use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::hvac::HvacIdealLoads;
@@ -400,31 +400,19 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.use_interior_radiative_exchange = true;
     cfg.interior_radiation_fraction = 0.6;
 
-    // View-factor interior longwave radiation exchange (per-surface MRT with uniform h_rad)
-    // combined with iterative surface heat balance for simultaneous convergence.
-    // View-factor radiation disabled. Use ISO 6946 combined coefficient instead.
-    cfg.use_view_factor_radiation = false;
+    // View-factor interior longwave radiation exchange (per-surface MRT with uniform h_rad).
+    cfg.use_view_factor_radiation = std::env::var("BESTEST_VF")
+        .ok()
+        .as_deref()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
 
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
 
-    // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
-    // This allows transmitted solar + radiant internal gains to be stored/released with lag.
-    let floor_area_m2 = building
-        .get_polygon("zone_one/space/floor/floor")
-        .map(|p| p.area())
-        .unwrap_or(48.0);
-    if let Some(floor) = cfg.constructions.get("floor").cloned() {
-        cfg.internal_mass_surfaces.push(InternalMassSurface {
-            name: "floor_mass".to_string(),
-            zone_path_pattern: "zone_one".to_string(),
-            area_m2: floor_area_m2,
-            construction: floor,
-            boundary: InternalMassBoundary::OneSidedAdiabatic,
-            cos_tilt: -1.0,
-        });
-    }
+    // Floor is modeled as a layered FVM wall with ground-coupled exterior BC,
+    // auto-collected from building geometry in collect_fvm_exterior_walls().
     cfg
 }
 
@@ -994,14 +982,7 @@ fn main() -> Result<()> {
             cfg.constructions.insert("floor".to_string(), floor);
             cfg.constructions.insert("wall".to_string(), wall);
 
-            // Update the internal floor-mass slab to use the heavyweight floor construction.
-            if let Some(floor) = cfg.constructions.get("floor").cloned() {
-                for m in &mut cfg.internal_mass_surfaces {
-                    if m.name == "floor_mass" {
-                        m.construction = floor.clone();
-                    }
-                }
-            }
+            // Floor construction is auto-resolved for the FVM wall via config.constructions.
         }
         if enable_two_node_600 && spec.name.starts_with("600") {
             // Two-node model is an alternative to explicit internal mass slabs.
@@ -1023,9 +1004,6 @@ fn main() -> Result<()> {
                 .unwrap_or(false);
             cfg.view_factor_rays_per_surface = 10_000;
             cfg.interior_emissivity = 0.9;
-            // Floor is now an FVM wall via the ground-coupled path; remove the
-            // internal mass slab to avoid double-counting.
-            cfg.internal_mass_surfaces.retain(|m| m.cos_tilt > -0.5);
         }
 
         cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);
