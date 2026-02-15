@@ -26,5 +26,5 @@ pub use boundary::BoundaryCondition;
 pub use mesh::{FvmCell, FvmFace, FvmMesh};
 pub use mesh_1d::build_1d_mesh;
 pub use mesh_3d::{CellThermalProperties, build_3d_mesh, build_3d_mesh_uniform};
-pub use solver::FvmWallSolver;
+pub use solver::{FvmSolverSnapshot, FvmWallSolver};
 pub use solver_sparse::{FvmSparseSolver, SparseSolverConfig};

@@ -11,7 +11,7 @@
 
 mod multizone;
 mod multizone_envelope;
-mod solve;
+pub(crate) mod solve;
 
 use std::collections::{HashMap, HashSet};
 

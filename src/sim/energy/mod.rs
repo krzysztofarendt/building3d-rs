@@ -3,6 +3,7 @@ pub mod config;
 pub mod construction;
 pub mod convection;
 pub mod gains_module;
+pub mod global_solve;
 pub mod hvac;
 pub mod module;
 pub mod network;

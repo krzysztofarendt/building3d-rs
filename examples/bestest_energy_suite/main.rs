@@ -400,10 +400,14 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.use_interior_radiative_exchange = true;
     cfg.interior_radiation_fraction = 0.6;
 
-    // View-factor interior longwave radiation exchange (per-surface MRT with uniform h_rad).
+    // View-factor interior longwave radiation exchange (per-surface MRT with uniform h_rad)
+    // combined with iterative surface heat balance for simultaneous convergence.
+    // View-factor radiation disabled. Use ISO 6946 combined coefficient instead.
     cfg.use_view_factor_radiation = false;
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
+
+    cfg.distribute_transmitted_solar_to_fvm_walls = false;
 
     // Model the floor as an internal mass slab (one-sided, insulated/adiabatic underside).
     // This allows transmitted solar + radiant internal gains to be stored/released with lag.
@@ -873,6 +877,12 @@ fn main() -> Result<()> {
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
 
+    let use_global_solve: bool = std::env::var("BESTEST_USE_GLOBAL_SOLVE")
+        .ok()
+        .as_deref()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
     let epw_path = std::env::var("BESTEST_600_EPW")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_epw_path());
@@ -945,6 +955,7 @@ fn main() -> Result<()> {
         sum(&REF_900_MONTHLY_COOLING_KWH),
     );
     println!("FVM walls: {}", if use_fvm_walls { "ON" } else { "off" });
+    println!("Global FVM solve: {}", if use_global_solve { "ON" } else { "off" });
     if enable_two_node_600 {
         println!(
             "Light-mass 2R2C enabled (600): mass_fraction={:.2}, solar→mass={:.2}, interior_h={:.2} W/(m²·K)",
@@ -999,6 +1010,22 @@ fn main() -> Result<()> {
             cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_600;
             cfg.solar_gains_to_mass_fraction = solar_to_mass_600;
             cfg.internal_gains_to_mass_fraction = 0.0;
+        }
+
+        // Global simultaneous FVM solve: all wall cells + surface nodes + air node
+        // in one matrix with embedded radiation coupling.
+        if use_global_solve {
+            cfg.use_global_fvm_solve = true;
+            cfg.use_view_factor_radiation = std::env::var("BESTEST_GLOBAL_VF")
+                .ok()
+                .as_deref()
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            cfg.view_factor_rays_per_surface = 10_000;
+            cfg.interior_emissivity = 0.9;
+            // Floor is now an FVM wall via the ground-coupled path; remove the
+            // internal mass slab to avoid double-counting.
+            cfg.internal_mass_surfaces.retain(|m| m.cos_tilt > -0.5);
         }
 
         cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);

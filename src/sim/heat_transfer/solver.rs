@@ -1,6 +1,15 @@
 use crate::sim::heat_transfer::boundary::BoundaryCondition;
 use crate::sim::heat_transfer::mesh::{BOUNDARY, FvmMesh};
 
+/// Lightweight snapshot of solver state (temperatures only).
+///
+/// Used by the iterative surface heat balance to save/restore solver state
+/// between iteration attempts without cloning the full mesh data.
+#[derive(Clone)]
+pub struct FvmSolverSnapshot {
+    pub(crate) temperatures: Vec<f64>,
+}
+
 /// 1D FVM wall solver implementing implicit (backward Euler) time stepping.
 ///
 /// Each exterior polygon with a `WallConstruction` gets its own solver instance.
@@ -270,9 +279,36 @@ impl FvmWallSolver {
         }
     }
 
+    /// Save a lightweight snapshot of the current solver state.
+    pub fn save_state(&self) -> FvmSolverSnapshot {
+        FvmSolverSnapshot {
+            temperatures: self.temperatures.clone(),
+        }
+    }
+
+    /// Restore solver state from a previously saved snapshot.
+    pub fn restore_state(&mut self, snapshot: &FvmSolverSnapshot) {
+        self.temperatures.copy_from_slice(&snapshot.temperatures);
+    }
+
     /// Access current cell temperatures.
     pub fn temperatures(&self) -> &[f64] {
         &self.temperatures
+    }
+
+    /// Access the underlying FVM mesh (cells, faces, conductances).
+    pub fn mesh(&self) -> &FvmMesh {
+        &self.mesh
+    }
+
+    /// Wall polygon area [m²].
+    pub fn wall_area(&self) -> f64 {
+        self.wall_area
+    }
+
+    /// Overwrite cell temperatures from an external source (e.g. global solver).
+    pub fn set_temperatures(&mut self, temps: &[f64]) {
+        self.temperatures.copy_from_slice(temps);
     }
 
     /// Total thermal capacity of the wall mesh (sum of cell capacities) [J/K].

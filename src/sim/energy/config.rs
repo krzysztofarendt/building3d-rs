@@ -247,6 +247,29 @@ pub struct ThermalConfig {
     /// Used to compute `h_rad = 4 * eps * sigma * T_mean^3`.
     /// Default: 0.9 (typical for building interior surfaces).
     pub interior_emissivity: f64,
+    /// Enable iterative surface heat balance (simultaneous solve of surface
+    /// temperatures, MRT, and zone air temperature within each substep).
+    ///
+    /// When enabled, the substep loop wraps FVM wall steps + air model in an
+    /// outer iteration that converges surface temperatures and MRT together.
+    /// This eliminates the one-substep lag in MRT and allows convective-only
+    /// air gain (radiation stays between surfaces, netting to zero by reciprocity).
+    pub use_iterative_surface_balance: bool,
+    /// Maximum iterations per substep for the iterative surface balance.
+    pub surface_balance_max_iterations: usize,
+    /// Convergence tolerance for surface temperatures [°C].
+    pub surface_balance_tolerance_c: f64,
+    /// If true, assemble all wall FVM cells, surface nodes, and air nodes into a
+    /// single global matrix and solve simultaneously each substep.
+    ///
+    /// This enables radiation coupling to be embedded directly in the matrix
+    /// (no iteration needed) and produces self-consistent surface temperatures,
+    /// air temperatures, and radiative exchange within each timestep.
+    ///
+    /// Requires `use_fvm_walls = true`. When enabled, the sequential
+    /// per-wall Thomas solve + separate air model is replaced by a dense
+    /// global solve.
+    pub use_global_fvm_solve: bool,
 }
 
 impl ThermalConfig {
@@ -287,6 +310,10 @@ impl ThermalConfig {
             use_view_factor_radiation: false,
             view_factor_rays_per_surface: 10_000,
             interior_emissivity: 0.9,
+            use_iterative_surface_balance: false,
+            surface_balance_max_iterations: 4,
+            surface_balance_tolerance_c: 0.1,
+            use_global_fvm_solve: false,
         }
     }
 

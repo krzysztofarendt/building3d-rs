@@ -37,26 +37,26 @@ pub enum SurfaceHandle {
 
 // ─── Per-zone data ──────────────────────────────────────────────────────
 
-struct ViewFactorSurface {
-    handle: SurfaceHandle,
-    area_m2: f64,
+pub(crate) struct ViewFactorSurface {
+    pub(crate) handle: SurfaceHandle,
+    pub(crate) area_m2: f64,
     #[allow(dead_code)]
-    cos_tilt: f64,
+    pub(crate) cos_tilt: f64,
 }
 
 /// View factor matrix and surface metadata for one zone.
 pub struct ZoneViewFactors {
-    surfaces: Vec<ViewFactorSurface>,
+    pub(crate) surfaces: Vec<ViewFactorSurface>,
     /// Row-major F_ij matrix [i*n + j].
-    f_matrix: Vec<f64>,
-    n: usize,
+    pub(crate) f_matrix: Vec<f64>,
+    pub(crate) n: usize,
 }
 
 // ─── Building-level data ────────────────────────────────────────────────
 
 /// Precomputed view factor data for all zones.
 pub struct ViewFactorData {
-    zones: Vec<ZoneViewFactors>,
+    pub(crate) zones: Vec<ZoneViewFactors>,
     /// Maps each surface handle to (zone_index, surface_index_within_zone).
     /// Used during construction for internal mass matching; kept for future queries.
     #[allow(dead_code)]
