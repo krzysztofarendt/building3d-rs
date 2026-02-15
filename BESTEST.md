@@ -12,14 +12,14 @@ Weather source for regression runs:
 
 ## Runtime Modes in building3d
 
-Only two transient runtime modes are supported in practice:
+Only two transient runtime modes are supported:
 
 1. `Global solve + VF=0` (default)
 2. `Global solve + VF=1`
 
 `Global solve` means the simulator solves wall cells, surface nodes, and air node together in one coupled system each substep.
 
-Legacy simplified runtime methods (lumped envelope / two-node variants) are no longer used by the transient BESTEST path.
+Legacy simplified transient runtime code is removed. Historical behavior is documented in `LEGACY_SIMULATION.md`.
 
 ## Current Annual Results Snapshot
 

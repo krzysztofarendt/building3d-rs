@@ -340,8 +340,6 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
     cfg.use_view_factor_radiation = false;
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
-    cfg.use_iterative_surface_balance = false;
-    cfg.use_global_fvm_solve = true;
     cfg.interior_solar_absorptance = 0.6;
 
     // Floor is modeled as a layered FVM wall with ground-coupled exterior BC,

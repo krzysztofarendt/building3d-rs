@@ -13,7 +13,7 @@ Supported runtime modes:
 1. `global + VF=0` (default)
 2. `global + VF=1`
 
-Legacy simplified wall-capacitance runtime paths are not used in the active transient policy.
+Legacy simplified transient runtime code paths were removed. Historical notes are in `LEGACY_SIMULATION.md`.
 
 ## Implemented FVM Stack
 
@@ -66,11 +66,7 @@ Non-FVM exterior surfaces (notably windows) are represented as steady interior n
 
 ## Configuration Notes
 
-`ThermalConfig` still exposes several historical flags, but transient runtime enforces:
-- `use_fvm_walls = true`
-- `use_global_fvm_solve = true`
-
-Active user-facing mode selector is effectively:
+Active transient mode selector:
 - `use_view_factor_radiation` (`false` default, `true` optional)
 
 ## Validation Snapshot (BESTEST)

@@ -113,14 +113,6 @@ pub struct ThermalConfig {
     ///
     /// Default: `["floor"]`.
     pub ground_surface_patterns: Vec<String>,
-    /// Optional two-node (air + mass) thermal model enable knob.
-    ///
-    /// - `0.0` (default): use the historical 1R1C zone model.
-    /// - `> 0.0`: enable a 2R2C model by splitting the total thermal capacity
-    ///   into an air node and a mass node.
-    ///
-    /// Interpretation: fraction of total capacity assigned to the **mass** node.
-    pub two_node_mass_fraction: f64,
     /// Interior heat transfer coefficient used to couple air ↔ mass (W/(m²·K)).
     ///
     /// This is a coarse aggregate that lumps convection+radiation exchange between
@@ -141,11 +133,8 @@ pub struct ThermalConfig {
     /// Fraction (0..1) of the interior film coefficient assigned to the radiative path
     /// when [`Self::use_interior_radiative_exchange`] is enabled.
     pub interior_radiation_fraction: f64,
-    /// Fraction (0..1) of **solar** gains applied to the mass node when the two-node
-    /// model is enabled. The remainder is applied to the air node.
-    pub solar_gains_to_mass_fraction: f64,
-    /// If true, use a surface-aware policy for distributing **transmitted** solar gains
-    /// in the two-node model.
+    /// If true, use a surface-aware policy for distributing transmitted solar gains
+    /// to interior surfaces vs air.
     ///
     /// When enabled, transmitted shortwave is treated primarily as an **interior surface**
     /// heat input (mass node) rather than as an instantaneous air gain, which improves
@@ -156,31 +145,9 @@ pub struct ThermalConfig {
     ///
     /// The remainder is applied to the mass node (interior surfaces).
     pub transmitted_solar_to_air_fraction: f64,
-    /// Fraction (0..1) of **internal** gains applied to the mass node when the two-node
-    /// model is enabled. The remainder is applied to the air node.
+    /// Fraction (0..1) of internal gains applied to interior surfaces. The remainder
+    /// is applied directly to zone air.
     pub internal_gains_to_mass_fraction: f64,
-    /// If true, attach the envelope conductance to the **mass** node (instead of the air node)
-    /// when the 2R2C model is enabled.
-    ///
-    /// Rationale: in heavyweight buildings (e.g. BESTEST 900), most of the thermal mass is
-    /// in the envelope and should be directly coupled to outdoors. The legacy 2R2C model
-    /// couples the air node directly to outdoors, which can distort lag/peak behavior.
-    ///
-    /// When enabled:
-    /// - `UA` (conduction) is connected mass ↔ outdoors
-    /// - infiltration remains air ↔ outdoors
-    pub two_node_envelope_to_mass: bool,
-    /// Optional 3-node (air + interior surface + envelope) model enable knob.
-    ///
-    /// When `> 0.0` and when the 2R2C model is otherwise enabled, the transient solver
-    /// uses a coarse 3-node model:
-    /// - air node
-    /// - interior surface/mass node (receives most transmitted solar)
-    /// - envelope node (receives exterior absorbed solar / ground correction)
-    ///
-    /// Interpretation: fraction (0..1) of the total **mass-side** capacity assigned to the
-    /// envelope node. The remainder is assigned to the interior surface node.
-    pub three_node_envelope_mass_fraction: f64,
     /// If true, replace steady `U*A*ΔT` exterior conduction for eligible opaque
     /// exterior surfaces with per-surface 1D FVM wall solvers.
     ///
@@ -247,29 +214,6 @@ pub struct ThermalConfig {
     /// Used to compute `h_rad = 4 * eps * sigma * T_mean^3`.
     /// Default: 0.9 (typical for building interior surfaces).
     pub interior_emissivity: f64,
-    /// Enable iterative surface heat balance (simultaneous solve of surface
-    /// temperatures, MRT, and zone air temperature within each substep).
-    ///
-    /// When enabled, the substep loop wraps FVM wall steps + air model in an
-    /// outer iteration that converges surface temperatures and MRT together.
-    /// This eliminates the one-substep lag in MRT and allows convective-only
-    /// air gain (radiation stays between surfaces, netting to zero by reciprocity).
-    pub use_iterative_surface_balance: bool,
-    /// Maximum iterations per substep for the iterative surface balance.
-    pub surface_balance_max_iterations: usize,
-    /// Convergence tolerance for surface temperatures [°C].
-    pub surface_balance_tolerance_c: f64,
-    /// If true, assemble all wall FVM cells, surface nodes, and air nodes into a
-    /// single global matrix and solve simultaneously each substep.
-    ///
-    /// This enables radiation coupling to be embedded directly in the matrix
-    /// (no iteration needed) and produces self-consistent surface temperatures,
-    /// air temperatures, and radiative exchange within each timestep.
-    ///
-    /// Requires `use_fvm_walls = true`. When enabled, the sequential
-    /// per-wall Thomas solve + separate air model is replaced by a dense
-    /// global solve.
-    pub use_global_fvm_solve: bool,
     /// Interior solar absorptance for opaque surfaces (0..1).
     ///
     /// Used in the multi-bounce solar distribution model (EnergyPlus-style):
@@ -297,16 +241,12 @@ impl ThermalConfig {
             thermal_capacity_j_per_m3_k: 50_000.0,
             ground_temperature_c: None,
             ground_surface_patterns: vec!["floor".to_string()],
-            two_node_mass_fraction: 0.0,
             interior_heat_transfer_coeff_w_per_m2_k: 3.0,
             use_interior_radiative_exchange: false,
             interior_radiation_fraction: 0.6,
-            solar_gains_to_mass_fraction: 0.0,
             use_surface_aware_solar_distribution: false,
             transmitted_solar_to_air_fraction: 0.0,
             internal_gains_to_mass_fraction: 0.0,
-            two_node_envelope_to_mass: false,
-            three_node_envelope_mass_fraction: 0.0,
             use_fvm_walls: true,
             internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
@@ -318,10 +258,6 @@ impl ThermalConfig {
             use_view_factor_radiation: false,
             view_factor_rays_per_surface: 10_000,
             interior_emissivity: 0.9,
-            use_iterative_surface_balance: false,
-            surface_balance_max_iterations: 4,
-            surface_balance_tolerance_c: 0.1,
-            use_global_fvm_solve: false,
             interior_solar_absorptance: 0.6,
         }
     }
@@ -537,9 +473,7 @@ mod tests {
         assert!((config.thermal_capacity_j_per_m3_k - 50_000.0).abs() < 1e-10);
         assert!(config.ground_temperature_c.is_none());
         assert_eq!(config.ground_surface_patterns, vec!["floor".to_string()]);
-        assert!((config.two_node_mass_fraction - 0.0).abs() < 1e-12);
         assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
-        assert!((config.solar_gains_to_mass_fraction - 0.0).abs() < 1e-12);
         assert!((config.internal_gains_to_mass_fraction - 0.0).abs() < 1e-12);
         assert!(config.use_fvm_walls);
         assert_eq!(config.interzone_u_value_policy, InterZoneUValuePolicy::Mean);

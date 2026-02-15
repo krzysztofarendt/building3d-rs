@@ -2,17 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::Building;
 
-use crate::sim::heat_transfer::{
-    BoundaryCondition, FvmSolverSnapshot, FvmWallSolver, build_1d_mesh,
-};
+use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh};
 use crate::sim::index::SurfaceIndex;
 
 use super::boundary::ThermalBoundaries;
 use super::config::{InternalMassBoundary, ThermalConfig};
-use super::hvac::{
-    HvacIdealLoads, LumpedThermalModel, ThreeNodeEnvelopeThermalModel, TwoNodeEnvelopeThermalModel,
-    TwoNodeThermalModel,
-};
+use super::hvac::{HvacIdealLoads, LumpedThermalModel};
 use super::network::{MultiZoneAirModel, ThermalNetwork};
 use super::schedule::InternalGainsProfile;
 use super::solar_bridge::{
@@ -106,7 +101,6 @@ struct FvmExteriorWall {
     area_m2: f64,
     normal: crate::Vector,
     is_ground_coupled: bool,
-    h_in_w_per_m2_k: f64,
     h_out_w_per_m2_k: f64,
     h_min_iso_interior: f64,
     solver: FvmWallSolver,
@@ -123,14 +117,11 @@ struct FvmInternalMassSurface {
     mass_index: usize,
     area_m2: f64,
     boundary: InternalMassBoundary,
-    h_w_per_m2_k: f64,
     cos_tilt: f64,
     h_min_iso: f64,
     solver: FvmWallSolver,
     /// Cached interior surface temperature from the last solver step.
     cached_interior_surface_temp_c: f64,
-    /// Cached exterior surface temperature (only meaningful for TwoSided).
-    cached_exterior_surface_temp_c: f64,
 }
 
 /// A non-FVM exterior surface (e.g. glazing) whose interior surface temperature
@@ -146,22 +137,8 @@ struct SteadyStateExteriorSurface {
     is_glazing: bool,
     #[allow(dead_code)]
     cos_tilt: f64,
-    /// Cached interior surface temperature [C]. In non-global mode this remains
-    /// the steady-state estimate; in global mode it is solved explicitly.
+    /// Cached interior surface temperature [C], solved explicitly in the global system.
     cached_interior_surface_temp_c: f64,
-}
-
-fn steady_surface_interior_temp_c(
-    surface: &SteadyStateExteriorSurface,
-    t_air_c: f64,
-    t_out_c: f64,
-) -> f64 {
-    let denom = surface.u_value_w_per_m2_k + surface.h_in_w_per_m2_k;
-    if denom <= 0.0 {
-        return t_air_c;
-    }
-    let ratio = surface.u_value_w_per_m2_k / denom;
-    t_air_c - ratio * (t_air_c - t_out_c)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -395,11 +372,6 @@ fn collect_fvm_exterior_walls(
             1.0 / 0.13
         }
         .max(1e-9);
-        let h_in = if config.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
-            config.interior_heat_transfer_coeff_w_per_m2_k.max(h_si_iso)
-        } else {
-            h_si_iso
-        };
         let h_out = if construction.r_se > 0.0 {
             1.0 / construction.r_se
         } else {
@@ -418,7 +390,6 @@ fn collect_fvm_exterior_walls(
             area_m2: s.area_m2,
             normal: poly.vn,
             is_ground_coupled,
-            h_in_w_per_m2_k: h_in,
             h_out_w_per_m2_k: h_out,
             h_min_iso_interior: h_si_iso,
             solver,
@@ -455,30 +426,21 @@ fn collect_internal_mass_surfaces(
                 3.0
             }
             .max(1e-9);
-            let h = if config.interior_heat_transfer_coeff_w_per_m2_k > 0.0 {
-                config.interior_heat_transfer_coeff_w_per_m2_k.max(h_si_iso)
-            } else {
-                h_si_iso
-            };
-
             let this_mass_index = mass_index_counter;
             mass_index_counter += 1;
 
             let mesh = build_1d_mesh(&m.construction, m.area_m2);
             let solver = FvmWallSolver::new(mesh, config.indoor_temperature);
             let init_temp_in = solver.interior_surface_temp();
-            let init_temp_out = solver.exterior_surface_temp();
             out.push(FvmInternalMassSurface {
                 zone_uid: zone.uid.clone(),
                 mass_index: this_mass_index,
                 area_m2: m.area_m2,
                 boundary: m.boundary,
-                h_w_per_m2_k: h,
                 cos_tilt: m.cos_tilt,
                 h_min_iso: h_si_iso,
                 solver,
                 cached_interior_surface_temp_c: init_temp_in,
-                cached_exterior_surface_temp_c: init_temp_out,
             });
         }
     }
@@ -844,177 +806,6 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn step_internal_mass_surfaces_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID) -> f64>(
-    surfaces: &mut [FvmInternalMassSurface],
-    config: &ThermalConfig,
-    source_w_by_zone_uid: Option<&std::collections::HashMap<UID, f64>>,
-    zone_air_temp_for: F,
-    zone_radiant_temp_for: G,
-    dt_s: f64,
-    gains_out: &mut std::collections::HashMap<UID, f64>,
-    per_surface_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
-    h_r_uniform: f64,
-    convective_only_air_gain: bool,
-) {
-    gains_out.clear();
-    if surfaces.is_empty() {
-        return;
-    }
-
-    let mut total_area_by_zone_uid: std::collections::HashMap<UID, f64> =
-        std::collections::HashMap::new();
-    if let Some(src) = source_w_by_zone_uid {
-        for s in surfaces.iter() {
-            if s.area_m2 <= 0.0 {
-                continue;
-            }
-            if src.get(&s.zone_uid).copied().unwrap_or(0.0) == 0.0 {
-                continue;
-            }
-            *total_area_by_zone_uid
-                .entry(s.zone_uid.clone())
-                .or_insert(0.0) += s.area_m2;
-        }
-    }
-
-    for s in surfaces {
-        let t_air = zone_air_temp_for(&s.zone_uid);
-        // Dynamic interior convection coefficient for internal mass.
-        let t_surf_prev = s.solver.interior_surface_temp();
-        let h_base = super::convection::interior_convection_h(
-            &config.interior_convection_model,
-            t_surf_prev - t_air,
-            s.cos_tilt,
-            s.h_min_iso,
-        )
-        .max(1e-9);
-
-        // Separate convective from total coefficient (same logic as FVM walls).
-        let (h_conv, h_total, t_eff) = if let Some(mrts) = per_surface_mrt {
-            // View-factor path: TARP convection + uniform linearized radiation.
-            let h_conv = h_base;
-            let eps = config.interior_emissivity;
-            let h_rad = eps * h_r_uniform;
-            let t_mrt = mrts
-                .get(&SurfaceHandle::InternalMass {
-                    index: s.mass_index,
-                })
-                .copied()
-                .unwrap_or(t_air);
-            let h_total = h_conv + h_rad;
-            let t_eff = if h_total > 0.0 {
-                (h_conv * t_air + h_rad * t_mrt) / h_total
-            } else {
-                t_air
-            };
-            (h_conv, h_total, t_eff)
-        } else if config.use_interior_radiative_exchange {
-            match config.interior_convection_model {
-                super::convection::InteriorConvectionModel::Tarp => {
-                    // TARP is convection-only; use it as the full coupling
-                    // to air. Radiative exchange requires a proper view-factor
-                    // model to avoid energy loss through incomplete MRT feedback.
-                    (h_base, h_base, t_air)
-                }
-                super::convection::InteriorConvectionModel::Fixed(_) => {
-                    let t_rad = zone_radiant_temp_for(&s.zone_uid);
-                    let f_rad = config.interior_radiation_fraction.clamp(0.0, 1.0);
-                    let h_rad = h_base * f_rad;
-                    let h_conv = (h_base - h_rad).max(0.0);
-                    let t_eff = if h_base > 0.0 {
-                        (h_conv * t_air + h_rad * t_rad) / h_base
-                    } else {
-                        t_air
-                    };
-                    (h_conv, h_base, t_eff)
-                }
-            }
-        } else {
-            (h_base, h_base, t_air)
-        };
-
-        let mut source_flux_w_per_m2 = 0.0;
-        if let Some(src) = source_w_by_zone_uid
-            && let Some(&w_total) = src.get(&s.zone_uid)
-            && w_total != 0.0
-            && let Some(&a_total) = total_area_by_zone_uid.get(&s.zone_uid)
-            && a_total > 0.0
-        {
-            source_flux_w_per_m2 = w_total / a_total;
-        }
-
-        let (bc_exterior, bc_interior, direct_to_air_w) = if source_flux_w_per_m2 != 0.0 {
-            // Apply the source on the zone-exposed face (treated as the "interior" boundary).
-            let bc_in = BoundaryCondition::ConvectiveWithFluxToDomain {
-                h: h_total,
-                t_fluid: t_eff,
-                heat_flux: source_flux_w_per_m2,
-            };
-            let bc_out = match s.boundary {
-                InternalMassBoundary::TwoSided => BoundaryCondition::Convective {
-                    h: h_total,
-                    t_fluid: t_eff,
-                },
-                InternalMassBoundary::OneSidedAdiabatic => {
-                    BoundaryCondition::Neumann { heat_flux: 0.0 }
-                }
-            };
-            (bc_out, bc_in, 0.0)
-        } else {
-            let bc_in = BoundaryCondition::Convective {
-                h: h_total,
-                t_fluid: t_eff,
-            };
-            let bc_out = match s.boundary {
-                InternalMassBoundary::TwoSided => BoundaryCondition::Convective {
-                    h: h_total,
-                    t_fluid: t_eff,
-                },
-                InternalMassBoundary::OneSidedAdiabatic => {
-                    BoundaryCondition::Neumann { heat_flux: 0.0 }
-                }
-            };
-            (bc_out, bc_in, 0.0)
-        };
-
-        s.solver.step(dt_s, &bc_exterior, &bc_interior, &[]);
-
-        // Cache proper surface temperatures for MRT computation next substep.
-        s.cached_interior_surface_temp_c = s.solver.interior_surface_temperature(&bc_interior);
-        if matches!(s.boundary, InternalMassBoundary::TwoSided) {
-            s.cached_exterior_surface_temp_c = s.solver.exterior_surface_temperature(&bc_exterior);
-        }
-
-        let mut q_to_air_w = 0.0;
-        // Interior face transfer to air.
-        let t_surf_in = s.cached_interior_surface_temp_c;
-        if convective_only_air_gain {
-            q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
-        } else if per_surface_mrt.is_some() {
-            q_to_air_w += h_total * (t_surf_in - t_eff) * s.area_m2;
-        } else {
-            q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
-        }
-        // Exterior face (only if it is coupled to zone air).
-        if matches!(s.boundary, InternalMassBoundary::TwoSided) {
-            let t_surf_out = s.cached_exterior_surface_temp_c;
-            if convective_only_air_gain {
-                q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
-            } else if per_surface_mrt.is_some() {
-                q_to_air_w += h_total * (t_surf_out - t_eff) * s.area_m2;
-            } else {
-                q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
-            }
-        }
-        q_to_air_w += direct_to_air_w;
-
-        if q_to_air_w != 0.0 {
-            *gains_out.entry(s.zone_uid.clone()).or_insert(0.0) += q_to_air_w;
-        }
-    }
-}
-
 fn compute_exterior_opaque_sol_air_gain_total_w(
     building: &Building,
     base_config: &ThermalConfig,
@@ -1287,25 +1078,6 @@ fn looks_like_glazing(
     p.contains("window") || p.contains("glazing") || p.contains("glass")
 }
 
-fn estimate_opaque_envelope_area_m2(
-    index: &SurfaceIndex,
-    boundaries: &ThermalBoundaries,
-    base_config: &ThermalConfig,
-    solar_config: Option<&SolarGainConfig>,
-) -> f64 {
-    let mut a = 0.0;
-    for s in &index.surfaces {
-        if !boundaries.is_exterior(&s.polygon_uid) {
-            continue;
-        }
-        if looks_like_glazing(&s.path, base_config, solar_config) {
-            continue;
-        }
-        a += s.area_m2.max(0.0);
-    }
-    a.max(0.0)
-}
-
 /// Runs an annual hourly energy simulation.
 ///
 /// For each hour:
@@ -1476,35 +1248,20 @@ pub fn run_transient_simulation_with_options(
     solar_config: Option<&SolarGainConfig>,
     options: &TransientSimulationOptions,
 ) -> AnnualResult {
-    #[derive(Debug, Clone)]
-    enum TwoNodeVariant {
-        AirToOutdoor(TwoNodeThermalModel),
-        EnvelopeToMass(TwoNodeEnvelopeThermalModel),
-        ThreeNodeEnvelope(ThreeNodeEnvelopeThermalModel),
-    }
-
     // Runtime policy:
     // - Keep only global FVM solve modes (VF off/on).
-    // - Disable legacy lumped/two-node envelope pathways.
+    // - Keep FVM wall conduction enabled.
     let mut enforced_config = base_config.clone();
     enforced_config.use_fvm_walls = true;
-    enforced_config.use_global_fvm_solve = true;
-    enforced_config.two_node_mass_fraction = 0.0;
-    enforced_config.two_node_envelope_to_mass = false;
-    enforced_config.three_node_envelope_mass_fraction = 0.0;
     let base_config = &enforced_config;
 
     let index = SurfaceIndex::new(building);
     let boundaries = ThermalBoundaries::classify(building, &index);
     let (mut fvm_walls, fvm_skip_polygons) =
         collect_fvm_exterior_walls(building, base_config, &index, &boundaries, solar_config);
-    let mut fvm_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
-        std::collections::HashMap::new();
     let has_fvm_walls = !fvm_walls.is_empty();
 
     let mut internal_mass_surfaces = collect_internal_mass_surfaces(building, base_config);
-    let mut internal_mass_gains_by_zone_uid: std::collections::HashMap<UID, f64> =
-        std::collections::HashMap::new();
     let has_internal_mass = !internal_mass_surfaces.is_empty();
 
     let mut ss_exterior_surfaces = collect_steady_state_exterior_surfaces(
@@ -1521,7 +1278,6 @@ pub fn run_transient_simulation_with_options(
     // This replaces the simplified area-weighted MRT with per-surface MRT.
     use super::view_factors::{
         InternalMassInfo, SurfaceHandle, ViewFactorData, compute_building_view_factors,
-        compute_per_surface_mrt, linearized_h_rad,
     };
     let view_factor_data: Option<ViewFactorData> = if base_config.use_view_factor_radiation {
         let mass_infos: Vec<InternalMassInfo> = internal_mass_surfaces
@@ -1602,7 +1358,6 @@ pub fn run_transient_simulation_with_options(
     // Compute building-level UA breakdown from exterior surfaces.
     let mut ua_total = 0.0;
     let mut ua_glazing = 0.0;
-    let mut ua_opaque = 0.0;
     let mut ua_ground = 0.0;
     for s in &index.surfaces {
         if !boundaries.is_exterior(&s.polygon_uid) {
@@ -1616,8 +1371,6 @@ pub fn run_transient_simulation_with_options(
         ua_total += ua;
         if looks_like_glazing(&s.path, base_config, solar_config) {
             ua_glazing += ua;
-        } else {
-            ua_opaque += ua;
         }
 
         if base_config.ground_temperature_c.is_some()
@@ -1638,199 +1391,20 @@ pub fn run_transient_simulation_with_options(
     // Infiltration conductance: rho * cp * V * ACH / 3600.
     let infiltration_cond = 1.2 * 1005.0 * volume * base_config.infiltration_ach / 3600.0;
 
-    // Zone air node thermal capacity.
-    //
-    // When FVM walls and/or internal mass slabs are present, all structural mass
-    // is explicitly modeled. The lumped air node should then be pure air only
-    // (rho * cp * V). Otherwise, fall back to the user-configured volumetric
-    // capacity which represents a simplified "all mass" lump.
+    // Zone air node thermal capacity (air only). Envelope mass is represented by FVM walls.
     let air_capacity_j_per_k = 1.2 * 1005.0 * volume; // rho*cp*V [J/K]
-    let mut thermal_capacity = volume * base_config.thermal_capacity_j_per_m3_k; // J/K
-    if has_fvm_walls || has_internal_mass {
-        thermal_capacity = air_capacity_j_per_k;
-    }
+    let thermal_capacity = air_capacity_j_per_k;
 
-    let k_env = ua_total + infiltration_cond;
     let substeps_per_hour = options.substeps_per_hour.max(1);
     let dt_s = 3600.0 / substeps_per_hour as f64;
     let dt_h = dt_s / 3600.0;
 
-    let use_two_node = base_config.two_node_mass_fraction > 0.0
-        && base_config.interior_heat_transfer_coeff_w_per_m2_k > 0.0
-        && thermal_capacity > 0.0
-        && k_env.is_finite()
-        && k_env >= 0.0
-        && !has_internal_mass
-        && (!has_fvm_walls || (thermal_capacity - air_capacity_j_per_k) > 1.0);
-
-    // When FVM exterior walls are enabled, the envelope conduction + mass is already represented
-    // explicitly via per-surface wall solvers. In that case, avoid routing the remaining
-    // building-level envelope UA to the mass node (which would distort the intended coupling).
-    let two_node_envelope_to_mass = base_config.two_node_envelope_to_mass && !has_fvm_walls;
-
-    let use_three_node = use_two_node
-        && two_node_envelope_to_mass
-        && base_config.three_node_envelope_mass_fraction > 0.0;
-
-    let opaque_area_m2 = if use_two_node {
-        estimate_opaque_envelope_area_m2(&index, &boundaries, base_config, solar_config)
-    } else {
-        0.0
-    };
-
-    let (mut model_1r1c, mut model_2r2c) = if use_two_node && opaque_area_m2 > 0.0 {
-        let f_mass = base_config.two_node_mass_fraction.clamp(0.0, 1.0);
-        let c_total = thermal_capacity;
-        let air_capacity_min = 1.2 * 1005.0 * volume; // rho*cp*V
-        let mut c_air = (1.0 - f_mass) * c_total;
-        c_air = c_air.max(air_capacity_min).min(c_total);
-        let c_mass_total = (c_total - c_air).max(0.0);
-
-        let k_am = base_config.interior_heat_transfer_coeff_w_per_m2_k.max(0.0) * opaque_area_m2;
-        if use_three_node {
-            let mut k_se_total = 0.0;
-            let mut k_eo_total = 0.0;
-
-            for s in &index.surfaces {
-                if !boundaries.is_exterior(&s.polygon_uid) {
-                    continue;
-                }
-                if looks_like_glazing(&s.path, base_config, solar_config) {
-                    continue;
-                }
-
-                let area = s.area_m2.max(0.0);
-                if area <= 0.0 {
-                    continue;
-                }
-
-                let mut r_layers = 0.0;
-                let mut r_se = 0.04;
-                let mut r_si = 0.13;
-
-                if let Some(construction) = base_config.resolve_construction(&s.path) {
-                    r_se = construction.r_se.max(0.0);
-                    r_si = construction.r_si.max(0.0);
-                    r_layers = construction
-                        .layers
-                        .iter()
-                        .map(|l| {
-                            if l.conductivity > 0.0 {
-                                l.thickness / l.conductivity
-                            } else {
-                                0.0
-                            }
-                        })
-                        .sum::<f64>()
-                        .max(0.0);
-                } else {
-                    let u = base_config.resolve_u_value_for_surface(&s.polygon_uid, &s.path);
-                    if u.is_finite() && u > 0.0 {
-                        let r_total = 1.0 / u;
-                        r_layers = (r_total - r_se - r_si).max(0.0);
-                    }
-                }
-
-                if r_layers <= 0.0 {
-                    continue;
-                }
-
-                // Opaque envelope split: surface ↔ envelope uses the inner half of the layer
-                // resistance (including interior film); envelope ↔ outdoor uses the outer half
-                // plus exterior film.
-                let r_inner = r_si + 0.5 * r_layers;
-                let r_outer = r_se + 0.5 * r_layers;
-                if r_inner > 0.0 {
-                    k_se_total += area / r_inner;
-                }
-                if r_outer > 0.0 {
-                    k_eo_total += area / r_outer;
-                }
-            }
-
-            let f_env = base_config
-                .three_node_envelope_mass_fraction
-                .clamp(0.0, 0.95);
-            let c_envelope = (f_env * c_mass_total).max(1.0);
-            let c_surface = (c_mass_total - c_envelope).max(1.0);
-
-            if k_se_total > 0.0
-                && k_eo_total > 0.0
-                && c_surface.is_finite()
-                && c_envelope.is_finite()
-            {
-                (
-                    None,
-                    Some(TwoNodeVariant::ThreeNodeEnvelope(
-                        ThreeNodeEnvelopeThermalModel::new(
-                            base_config.indoor_temperature,
-                            base_config.indoor_temperature,
-                            base_config.indoor_temperature,
-                            infiltration_cond + ua_glazing,
-                            k_am,
-                            k_se_total,
-                            k_eo_total,
-                            c_air,
-                            c_surface,
-                            c_envelope,
-                        ),
-                    )),
-                )
-            } else {
-                (
-                    None,
-                    Some(TwoNodeVariant::EnvelopeToMass(
-                        TwoNodeEnvelopeThermalModel::new(
-                            base_config.indoor_temperature,
-                            base_config.indoor_temperature,
-                            infiltration_cond + ua_glazing,
-                            ua_opaque,
-                            k_am,
-                            c_air,
-                            c_mass_total.max(1.0),
-                        ),
-                    )),
-                )
-            }
-        } else if two_node_envelope_to_mass {
-            (
-                None,
-                Some(TwoNodeVariant::EnvelopeToMass(
-                    TwoNodeEnvelopeThermalModel::new(
-                        base_config.indoor_temperature,
-                        base_config.indoor_temperature,
-                        infiltration_cond + ua_glazing,
-                        ua_opaque,
-                        k_am,
-                        c_air,
-                        c_mass_total.max(1.0),
-                    ),
-                )),
-            )
-        } else {
-            (
-                None,
-                Some(TwoNodeVariant::AirToOutdoor(TwoNodeThermalModel::new(
-                    base_config.indoor_temperature,
-                    base_config.indoor_temperature,
-                    k_env,
-                    k_am,
-                    c_air,
-                    c_mass_total.max(1.0),
-                ))),
-            )
-        }
-    } else {
-        (
-            Some(LumpedThermalModel::new(
-                base_config.indoor_temperature,
-                ua_total,
-                infiltration_cond,
-                thermal_capacity,
-            )),
-            None,
-        )
-    };
+    let mut model_1r1c = LumpedThermalModel::new(
+        base_config.indoor_temperature,
+        ua_total,
+        infiltration_cond,
+        thermal_capacity,
+    );
 
     let mut annual_heating = 0.0;
     let mut annual_cooling = 0.0;
@@ -1847,95 +1421,89 @@ pub fn run_transient_simulation_with_options(
         SteadySurfaceInfo, WallStepConditions,
     };
     let mut global_ss_surface_map: Vec<usize> = Vec::new();
-    let (global_topology, mut global_temps): (Option<GlobalTopology>, Vec<f64>) =
-        if base_config.use_global_fvm_solve {
-            // Build wall info for topology
-            let wall_infos: Vec<FvmWallInfo> = {
-                let mut infos = Vec::new();
-                for w in &fvm_walls {
-                    infos.push(FvmWallInfo {
-                        solver: &w.solver,
-                        zone_idx: 0, // single zone for now
-                        area_m2: w.area_m2,
-                        has_exterior_surface: false,
-                        exterior_adiabatic: false,
-                    });
-                }
-                for m in &internal_mass_surfaces {
-                    infos.push(FvmWallInfo {
-                        solver: &m.solver,
-                        zone_idx: 0,
-                        area_m2: m.area_m2,
-                        has_exterior_surface: matches!(m.boundary, InternalMassBoundary::TwoSided),
-                        exterior_adiabatic: matches!(
-                            m.boundary,
-                            InternalMassBoundary::OneSidedAdiabatic
-                        ),
-                    });
-                }
-                infos
-            };
-
-            let mut steady_infos: Vec<SteadySurfaceInfo> = Vec::new();
-            let mut explicit_glazing_ua = 0.0_f64;
-            for (ss_idx, ss) in ss_exterior_surfaces.iter().enumerate() {
-                if ss.area_m2 <= 0.0 || ss.u_value_w_per_m2_k <= 0.0 || ss.h_in_w_per_m2_k <= 0.0 {
-                    continue;
-                }
-                if ss.is_glazing {
-                    explicit_glazing_ua += ss.u_value_w_per_m2_k * ss.area_m2;
-                }
-                steady_infos.push(SteadySurfaceInfo {
-                    zone_idx: 0, // single-zone path for now
-                    area_m2: ss.area_m2,
-                    h_in_w_per_m2_k: ss.h_in_w_per_m2_k,
-                    u_to_out_w_per_m2_k: ss.u_value_w_per_m2_k,
+    let (global_topology, mut global_temps): (GlobalTopology, Vec<f64>) = {
+        // Build wall info for topology
+        let wall_infos: Vec<FvmWallInfo> = {
+            let mut infos = Vec::new();
+            for w in &fvm_walls {
+                infos.push(FvmWallInfo {
+                    solver: &w.solver,
+                    zone_idx: 0, // single zone for now
+                    area_m2: w.area_m2,
+                    has_exterior_surface: false,
+                    exterior_adiabatic: false,
                 });
-                global_ss_surface_map.push(ss_idx);
             }
-
-            // If a glazing surface is represented explicitly as a steady-state node,
-            // remove its UA from the air-node lumped glazing path to avoid double-counting.
-            let glazing_ua_residual = (ua_glazing - explicit_glazing_ua).max(0.0);
-
-            let topo = global_solve::build_topology_with_steady(
-                &wall_infos,
-                &steady_infos,
-                1, // single zone
-                &[air_capacity_j_per_k],
-                &[infiltration_cond],
-                &[glazing_ua_residual],
-            );
-
-            // Extract initial temperatures
-            let solvers: Vec<&FvmWallSolver> = {
-                let mut s: Vec<&FvmWallSolver> = Vec::new();
-                for w in &fvm_walls {
-                    s.push(&w.solver);
-                }
-                for m in &internal_mass_surfaces {
-                    s.push(&m.solver);
-                }
-                s
-            };
-            let t_air_init = model_1r1c
-                .as_ref()
-                .map(|m| m.zone_temperature)
-                .unwrap_or(base_config.indoor_temperature);
-            let mut steady_temps = Vec::with_capacity(global_ss_surface_map.len());
-            for &ss_idx in &global_ss_surface_map {
-                steady_temps.push(ss_exterior_surfaces[ss_idx].cached_interior_surface_temp_c);
+            for m in &internal_mass_surfaces {
+                infos.push(FvmWallInfo {
+                    solver: &m.solver,
+                    zone_idx: 0,
+                    area_m2: m.area_m2,
+                    has_exterior_surface: matches!(m.boundary, InternalMassBoundary::TwoSided),
+                    exterior_adiabatic: matches!(
+                        m.boundary,
+                        InternalMassBoundary::OneSidedAdiabatic
+                    ),
+                });
             }
-            let temps = global_solve::extract_temperatures_with_steady(
-                &topo,
-                &solvers,
-                &[t_air_init],
-                &steady_temps,
-            );
-            (Some(topo), temps)
-        } else {
-            (None, vec![])
+            infos
         };
+
+        let mut steady_infos: Vec<SteadySurfaceInfo> = Vec::new();
+        let mut explicit_glazing_ua = 0.0_f64;
+        for (ss_idx, ss) in ss_exterior_surfaces.iter().enumerate() {
+            if ss.area_m2 <= 0.0 || ss.u_value_w_per_m2_k <= 0.0 || ss.h_in_w_per_m2_k <= 0.0 {
+                continue;
+            }
+            if ss.is_glazing {
+                explicit_glazing_ua += ss.u_value_w_per_m2_k * ss.area_m2;
+            }
+            steady_infos.push(SteadySurfaceInfo {
+                zone_idx: 0, // single-zone path for now
+                area_m2: ss.area_m2,
+                h_in_w_per_m2_k: ss.h_in_w_per_m2_k,
+                u_to_out_w_per_m2_k: ss.u_value_w_per_m2_k,
+            });
+            global_ss_surface_map.push(ss_idx);
+        }
+
+        // If a glazing surface is represented explicitly as a steady-state node,
+        // remove its UA from the air-node lumped glazing path to avoid double-counting.
+        let glazing_ua_residual = (ua_glazing - explicit_glazing_ua).max(0.0);
+
+        let topo = global_solve::build_topology_with_steady(
+            &wall_infos,
+            &steady_infos,
+            1, // single zone
+            &[air_capacity_j_per_k],
+            &[infiltration_cond],
+            &[glazing_ua_residual],
+        );
+
+        // Extract initial temperatures
+        let solvers: Vec<&FvmWallSolver> = {
+            let mut s: Vec<&FvmWallSolver> = Vec::new();
+            for w in &fvm_walls {
+                s.push(&w.solver);
+            }
+            for m in &internal_mass_surfaces {
+                s.push(&m.solver);
+            }
+            s
+        };
+        let t_air_init = model_1r1c.zone_temperature;
+        let mut steady_temps = Vec::with_capacity(global_ss_surface_map.len());
+        for &ss_idx in &global_ss_surface_map {
+            steady_temps.push(ss_exterior_surfaces[ss_idx].cached_interior_surface_temp_c);
+        }
+        let temps = global_solve::extract_temperatures_with_steady(
+            &topo,
+            &solvers,
+            &[t_air_init],
+            &steady_temps,
+        );
+        (topo, temps)
+    };
 
     let mut simulate_hour = |hour_idx: usize,
                              record: &super::weather::HourlyRecord,
@@ -1995,8 +1563,7 @@ pub fn run_transient_simulation_with_options(
             }
             None => (0.0, 0.0),
         };
-        let use_surface_sources = model_2r2c.is_none()
-            && base_config.use_surface_aware_solar_distribution
+        let use_surface_sources = base_config.use_surface_aware_solar_distribution
             && (has_internal_mass || has_fvm_walls);
 
         let (gains_air_w, gains_surface_w) = if use_surface_sources {
@@ -2192,430 +1759,11 @@ pub fn run_transient_simulation_with_options(
         let mut hour_peak_cooling_w = 0.0_f64;
 
         for _substep in 0..substeps_per_hour {
-            let t_air_for_walls = if let Some(m) = model_2r2c.as_ref() {
-                match m {
-                    TwoNodeVariant::AirToOutdoor(model) => model.air_temperature_c,
-                    TwoNodeVariant::EnvelopeToMass(model) => model.air_temperature_c,
-                    TwoNodeVariant::ThreeNodeEnvelope(model) => model.air_temperature_c,
-                }
-            } else {
-                model_1r1c
-                    .as_ref()
-                    .map(|m| m.zone_temperature)
-                    .unwrap_or(base_config.indoor_temperature)
-            };
-
-            let t_air_start_c = t_air_for_walls;
-            let use_explicit_ss_temperatures = global_topology.is_some();
-
-            // ── Per-surface MRT (view factors) or area-weighted MRT (legacy) ──
-            let (vf_mrt_map, vf_h_r) = if let Some(vf) = &view_factor_data {
-                // Collect surface temps for view-factor MRT computation.
-                let mut surf_temps: std::collections::HashMap<SurfaceHandle, f64> =
-                    std::collections::HashMap::new();
-                for w in &fvm_walls {
-                    surf_temps.insert(
-                        SurfaceHandle::Polygon(w.polygon_uid.clone()),
-                        w.cached_interior_surface_temp_c,
-                    );
-                }
-                for m in &internal_mass_surfaces {
-                    surf_temps.insert(
-                        SurfaceHandle::InternalMass {
-                            index: m.mass_index,
-                        },
-                        m.cached_interior_surface_temp_c,
-                    );
-                }
-                // Steady-state exterior surfaces (e.g. windows): in global mode use
-                // solved node temperatures; otherwise use steady-state estimate.
-                for ss in &ss_exterior_surfaces {
-                    let t_surf = if use_explicit_ss_temperatures {
-                        ss.cached_interior_surface_temp_c
-                    } else {
-                        steady_surface_interior_temp_c(
-                            ss,
-                            t_air_start_c,
-                            record.dry_bulb_temperature,
-                        )
-                    };
-                    surf_temps.insert(SurfaceHandle::Polygon(ss.polygon_uid.clone()), t_surf);
-                }
-                let mrt_map = compute_per_surface_mrt(vf, &surf_temps);
-                let h_r = linearized_h_rad(base_config.interior_emissivity, t_air_start_c);
-                (Some(mrt_map), h_r)
-            } else {
-                (None, 0.0)
-            };
-
-            let t_rad_guess_c =
-                if view_factor_data.is_none() && base_config.use_interior_radiative_exchange {
-                    let f_rad = base_config.interior_radiation_fraction.clamp(0.0, 1.0);
-                    let mut num = 0.0_f64;
-                    let mut den = 0.0_f64;
-
-                    for w in &fvm_walls {
-                        if w.area_m2 <= 0.0 {
-                            continue;
-                        }
-                        let h_rad = w.h_in_w_per_m2_k.max(1e-9) * f_rad;
-                        if h_rad <= 0.0 {
-                            continue;
-                        }
-                        num += h_rad * w.area_m2 * w.cached_interior_surface_temp_c;
-                        den += h_rad * w.area_m2;
-                    }
-                    for m in &internal_mass_surfaces {
-                        if m.area_m2 <= 0.0 {
-                            continue;
-                        }
-                        let h_rad = m.h_w_per_m2_k.max(1e-9) * f_rad;
-                        if h_rad <= 0.0 {
-                            continue;
-                        }
-                        num += h_rad * m.area_m2 * m.cached_interior_surface_temp_c;
-                        den += h_rad * m.area_m2;
-                        if matches!(m.boundary, InternalMassBoundary::TwoSided) {
-                            num += h_rad * m.area_m2 * m.cached_exterior_surface_temp_c;
-                            den += h_rad * m.area_m2;
-                        }
-                    }
-
-                    // Steady-state exterior surfaces (e.g. windows): in global mode use
-                    // solved node temperatures; otherwise use steady-state estimate.
-                    for ss in &ss_exterior_surfaces {
-                        if ss.area_m2 <= 0.0 {
-                            continue;
-                        }
-                        let h_rad = ss.h_in_w_per_m2_k.max(1e-9) * f_rad;
-                        if h_rad <= 0.0 {
-                            continue;
-                        }
-                        let t_surf = if use_explicit_ss_temperatures {
-                            ss.cached_interior_surface_temp_c
-                        } else {
-                            steady_surface_interior_temp_c(
-                                ss,
-                                t_air_start_c,
-                                record.dry_bulb_temperature,
-                            )
-                        };
-                        num += h_rad * ss.area_m2 * t_surf;
-                        den += h_rad * ss.area_m2;
-                    }
-
-                    if den > 0.0 { num / den } else { t_air_start_c }
-                } else {
-                    t_air_start_c
-                };
-
-            let step_fvm_walls_for_air_temp =
-                |air_temp_c: f64,
-                 walls_start: &Vec<FvmExteriorWall>,
-                 fvm_gains_by_zone_uid: &mut std::collections::HashMap<UID, f64>,
-                 vf_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
-                 h_r: f64|
-                 -> (Vec<FvmExteriorWall>, f64) {
-                    if walls_start.is_empty() {
-                        return (vec![], 0.0);
-                    }
-                    let mut walls = walls_start.clone();
-                    step_fvm_exterior_walls_fill_gains_by_zone_uid(
-                        &mut walls,
-                        base_config,
-                        solar_config,
-                        solar_params.as_ref(),
-                        interior_sources_walls_w_by_zone_uid.as_ref(),
-                        interior_sources_walls_w_by_polygon_uid.as_ref(),
-                        floor_beam_w_by_zone_uid.as_ref(),
-                        record.dry_bulb_temperature,
-                        record.wind_speed,
-                        |_| air_temp_c,
-                        |_| t_rad_guess_c,
-                        dt_s,
-                        fvm_gains_by_zone_uid,
-                        vf_mrt,
-                        h_r,
-                        false,
-                    );
-                    let q_fvm_walls_to_zone_w: f64 = fvm_gains_by_zone_uid.values().sum();
-                    (walls, q_fvm_walls_to_zone_w)
-                };
-
-            let (heating_power, cooling_power) = if let Some(model) = model_2r2c.as_mut() {
-                let f_internal_mass = base_config.internal_gains_to_mass_fraction.clamp(0.0, 1.0);
-
-                let gains_mass_internal = gains * f_internal_mass;
-                let gains_air_internal = gains * (1.0 - f_internal_mass);
-
-                let (gains_mass_solar, gains_air_solar) =
-                    if base_config.use_surface_aware_solar_distribution {
-                        let f_air = base_config
-                            .transmitted_solar_to_air_fraction
-                            .clamp(0.0, 1.0);
-                        let air = solar_transmitted * f_air;
-                        let mass = solar_transmitted * (1.0 - f_air);
-                        (mass, air)
-                    } else {
-                        let f_mass = base_config.solar_gains_to_mass_fraction.clamp(0.0, 1.0);
-                        (
-                            solar_transmitted * f_mass,
-                            solar_transmitted * (1.0 - f_mass),
-                        )
-                    };
-
-                match model {
-                    TwoNodeVariant::AirToOutdoor(model) => {
-                        let gains_mass = gains_mass_internal + gains_mass_solar;
-                        let (walls_free, q_fvm_free) = step_fvm_walls_for_air_temp(
-                            t_air_start_c,
-                            &fvm_walls,
-                            &mut fvm_gains_by_zone_uid,
-                            vf_mrt_map.as_ref(),
-                            vf_h_r,
-                        );
-                        let gains_air_free = gains_air_internal
-                            + gains_air_solar
-                            + solar_opaque_sol_air
-                            + q_ground
-                            + q_fvm_free;
-
-                        let mut free = model.clone();
-                        free.step(
-                            record.dry_bulb_temperature,
-                            gains_air_free,
-                            gains_mass,
-                            0.0,
-                            dt_s,
-                        );
-
-                        let t_free = free.air_temperature_c;
-                        let (air_temp_bc, use_hvac) = if t_free < hvac.heating_setpoint {
-                            (hvac.heating_setpoint, true)
-                        } else if t_free > hvac.cooling_setpoint {
-                            (hvac.cooling_setpoint, true)
-                        } else {
-                            (t_air_start_c, false)
-                        };
-
-                        let (walls_step, q_fvm_step) = if use_hvac {
-                            step_fvm_walls_for_air_temp(
-                                air_temp_bc,
-                                &fvm_walls,
-                                &mut fvm_gains_by_zone_uid,
-                                vf_mrt_map.as_ref(),
-                                vf_h_r,
-                            )
-                        } else {
-                            (walls_free, q_fvm_free)
-                        };
-
-                        let gains_air = gains_air_internal
-                            + gains_air_solar
-                            + solar_opaque_sol_air
-                            + q_ground
-                            + q_fvm_step;
-
-                        let q_hvac = if use_hvac {
-                            hvac.required_hvac_power_two_node(
-                                air_temp_bc,
-                                model.air_temperature_c,
-                                model.mass_temperature_c,
-                                record.dry_bulb_temperature,
-                                model.envelope_conductance_w_per_k,
-                                model.air_mass_conductance_w_per_k,
-                                gains_air,
-                                gains_mass,
-                                model.air_capacity_j_per_k,
-                                model.mass_capacity_j_per_k,
-                                dt_s,
-                            )
-                        } else {
-                            0.0
-                        };
-
-                        model.step(
-                            record.dry_bulb_temperature,
-                            gains_air,
-                            gains_mass,
-                            q_hvac,
-                            dt_s,
-                        );
-
-                        fvm_walls = walls_step;
-
-                        (q_hvac.max(0.0), (-q_hvac).max(0.0))
-                    }
-                    TwoNodeVariant::EnvelopeToMass(model) => {
-                        let gains_mass = gains_mass_internal
-                            + gains_mass_solar
-                            + solar_opaque_sol_air
-                            + q_ground;
-
-                        let (walls_free, q_fvm_free) = step_fvm_walls_for_air_temp(
-                            t_air_start_c,
-                            &fvm_walls,
-                            &mut fvm_gains_by_zone_uid,
-                            vf_mrt_map.as_ref(),
-                            vf_h_r,
-                        );
-                        let gains_air_free = gains_air_internal + gains_air_solar + q_fvm_free;
-
-                        let mut free = model.clone();
-                        free.step(
-                            record.dry_bulb_temperature,
-                            gains_air_free,
-                            gains_mass,
-                            0.0,
-                            dt_s,
-                        );
-
-                        let t_free = free.air_temperature_c;
-                        let (air_temp_bc, use_hvac) = if t_free < hvac.heating_setpoint {
-                            (hvac.heating_setpoint, true)
-                        } else if t_free > hvac.cooling_setpoint {
-                            (hvac.cooling_setpoint, true)
-                        } else {
-                            (t_air_start_c, false)
-                        };
-
-                        let (walls_step, q_fvm_step) = if use_hvac {
-                            step_fvm_walls_for_air_temp(
-                                air_temp_bc,
-                                &fvm_walls,
-                                &mut fvm_gains_by_zone_uid,
-                                vf_mrt_map.as_ref(),
-                                vf_h_r,
-                            )
-                        } else {
-                            (walls_free, q_fvm_free)
-                        };
-
-                        let gains_air = gains_air_internal + gains_air_solar + q_fvm_step;
-
-                        let q_hvac = if use_hvac {
-                            hvac.required_hvac_power_two_node_envelope(
-                                air_temp_bc,
-                                model.air_temperature_c,
-                                model.mass_temperature_c,
-                                record.dry_bulb_temperature,
-                                model.air_outdoor_conductance_w_per_k,
-                                model.mass_outdoor_conductance_w_per_k,
-                                model.air_mass_conductance_w_per_k,
-                                gains_air,
-                                gains_mass,
-                                model.air_capacity_j_per_k,
-                                model.mass_capacity_j_per_k,
-                                dt_s,
-                            )
-                        } else {
-                            0.0
-                        };
-
-                        model.step(
-                            record.dry_bulb_temperature,
-                            gains_air,
-                            gains_mass,
-                            q_hvac,
-                            dt_s,
-                        );
-
-                        fvm_walls = walls_step;
-
-                        (q_hvac.max(0.0), (-q_hvac).max(0.0))
-                    }
-                    TwoNodeVariant::ThreeNodeEnvelope(model) => {
-                        // Three-node policy:
-                        // - transmitted solar + (optionally) internal gains heat interior surfaces
-                        // - exterior absorbed solar + ground correction heat the envelope node and reach the
-                        //   room with lag through the surface↔envelope conductance.
-                        let (walls_free, q_fvm_free) = step_fvm_walls_for_air_temp(
-                            t_air_start_c,
-                            &fvm_walls,
-                            &mut fvm_gains_by_zone_uid,
-                            vf_mrt_map.as_ref(),
-                            vf_h_r,
-                        );
-                        let gains_air_free = gains_air_internal + gains_air_solar + q_fvm_free;
-                        let gains_surface = gains_mass_internal + gains_mass_solar;
-                        let gains_envelope = solar_opaque_sol_air + q_ground;
-
-                        let mut free = model.clone();
-                        free.step(
-                            record.dry_bulb_temperature,
-                            gains_air_free,
-                            gains_surface,
-                            gains_envelope,
-                            0.0,
-                            dt_s,
-                        );
-
-                        let t_free = free.air_temperature_c;
-                        let (air_temp_bc, use_hvac) = if t_free < hvac.heating_setpoint {
-                            (hvac.heating_setpoint, true)
-                        } else if t_free > hvac.cooling_setpoint {
-                            (hvac.cooling_setpoint, true)
-                        } else {
-                            (t_air_start_c, false)
-                        };
-
-                        let (walls_step, q_fvm_step) = if use_hvac {
-                            step_fvm_walls_for_air_temp(
-                                air_temp_bc,
-                                &fvm_walls,
-                                &mut fvm_gains_by_zone_uid,
-                                vf_mrt_map.as_ref(),
-                                vf_h_r,
-                            )
-                        } else {
-                            (walls_free, q_fvm_free)
-                        };
-
-                        let gains_air = gains_air_internal + gains_air_solar + q_fvm_step;
-
-                        let q_hvac = if use_hvac {
-                            hvac.required_hvac_power_three_node_envelope(
-                                air_temp_bc,
-                                model.air_temperature_c,
-                                model.surface_temperature_c,
-                                model.envelope_temperature_c,
-                                record.dry_bulb_temperature,
-                                model.air_outdoor_conductance_w_per_k,
-                                model.air_surface_conductance_w_per_k,
-                                model.surface_envelope_conductance_w_per_k,
-                                model.envelope_outdoor_conductance_w_per_k,
-                                gains_air,
-                                gains_surface,
-                                gains_envelope,
-                                model.air_capacity_j_per_k,
-                                model.surface_capacity_j_per_k,
-                                model.envelope_capacity_j_per_k,
-                                dt_s,
-                            )
-                        } else {
-                            0.0
-                        };
-
-                        model.step(
-                            record.dry_bulb_temperature,
-                            gains_air,
-                            gains_surface,
-                            gains_envelope,
-                            q_hvac,
-                            dt_s,
-                        );
-
-                        fvm_walls = walls_step;
-
-                        (q_hvac.max(0.0), (-q_hvac).max(0.0))
-                    }
-                }
-            } else if base_config.use_global_fvm_solve
-                && let Some(topo) = global_topology.as_ref()
-            {
+            let (heating_power, cooling_power) = {
                 // ── Global simultaneous FVM solve ───────────────────────
                 // All wall cells + surface nodes + air node assembled into one matrix.
-                let model = model_1r1c.as_mut().unwrap();
+                let topo = &global_topology;
+                let model = &mut model_1r1c;
 
                 // Build per-wall conditions
                 let mut g_wall_conds: Vec<WallStepConditions> = Vec::new();
@@ -2992,246 +2140,6 @@ pub fn run_transient_simulation_with_options(
                 let q_heating = result.heating_w_per_zone[0];
                 let q_cooling = result.cooling_w_per_zone[0];
                 (q_heating, q_cooling)
-            } else {
-                let model = model_1r1c.as_mut().unwrap();
-
-                // ── Iterative surface heat balance ────────────────────────
-                // When enabled with view factors, iterate to converge surface
-                // temperatures, MRT, and zone air temperature simultaneously.
-                // Each iteration: restore solver state → recompute MRT →
-                // step walls/masses → air balance → convergence check.
-                let use_iteration =
-                    base_config.use_iterative_surface_balance && view_factor_data.is_some();
-                let max_iters = if use_iteration {
-                    base_config.surface_balance_max_iterations.max(1)
-                } else {
-                    1
-                };
-                let tol_c = base_config.surface_balance_tolerance_c;
-                // Use h_total * (T_surf - t_eff) as air gain even with iteration.
-                // Convective-only requires perfect convergence; h_total is self-correcting
-                // because radiation terms sum to zero by reciprocity when fully converged,
-                // and any lag error is bounded.
-                let convective_only = false;
-
-                // Save solver snapshots so we can restore on each iteration.
-                let wall_snapshots: Vec<FvmSolverSnapshot> =
-                    fvm_walls.iter().map(|w| w.solver.save_state()).collect();
-                let mass_snapshots: Vec<FvmSolverSnapshot> = internal_mass_surfaces
-                    .iter()
-                    .map(|m| m.solver.save_state())
-                    .collect();
-
-                // Track previous iteration surface temps for convergence.
-                let n_surf = fvm_walls.len() + internal_mass_surfaces.len();
-                let mut prev_surf_temps: Vec<f64> = Vec::with_capacity(n_surf);
-                for w in &fvm_walls {
-                    prev_surf_temps.push(w.cached_interior_surface_temp_c);
-                }
-                for m in &internal_mass_surfaces {
-                    prev_surf_temps.push(m.cached_interior_surface_temp_c);
-                }
-
-                let mut final_q_hvac = 0.0_f64;
-                let mut t_air_iter_c = t_air_start_c;
-                for _iter in 0..max_iters {
-                    // Restore solvers to start-of-substep state.
-                    for (w, snap) in fvm_walls.iter_mut().zip(&wall_snapshots) {
-                        w.solver.restore_state(snap);
-                    }
-                    for (m, snap) in internal_mass_surfaces.iter_mut().zip(&mass_snapshots) {
-                        m.solver.restore_state(snap);
-                    }
-
-                    // Recompute per-surface MRT from current cached surface temps.
-                    let iter_mrt_map = if let Some(vf) = &view_factor_data {
-                        let mut surf_temps: std::collections::HashMap<SurfaceHandle, f64> =
-                            std::collections::HashMap::new();
-                        for w in fvm_walls.iter() {
-                            surf_temps.insert(
-                                SurfaceHandle::Polygon(w.polygon_uid.clone()),
-                                w.cached_interior_surface_temp_c,
-                            );
-                        }
-                        for m in internal_mass_surfaces.iter() {
-                            surf_temps.insert(
-                                SurfaceHandle::InternalMass {
-                                    index: m.mass_index,
-                                },
-                                m.cached_interior_surface_temp_c,
-                            );
-                        }
-                        for ss in &ss_exterior_surfaces {
-                            let t_surf = if use_explicit_ss_temperatures {
-                                ss.cached_interior_surface_temp_c
-                            } else {
-                                steady_surface_interior_temp_c(
-                                    ss,
-                                    t_air_iter_c,
-                                    record.dry_bulb_temperature,
-                                )
-                            };
-                            surf_temps
-                                .insert(SurfaceHandle::Polygon(ss.polygon_uid.clone()), t_surf);
-                        }
-                        let mrt = compute_per_surface_mrt(vf, &surf_temps);
-                        let h_r = linearized_h_rad(base_config.interior_emissivity, t_air_iter_c);
-                        Some((mrt, h_r))
-                    } else {
-                        None
-                    };
-                    let (iter_mrt_ref, iter_h_r) = match &iter_mrt_map {
-                        Some((m, h)) => (Some(m), *h),
-                        None => (vf_mrt_map.as_ref(), vf_h_r),
-                    };
-
-                    // Free-float: step walls and masses at current air temp.
-                    step_fvm_exterior_walls_fill_gains_by_zone_uid(
-                        &mut fvm_walls,
-                        base_config,
-                        solar_config,
-                        solar_params.as_ref(),
-                        interior_sources_walls_w_by_zone_uid.as_ref(),
-                        interior_sources_walls_w_by_polygon_uid.as_ref(),
-                        floor_beam_w_by_zone_uid.as_ref(),
-                        record.dry_bulb_temperature,
-                        record.wind_speed,
-                        |_| t_air_iter_c,
-                        |_| t_air_iter_c,
-                        dt_s,
-                        &mut fvm_gains_by_zone_uid,
-                        iter_mrt_ref,
-                        iter_h_r,
-                        convective_only,
-                    );
-                    let q_fvm_free: f64 = fvm_gains_by_zone_uid.values().sum();
-
-                    step_internal_mass_surfaces_fill_gains_by_zone_uid(
-                        &mut internal_mass_surfaces,
-                        base_config,
-                        interior_sources_mass_w_by_zone_uid.as_ref(),
-                        |_| t_air_iter_c,
-                        |_| t_air_iter_c,
-                        dt_s,
-                        &mut internal_mass_gains_by_zone_uid,
-                        iter_mrt_ref,
-                        iter_h_r,
-                        convective_only,
-                    );
-                    let q_mass_free: f64 = internal_mass_gains_by_zone_uid.values().sum();
-
-                    let total_gains_free =
-                        gains_air_w + solar_total_air_w + q_ground + q_fvm_free + q_mass_free;
-
-                    // Free-float air step.
-                    let mut free = model.clone();
-                    free.step(record.dry_bulb_temperature, total_gains_free, 0.0, dt_s);
-
-                    let t_free = free.zone_temperature;
-                    let total_conductance = model.ua_total + model.infiltration_conductance;
-                    let (air_temp_bc, use_hvac) = if t_free < hvac.heating_setpoint {
-                        (hvac.heating_setpoint, true)
-                    } else if t_free > hvac.cooling_setpoint {
-                        (hvac.cooling_setpoint, true)
-                    } else {
-                        (t_free, false)
-                    };
-
-                    if use_hvac || (air_temp_bc - t_air_iter_c).abs() > f64::EPSILON {
-                        // Restore solvers and re-step at the current air iterate.
-                        for (w, snap) in fvm_walls.iter_mut().zip(&wall_snapshots) {
-                            w.solver.restore_state(snap);
-                        }
-                        for (m, snap) in internal_mass_surfaces.iter_mut().zip(&mass_snapshots) {
-                            m.solver.restore_state(snap);
-                        }
-                        step_fvm_exterior_walls_fill_gains_by_zone_uid(
-                            &mut fvm_walls,
-                            base_config,
-                            solar_config,
-                            solar_params.as_ref(),
-                            interior_sources_walls_w_by_zone_uid.as_ref(),
-                            interior_sources_walls_w_by_polygon_uid.as_ref(),
-                            floor_beam_w_by_zone_uid.as_ref(),
-                            record.dry_bulb_temperature,
-                            record.wind_speed,
-                            |_| air_temp_bc,
-                            |_| air_temp_bc,
-                            dt_s,
-                            &mut fvm_gains_by_zone_uid,
-                            iter_mrt_ref,
-                            iter_h_r,
-                            convective_only,
-                        );
-                        step_internal_mass_surfaces_fill_gains_by_zone_uid(
-                            &mut internal_mass_surfaces,
-                            base_config,
-                            interior_sources_mass_w_by_zone_uid.as_ref(),
-                            |_| air_temp_bc,
-                            |_| air_temp_bc,
-                            dt_s,
-                            &mut internal_mass_gains_by_zone_uid,
-                            iter_mrt_ref,
-                            iter_h_r,
-                            convective_only,
-                        );
-                    }
-
-                    let q_fvm_step: f64 = fvm_gains_by_zone_uid.values().sum();
-                    let q_mass_step: f64 = internal_mass_gains_by_zone_uid.values().sum();
-                    let total_gains =
-                        gains_air_w + solar_total_air_w + q_ground + q_fvm_step + q_mass_step;
-
-                    final_q_hvac = if use_hvac {
-                        model.thermal_capacity * (air_temp_bc - model.zone_temperature) / dt_s
-                            + total_conductance * (air_temp_bc - record.dry_bulb_temperature)
-                            - total_gains
-                    } else {
-                        0.0
-                    };
-                    t_air_iter_c = air_temp_bc;
-
-                    // Convergence check: compare current surface temps to previous iteration.
-                    if use_iteration && _iter + 1 < max_iters {
-                        let mut max_delta = 0.0_f64;
-                        let mut idx = 0;
-                        for w in fvm_walls.iter() {
-                            let t_new = w.cached_interior_surface_temp_c;
-                            max_delta = max_delta.max((t_new - prev_surf_temps[idx]).abs());
-                            idx += 1;
-                        }
-                        for m in internal_mass_surfaces.iter() {
-                            let t_new = m.cached_interior_surface_temp_c;
-                            max_delta = max_delta.max((t_new - prev_surf_temps[idx]).abs());
-                            idx += 1;
-                        }
-                        if max_delta < tol_c {
-                            break;
-                        }
-                        // Update prev temps for next iteration.
-                        idx = 0;
-                        for w in &fvm_walls {
-                            prev_surf_temps[idx] = w.cached_interior_surface_temp_c;
-                            idx += 1;
-                        }
-                        for m in &internal_mass_surfaces {
-                            prev_surf_temps[idx] = m.cached_interior_surface_temp_c;
-                            idx += 1;
-                        }
-                    }
-                }
-
-                model.step(
-                    record.dry_bulb_temperature,
-                    gains_air_w
-                        + solar_total_air_w
-                        + q_ground
-                        + fvm_gains_by_zone_uid.values().sum::<f64>()
-                        + internal_mass_gains_by_zone_uid.values().sum::<f64>(),
-                    final_q_hvac,
-                    dt_s,
-                );
-                (final_q_hvac.max(0.0), (-final_q_hvac).max(0.0))
             };
 
             hour_heating_wh += heating_power * dt_h;
@@ -4213,78 +3121,6 @@ mod tests {
     }
 
     #[test]
-    fn test_transient_ignores_two_node_config() {
-        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
-        let zone = Zone::new("z", vec![s]).unwrap();
-        let building = Building::new("b", vec![zone]).unwrap();
-
-        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
-        let hvac = HvacIdealLoads::new();
-
-        // Baseline: lumped (1R1C)
-        let config_lumped = ThermalConfig::new();
-        let result_lumped =
-            run_transient_simulation(&building, &config_lumped, &weather, &hvac, None, None);
-
-        // Legacy two-node options are ignored by the global-FVM runtime policy.
-        let mut config_2n = ThermalConfig::new();
-        config_2n.two_node_mass_fraction = 0.8;
-        config_2n.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
-        let result_2n =
-            run_transient_simulation(&building, &config_2n, &weather, &hvac, None, None);
-
-        assert_eq!(result_2n.hourly_heating.len(), 8760);
-        assert!(result_2n.annual_heating_kwh > 0.0);
-        assert!(
-            (result_2n.annual_heating_kwh - result_lumped.annual_heating_kwh).abs() < 1e-9,
-            "Two-node config should be ignored: 2n={}, baseline={}",
-            result_2n.annual_heating_kwh,
-            result_lumped.annual_heating_kwh
-        );
-        assert!(
-            (result_2n.annual_cooling_kwh - result_lumped.annual_cooling_kwh).abs() < 1e-9,
-            "Two-node config should be ignored: 2n={}, baseline={}",
-            result_2n.annual_cooling_kwh,
-            result_lumped.annual_cooling_kwh
-        );
-    }
-
-    #[test]
-    fn test_transient_ignores_three_node_envelope_config() {
-        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
-        let zone = Zone::new("z", vec![s]).unwrap();
-        let building = Building::new("b", vec![zone]).unwrap();
-
-        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
-        let hvac = HvacIdealLoads::new();
-
-        let base_cfg = ThermalConfig::new();
-        let baseline = run_transient_simulation(&building, &base_cfg, &weather, &hvac, None, None);
-
-        let mut legacy_cfg = ThermalConfig::new();
-        legacy_cfg.two_node_mass_fraction = 0.8;
-        legacy_cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
-        legacy_cfg.two_node_envelope_to_mass = true;
-        legacy_cfg.three_node_envelope_mass_fraction = 0.5;
-
-        let result = run_transient_simulation(&building, &legacy_cfg, &weather, &hvac, None, None);
-
-        assert_eq!(result.hourly_heating.len(), 8760);
-        assert!(
-            (result.annual_heating_kwh - baseline.annual_heating_kwh).abs() < 1e-9,
-            "Three-node config should be ignored: cfg={}, baseline={}",
-            result.annual_heating_kwh,
-            baseline.annual_heating_kwh
-        );
-        assert!(
-            (result.annual_cooling_kwh - baseline.annual_cooling_kwh).abs() < 1e-9,
-            "Three-node config should be ignored: cfg={}, baseline={}",
-            result.annual_cooling_kwh,
-            baseline.annual_cooling_kwh
-        );
-    }
-
-    #[test]
     fn test_opaque_solar_gains() {
         let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s]).unwrap();
@@ -4343,10 +3179,7 @@ mod tests {
         let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
         let hvac = HvacIdealLoads::new();
 
-        // Use two-node model so warmup affects mass temperature state
-        let mut config = ThermalConfig::new();
-        config.two_node_mass_fraction = 0.8;
-        config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+        let config = ThermalConfig::new();
 
         let opts_warmup = TransientSimulationOptions {
             warmup_hours: 48,
@@ -4366,36 +3199,6 @@ mod tests {
         // Should produce 8760 hours of results (warmup doesn't add to reported)
         assert_eq!(result_warmup.hourly_heating.len(), 8760);
         assert!(result_warmup.annual_heating_kwh > 0.0);
-    }
-
-    #[test]
-    fn test_transient_envelope_to_mass_model() {
-        // Exercises the TwoNodeVariant::EnvelopeToMass path
-        let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
-        let zone = Zone::new("z", vec![s]).unwrap();
-        let building = Building::new("b", vec![zone]).unwrap();
-
-        let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
-        let hvac = HvacIdealLoads::new();
-
-        let mut config = ThermalConfig::new();
-        config.two_node_mass_fraction = 0.8;
-        config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
-        config.two_node_envelope_to_mass = true;
-        // three_node_envelope_mass_fraction = 0 so we stay in EnvelopeToMass
-
-        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, None);
-
-        assert_eq!(result.hourly_heating.len(), 8760);
-        assert!(
-            result.annual_heating_kwh > 0.0,
-            "Envelope-to-mass model should need heating"
-        );
-        let sum_h: f64 = result.hourly_heating.iter().sum();
-        assert!(
-            (sum_h / 1000.0 - result.annual_heating_kwh).abs() < 0.01,
-            "Energy conservation check"
-        );
     }
 
     #[test]
@@ -4477,7 +3280,6 @@ mod tests {
             area_m2: 10.0,
             normal: crate::Vector::new(0.0, 0.0, 1.0),
             is_ground_coupled: false,
-            h_in_w_per_m2_k: 8.0,
             h_out_w_per_m2_k: 8.0,
             h_min_iso_interior: 8.0,
             cached_interior_surface_temp_c: solver.interior_surface_temp(),

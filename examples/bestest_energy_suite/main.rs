@@ -876,7 +876,6 @@ fn main() -> Result<()> {
     let building = build_case_600_geometry()?;
     let mut base_cfg = config_for_case_600(&building);
     base_cfg.use_fvm_walls = true;
-    base_cfg.use_global_fvm_solve = true;
     let solar_cfg = solar_config_for_case_600();
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
 
@@ -956,9 +955,6 @@ fn main() -> Result<()> {
 
             // Floor construction is auto-resolved for the FVM wall via config.constructions.
         }
-        // Global simultaneous FVM solve: all wall cells + surface nodes + air node
-        // in one matrix with embedded radiation coupling.
-        cfg.use_global_fvm_solve = true;
         cfg.use_view_factor_radiation = std::env::var("BESTEST_GLOBAL_VF")
             .ok()
             .as_deref()

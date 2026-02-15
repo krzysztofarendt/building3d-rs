@@ -4,7 +4,7 @@ This document describes the active thermal simulation runtime in `building3d`.
 
 ## Runtime Policy
 
-Only two runtime modes are supported:
+Only two transient runtime modes are supported:
 
 1. `global + VF=0` (default)
 2. `global + VF=1`
@@ -14,17 +14,17 @@ Where:
 - `VF` = interior longwave view-factor radiation coupling
 
 Default behavior:
-- `use_global_fvm_solve = true`
+- global solve is always used in `run_transient_simulation*`
 - `use_view_factor_radiation = false`
 
-## Removed Runtime Paths
+## Legacy Paths
 
-The following simplified runtime paths are no longer used by `run_transient_simulation*`:
+Legacy simplified transient paths have been removed from runtime code:
 - lumped envelope-only wall capacitance path (1R1C wall treatment)
 - two-node / three-node lumped envelope mass variants
-- non-global sequential wall/air coupling as primary runtime mode
+- non-global sequential wall/air coupling and iterative fallback path
 
-These legacy formulations may still appear in historical notes/tests, but they are not part of the active transient simulation runtime policy.
+Historical notes are preserved in `LEGACY_SIMULATION.md`.
 
 ## Active Numerical Model
 
@@ -59,7 +59,6 @@ The solve includes:
 
 `VF=0`:
 - no surface-to-surface longwave enclosure matrix is applied.
-- with TARP convection, coupling is effectively convection-only.
 
 `VF=1`:
 - Monte Carlo geometric view factors are computed per zone.
@@ -85,7 +84,7 @@ Active runtime modes:
 
 Interpretation:
 - `VF=0` is the default because it gives the best overall annual agreement across 600/900.
-- `VF=1` changes the interior longwave redistribution and shifts heating/cooling tradeoffs.
+- `VF=1` changes interior longwave redistribution and shifts heating/cooling tradeoffs.
 
 ## Known Model Gap vs EnergyPlus
 
@@ -105,4 +104,3 @@ For BESTEST example runs:
 
 For API users:
 - `use_view_factor_radiation` remains the active mode selector.
-- `use_global_fvm_solve` and `use_fvm_walls` are enforced to ON in transient runtime.
