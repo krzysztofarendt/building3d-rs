@@ -341,7 +341,7 @@ fn make_cfg_600(building: &Building) -> ThermalConfig {
     cfg.view_factor_rays_per_surface = 10_000;
     cfg.interior_emissivity = 0.9;
     cfg.use_iterative_surface_balance = false;
-    cfg.use_global_fvm_solve = false;
+    cfg.use_global_fvm_solve = true;
     cfg.interior_solar_absorptance = 0.6;
 
     // Floor is modeled as a layered FVM wall with ground-coupled exterior BC,
@@ -454,13 +454,13 @@ fn test_bestest_600_epw_reference_within_tolerance_if_present() {
 
     // Deterministic regression baseline for current BESTEST path:
     // - alpha = 0.6
-    // - no VF radiation
-    // - no global FVM solve
+    // - global FVM solve ON
+    // - no VF radiation (default mode)
     // - no iterative surface balance
-    // Values captured from this code path (with geometric interior solar deposition)
+    // Values captured from this code path
     // against Boston TMY3.
-    let baseline_heating_kwh = 4591.748;
-    let baseline_cooling_kwh = 4914.488;
+    let baseline_heating_kwh = 3856.935;
+    let baseline_cooling_kwh = 5131.513;
 
     let building = build_bestest_600_geometry();
     let cfg = make_cfg_600(&building);
@@ -508,13 +508,13 @@ fn test_bestest_900_epw_reference_within_tolerance_if_present() {
 
     // Deterministic regression baseline for current BESTEST path:
     // - alpha = 0.6
-    // - no VF radiation
-    // - no global FVM solve
+    // - global FVM solve ON
+    // - no VF radiation (default mode)
     // - no iterative surface balance
-    // Values captured from this code path (with geometric interior solar deposition)
+    // Values captured from this code path
     // against Boston TMY3.
-    let baseline_heating_kwh = 3168.157;
-    let baseline_cooling_kwh = 2953.968;
+    let baseline_heating_kwh = 1921.454;
+    let baseline_cooling_kwh = 2593.597;
 
     let building = build_bestest_600_geometry();
     let cfg = make_cfg_900(&building);

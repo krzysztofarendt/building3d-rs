@@ -1483,6 +1483,17 @@ pub fn run_transient_simulation_with_options(
         ThreeNodeEnvelope(ThreeNodeEnvelopeThermalModel),
     }
 
+    // Runtime policy:
+    // - Keep only global FVM solve modes (VF off/on).
+    // - Disable legacy lumped/two-node envelope pathways.
+    let mut enforced_config = base_config.clone();
+    enforced_config.use_fvm_walls = true;
+    enforced_config.use_global_fvm_solve = true;
+    enforced_config.two_node_mass_fraction = 0.0;
+    enforced_config.two_node_envelope_to_mass = false;
+    enforced_config.three_node_envelope_mass_fraction = 0.0;
+    let base_config = &enforced_config;
+
     let index = SurfaceIndex::new(building);
     let boundaries = ThermalBoundaries::classify(building, &index);
     let (mut fvm_walls, fvm_skip_polygons) =
@@ -1837,7 +1848,7 @@ pub fn run_transient_simulation_with_options(
     };
     let mut global_ss_surface_map: Vec<usize> = Vec::new();
     let (global_topology, mut global_temps): (Option<GlobalTopology>, Vec<f64>) =
-        if base_config.use_global_fvm_solve && has_fvm_walls {
+        if base_config.use_global_fvm_solve {
             // Build wall info for topology
             let wall_infos: Vec<FvmWallInfo> = {
                 let mut infos = Vec::new();
@@ -4202,7 +4213,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transient_two_node_model() {
+    fn test_transient_ignores_two_node_config() {
         let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s]).unwrap();
         let building = Building::new("b", vec![zone]).unwrap();
@@ -4215,7 +4226,7 @@ mod tests {
         let result_lumped =
             run_transient_simulation(&building, &config_lumped, &weather, &hvac, None, None);
 
-        // Two-node model: split capacity between air and mass
+        // Legacy two-node options are ignored by the global-FVM runtime policy.
         let mut config_2n = ThermalConfig::new();
         config_2n.two_node_mass_fraction = 0.8;
         config_2n.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
@@ -4224,17 +4235,22 @@ mod tests {
 
         assert_eq!(result_2n.hourly_heating.len(), 8760);
         assert!(result_2n.annual_heating_kwh > 0.0);
-        // Two-node should differ from lumped due to thermal mass lag
         assert!(
-            (result_2n.annual_heating_kwh - result_lumped.annual_heating_kwh).abs() > 0.1,
-            "Two-node should differ from lumped: 2n={}, lumped={}",
+            (result_2n.annual_heating_kwh - result_lumped.annual_heating_kwh).abs() < 1e-9,
+            "Two-node config should be ignored: 2n={}, baseline={}",
             result_2n.annual_heating_kwh,
             result_lumped.annual_heating_kwh
+        );
+        assert!(
+            (result_2n.annual_cooling_kwh - result_lumped.annual_cooling_kwh).abs() < 1e-9,
+            "Two-node config should be ignored: 2n={}, baseline={}",
+            result_2n.annual_cooling_kwh,
+            result_lumped.annual_cooling_kwh
         );
     }
 
     #[test]
-    fn test_transient_three_node_envelope() {
+    fn test_transient_ignores_three_node_envelope_config() {
         let s = Solid::from_box(5.0, 5.0, 3.0, None, "room").unwrap();
         let zone = Zone::new("z", vec![s]).unwrap();
         let building = Building::new("b", vec![zone]).unwrap();
@@ -4242,25 +4258,29 @@ mod tests {
         let weather = WeatherData::synthetic("Test", 52.0, 13.0, 10.0, 12.0);
         let hvac = HvacIdealLoads::new();
 
-        let mut config = ThermalConfig::new();
-        config.two_node_mass_fraction = 0.8;
-        config.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
-        config.two_node_envelope_to_mass = true;
-        config.three_node_envelope_mass_fraction = 0.5;
+        let base_cfg = ThermalConfig::new();
+        let baseline = run_transient_simulation(&building, &base_cfg, &weather, &hvac, None, None);
 
-        let result = run_transient_simulation(&building, &config, &weather, &hvac, None, None);
+        let mut legacy_cfg = ThermalConfig::new();
+        legacy_cfg.two_node_mass_fraction = 0.8;
+        legacy_cfg.interior_heat_transfer_coeff_w_per_m2_k = 3.0;
+        legacy_cfg.two_node_envelope_to_mass = true;
+        legacy_cfg.three_node_envelope_mass_fraction = 0.5;
+
+        let result = run_transient_simulation(&building, &legacy_cfg, &weather, &hvac, None, None);
 
         assert_eq!(result.hourly_heating.len(), 8760);
         assert!(
-            result.annual_heating_kwh > 0.0,
-            "Should need heating: {}",
-            result.annual_heating_kwh
+            (result.annual_heating_kwh - baseline.annual_heating_kwh).abs() < 1e-9,
+            "Three-node config should be ignored: cfg={}, baseline={}",
+            result.annual_heating_kwh,
+            baseline.annual_heating_kwh
         );
-        // Energy conservation check
-        let sum_h: f64 = result.hourly_heating.iter().sum();
         assert!(
-            (sum_h / 1000.0 - result.annual_heating_kwh).abs() < 0.01,
-            "Three-node hourly sum should match annual kWh"
+            (result.annual_cooling_kwh - baseline.annual_cooling_kwh).abs() < 1e-9,
+            "Three-node config should be ignored: cfg={}, baseline={}",
+            result.annual_cooling_kwh,
+            baseline.annual_cooling_kwh
         );
     }
 

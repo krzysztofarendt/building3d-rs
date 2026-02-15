@@ -9,10 +9,10 @@ use building3d::sim::energy::construction::WallConstruction;
 use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
-    run_transient_simulation_with_options, AnnualResult, TransientSimulationOptions,
+    AnnualResult, TransientSimulationOptions, run_transient_simulation_with_options,
 };
 use building3d::sim::energy::solar_bridge::{
-    compute_solar_gains_with_materials, SolarGainConfig, SolarHourParams,
+    SolarGainConfig, SolarHourParams, compute_solar_gains_with_materials,
 };
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::materials::Layer;
@@ -347,7 +347,7 @@ fn build_case_600_geometry() -> Result<Building> {
     Building::new("bestest_case_600", vec![zone])
 }
 
-fn config_for_case_600(building: &Building) -> ThermalConfig {
+fn config_for_case_600(_building: &Building) -> ThermalConfig {
     let (lt_wall, lt_roof, lt_floor, window) = bestest_600_constructions();
 
     let mut cfg = ThermalConfig::new();
@@ -866,18 +866,6 @@ fn write_diagnostics_monthly_csv(path: &Path, cases: &[(CaseSpec, CaseDiagnostic
 }
 
 fn main() -> Result<()> {
-    let use_fvm_walls: bool = std::env::var("BESTEST_USE_FVM_WALLS")
-        .ok()
-        .as_deref()
-        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(true);
-
-    let use_global_solve: bool = std::env::var("BESTEST_USE_GLOBAL_SOLVE")
-        .ok()
-        .as_deref()
-        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
     let epw_path = std::env::var("BESTEST_600_EPW")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_epw_path());
@@ -887,27 +875,10 @@ fn main() -> Result<()> {
 
     let building = build_case_600_geometry()?;
     let mut base_cfg = config_for_case_600(&building);
-    base_cfg.use_fvm_walls = use_fvm_walls;
+    base_cfg.use_fvm_walls = true;
+    base_cfg.use_global_fvm_solve = true;
     let solar_cfg = solar_config_for_case_600();
     let hvac = HvacIdealLoads::with_setpoints(20.0, 27.0);
-
-    let enable_two_node_600: bool = std::env::var("BESTEST_600_ENABLE_TWO_NODE")
-        .ok()
-        .as_deref()
-        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let two_node_mass_fraction_600: f64 = std::env::var("BESTEST_600_TWO_NODE_MASS_FRACTION")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.6);
-    let solar_to_mass_600: f64 = std::env::var("BESTEST_600_SOLAR_TO_MASS_FRACTION")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.6);
-    let interior_h_600: f64 = std::env::var("BESTEST_600_INTERIOR_H_W_PER_M2_K")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(3.0);
 
     let suite = vec![
         CaseSpec {
@@ -949,17 +920,8 @@ fn main() -> Result<()> {
         sum(&REF_900_MONTHLY_HEATING_KWH),
         sum(&REF_900_MONTHLY_COOLING_KWH),
     );
-    println!("FVM walls: {}", if use_fvm_walls { "ON" } else { "off" });
-    println!(
-        "Global FVM solve: {}",
-        if use_global_solve { "ON" } else { "off" }
-    );
-    if enable_two_node_600 {
-        println!(
-            "Light-mass 2R2C enabled (600): mass_fraction={:.2}, solar→mass={:.2}, interior_h={:.2} W/(m²·K)",
-            two_node_mass_fraction_600, solar_to_mass_600, interior_h_600
-        );
-    }
+    println!("FVM walls: ON");
+    println!("Global FVM solve: ON");
     println!();
 
     let warmup_days: usize = std::env::var("BESTEST_WARMUP_DAYS")
@@ -994,27 +956,16 @@ fn main() -> Result<()> {
 
             // Floor construction is auto-resolved for the FVM wall via config.constructions.
         }
-        if enable_two_node_600 && spec.name.starts_with("600") {
-            // Two-node model is an alternative to explicit internal mass slabs.
-            cfg.internal_mass_surfaces.clear();
-            cfg.two_node_mass_fraction = two_node_mass_fraction_600;
-            cfg.interior_heat_transfer_coeff_w_per_m2_k = interior_h_600;
-            cfg.solar_gains_to_mass_fraction = solar_to_mass_600;
-            cfg.internal_gains_to_mass_fraction = 0.0;
-        }
-
         // Global simultaneous FVM solve: all wall cells + surface nodes + air node
         // in one matrix with embedded radiation coupling.
-        if use_global_solve {
-            cfg.use_global_fvm_solve = true;
-            cfg.use_view_factor_radiation = std::env::var("BESTEST_GLOBAL_VF")
-                .ok()
-                .as_deref()
-                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            cfg.view_factor_rays_per_surface = 10_000;
-            cfg.interior_emissivity = 0.9;
-        }
+        cfg.use_global_fvm_solve = true;
+        cfg.use_view_factor_radiation = std::env::var("BESTEST_GLOBAL_VF")
+            .ok()
+            .as_deref()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        cfg.view_factor_rays_per_surface = 10_000;
+        cfg.interior_emissivity = 0.9;
 
         cfg.thermal_capacity_j_per_m3_k = estimate_zone_capacity_j_per_m3_k(&building, &cfg);
 

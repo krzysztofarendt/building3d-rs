@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 
 use crate::geom::bboxes::bounding_box;
-use crate::sim::engine::voxel_grid::VoxelGrid;
 use crate::sim::engine::FlatScene;
+use crate::sim::engine::voxel_grid::VoxelGrid;
 use crate::sim::index::SurfaceIndex;
 use crate::sim::surfaces::SurfaceSemantics;
 use crate::{Building, Point, Polygon, UID, Vector};
@@ -442,18 +442,16 @@ pub fn linearized_h_rad_base(t_mean_c: f64) -> f64 {
 /// ScriptF accounts for surface emissivities and inter-reflections in a
 /// gray, diffuse enclosure.  For each pair (i, j):
 ///
-///     ScriptF[i][j] = F[i][j] · ε_j / (1 − ρ_eff · (1 − ε_i))
+/// ```text
+/// ScriptF[i][j] = F[i][j] · ε_j / (1 − ρ_eff · (1 − ε_i))
+/// ```
 ///
 /// where `ρ_eff = Σ_k≠i F[i][k] · (1 − ε_k)` is the effective
 /// reflectance seen from surface i (first-order Hottel approximation,
 /// matching the ep-rs implementation).
 ///
 /// Returns a row-major `n × n` matrix.  Diagonal is zero.
-pub fn compute_script_f(
-    f_matrix: &[f64],
-    emissivities: &[f64],
-    n: usize,
-) -> Vec<f64> {
+pub fn compute_script_f(f_matrix: &[f64], emissivities: &[f64], n: usize) -> Vec<f64> {
     let mut sf = vec![0.0; n * n];
 
     for i in 0..n {
@@ -569,8 +567,11 @@ pub fn compute_building_view_factors(
         if let Some(mass_list) = mass_by_zone.get(&zone.uid) {
             let mass_cos_tilts: Vec<(usize, f64)> =
                 mass_list.iter().map(|&(idx, ct, _)| (idx, ct)).collect();
-            let matches =
-                match_internal_mass_to_polygons(&mass_cos_tilts, &zone_polygons, &zone_polygon_uids);
+            let matches = match_internal_mass_to_polygons(
+                &mass_cos_tilts,
+                &zone_polygons,
+                &zone_polygon_uids,
+            );
 
             for &(mass_idx, _cos_tilt, area_m2) in mass_list {
                 let handle = SurfaceHandle::InternalMass { index: mass_idx };
@@ -898,10 +899,7 @@ mod tests {
         for uid in &uids {
             let handle = SurfaceHandle::Polygon(uid.clone());
             let mrt = mrts.get(&handle).copied().unwrap_or(0.0);
-            assert!(
-                (mrt - 25.0).abs() < 0.5,
-                "MRT = {mrt:.2}, expected ~25.0"
-            );
+            assert!((mrt - 25.0).abs() < 0.5, "MRT = {mrt:.2}, expected ~25.0");
         }
     }
 }
