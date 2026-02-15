@@ -525,7 +525,7 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
     gains_out: &mut std::collections::HashMap<UID, f64>,
     per_surface_mrt: Option<&std::collections::HashMap<SurfaceHandle, f64>>,
     h_r_uniform: f64,
-    convective_only_air_gain: bool,
+    _convective_only_air_gain: bool,
 ) {
     gains_out.clear();
     if walls.is_empty() {
@@ -787,19 +787,9 @@ fn step_fvm_exterior_walls_fill_gains_by_zone_uid<F: Fn(&UID) -> f64, G: Fn(&UID
 
         // Report heat transfer to zone air.
         let t_surf = w.cached_interior_surface_temp_c;
-        let q_w_per_m2 = if convective_only_air_gain {
-            // Iterative surface balance: convection-only air gain.
-            // Radiation stays between surfaces and nets to zero by reciprocity
-            // with simultaneous (non-lagged) temperatures.
-            h_in_conv * (t_surf - t_air)
-        } else if per_surface_mrt.is_some() {
-            // View-factor path without iteration: use h_total*(T_surf - t_eff)
-            // so that energy leaving the wall's interior surface is fully accounted
-            // for in the zone balance.
-            h_in_total * (t_surf - t_eff)
-        } else {
-            h_in_conv * (t_surf - t_air)
-        };
+        // Air node receives convective exchange only.
+        // In view-factor mode, radiative exchange is surface-to-surface.
+        let q_w_per_m2 = h_in_conv * (t_surf - t_air);
         if q_w_per_m2 != 0.0 {
             *gains_out.entry(w.zone_uid.clone()).or_insert(0.0) += q_w_per_m2 * w.area_m2;
         }
@@ -3259,6 +3249,7 @@ mod tests {
     #[test]
     fn test_fvm_h_out_tilt_scale_applies_without_wind_model() {
         use crate::sim::energy::construction::WallConstruction;
+        use crate::sim::energy::convection::ExteriorConvectionModel;
         use crate::sim::materials::Layer;
 
         let construction = WallConstruction::single_layer(
@@ -3289,7 +3280,8 @@ mod tests {
         let mut walls_no_tilt = vec![wall.clone()];
         let mut walls_with_tilt = vec![wall];
 
-        let config = ThermalConfig::new();
+        let mut config = ThermalConfig::new();
+        config.exterior_convection_model = ExteriorConvectionModel::Fixed;
         let params = SolarHourParams {
             outdoor_air_temperature_c: 0.0,
             global_horizontal_irradiance: 0.0,
@@ -3360,6 +3352,90 @@ mod tests {
         assert!(
             q_with_tilt.abs() > q_no_tilt.abs(),
             "Tilt scaling should increase |q| with fixed h_out; no_tilt={q_no_tilt}, with_tilt={q_with_tilt}"
+        );
+    }
+
+    #[test]
+    fn test_fvm_view_factor_air_gain_is_convective_only() {
+        use crate::sim::energy::construction::WallConstruction;
+        use crate::sim::energy::convection::InteriorConvectionModel;
+        use crate::sim::materials::Layer;
+
+        let construction = WallConstruction::single_layer(
+            "test",
+            Layer {
+                name: "layer".to_string(),
+                thickness: 0.2,
+                conductivity: 1.0,
+                density: 2000.0,
+                specific_heat: 900.0,
+            },
+        );
+        let area_m2 = 10.0;
+        let mesh = build_1d_mesh(&construction, area_m2);
+        let solver = FvmWallSolver::new(mesh, 20.0);
+        let polygon_uid = UID::new();
+        let mut walls = vec![FvmExteriorWall {
+            zone_uid: UID::from("zone"),
+            polygon_uid: polygon_uid.clone(),
+            path: "zone/solid/wall/poly".to_string(),
+            area_m2,
+            normal: crate::Vector::new(0.0, 0.0, 1.0),
+            is_ground_coupled: false,
+            h_out_w_per_m2_k: 8.0,
+            h_min_iso_interior: 8.0,
+            cached_interior_surface_temp_c: solver.interior_surface_temp(),
+            solver,
+        }];
+
+        let mut config = ThermalConfig::new();
+        config.interior_convection_model = InteriorConvectionModel::Fixed(3.0);
+        config.interior_emissivity = 0.9;
+
+        let mut gains = std::collections::HashMap::new();
+        let mut mrt_map = std::collections::HashMap::new();
+        let t_air = 20.0;
+        let t_mrt = 100.0;
+        let h_r_uniform = 10.0;
+        mrt_map.insert(SurfaceHandle::Polygon(polygon_uid), t_mrt);
+
+        step_fvm_exterior_walls_fill_gains_by_zone_uid(
+            &mut walls,
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
+            20.0,
+            0.0,
+            |_| t_air,
+            |_| t_air,
+            3600.0,
+            &mut gains,
+            Some(&mrt_map),
+            h_r_uniform,
+            false,
+        );
+
+        let q_to_air = *gains.get(&UID::from("zone")).unwrap_or(&0.0);
+        let t_surf = walls[0].cached_interior_surface_temp_c;
+        let h_conv = 3.0;
+        let q_conv_expected = h_conv * (t_surf - t_air) * area_m2;
+        let tol = 1e-9 * q_conv_expected.abs().max(1.0);
+        assert!(
+            (q_to_air - q_conv_expected).abs() <= tol,
+            "air gain should be convection-only in VF mode; got {q_to_air}, expected {q_conv_expected}"
+        );
+
+        // Guard against regression to leaky total-coupling accounting.
+        let h_rad = config.interior_emissivity * h_r_uniform;
+        let h_total = h_conv + h_rad;
+        let t_eff = (h_conv * t_air + h_rad * t_mrt) / h_total;
+        let q_leaky = h_total * (t_surf - t_eff) * area_m2;
+        assert!(
+            (q_to_air - q_leaky).abs() > 1e-3,
+            "air gain must not include radiative exchange term; leaky formula matched unexpectedly"
         );
     }
 

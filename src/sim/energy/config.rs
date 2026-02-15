@@ -191,13 +191,15 @@ pub struct ThermalConfig {
     pub fvm_wall_solar_to_air: bool,
     /// Interior surface convection model.
     ///
-    /// - `Fixed(3.0)` (default): legacy constant coefficient.
-    /// - `Tarp`: temperature- and tilt-dependent natural convection (Walton/TARP).
+    /// - `Fixed(3.0)`: legacy constant coefficient.
+    /// - `Tarp` (default): temperature- and tilt-dependent natural convection
+    ///   (Walton/TARP).
     pub interior_convection_model: InteriorConvectionModel,
     /// Exterior surface convection model.
     ///
-    /// - `Fixed` (default): coefficient from ISO R_se.
-    /// - `Doe2`: DOE-2 simplified combined natural + wind-forced convection.
+    /// - `Fixed`: coefficient from ISO R_se.
+    /// - `Doe2` (default): DOE-2 simplified combined natural + wind-forced
+    ///   convection.
     pub exterior_convection_model: ExteriorConvectionModel,
     /// If true, compute per-surface view factors and use them for interior
     /// longwave radiation exchange instead of the simplified area-weighted MRT.
@@ -242,16 +244,16 @@ impl ThermalConfig {
             ground_temperature_c: None,
             ground_surface_patterns: vec!["floor".to_string()],
             interior_heat_transfer_coeff_w_per_m2_k: 3.0,
-            use_interior_radiative_exchange: false,
+            use_interior_radiative_exchange: true,
             interior_radiation_fraction: 0.6,
-            use_surface_aware_solar_distribution: false,
+            use_surface_aware_solar_distribution: true,
             transmitted_solar_to_air_fraction: 0.0,
             internal_gains_to_mass_fraction: 0.0,
             use_fvm_walls: true,
             internal_mass_surfaces: vec![],
             interzone_u_value_policy: InterZoneUValuePolicy::Mean,
             distribute_transmitted_solar_to_fvm_walls: false,
-            use_beam_solar_distribution: false,
+            use_beam_solar_distribution: true,
             fvm_wall_solar_to_air: false,
             interior_convection_model: InteriorConvectionModel::default(),
             exterior_convection_model: ExteriorConvectionModel::default(),
@@ -475,7 +477,18 @@ mod tests {
         assert_eq!(config.ground_surface_patterns, vec!["floor".to_string()]);
         assert!((config.interior_heat_transfer_coeff_w_per_m2_k - 3.0).abs() < 1e-12);
         assert!((config.internal_gains_to_mass_fraction - 0.0).abs() < 1e-12);
+        assert!(config.use_interior_radiative_exchange);
+        assert!(config.use_surface_aware_solar_distribution);
+        assert!(config.use_beam_solar_distribution);
         assert!(config.use_fvm_walls);
+        assert_eq!(
+            config.interior_convection_model,
+            InteriorConvectionModel::Tarp
+        );
+        assert_eq!(
+            config.exterior_convection_model,
+            ExteriorConvectionModel::Doe2
+        );
         assert_eq!(config.interzone_u_value_policy, InterZoneUValuePolicy::Mean);
     }
 

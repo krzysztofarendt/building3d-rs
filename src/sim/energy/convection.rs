@@ -34,7 +34,7 @@ pub enum InteriorConvectionModel {
 
 impl Default for InteriorConvectionModel {
     fn default() -> Self {
-        Self::Fixed(3.0)
+        Self::Tarp
     }
 }
 
@@ -49,7 +49,7 @@ pub enum ExteriorConvectionModel {
 
 impl Default for ExteriorConvectionModel {
     fn default() -> Self {
-        Self::Fixed
+        Self::Doe2
     }
 }
 
@@ -325,11 +325,11 @@ mod tests {
     fn test_defaults() {
         assert_eq!(
             InteriorConvectionModel::default(),
-            InteriorConvectionModel::Fixed(3.0)
+            InteriorConvectionModel::Tarp
         );
         assert_eq!(
             ExteriorConvectionModel::default(),
-            ExteriorConvectionModel::Fixed
+            ExteriorConvectionModel::Doe2
         );
     }
 

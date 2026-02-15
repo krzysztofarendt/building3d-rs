@@ -949,18 +949,11 @@ impl SimModule for EnergyModule {
 
                 let mut q_to_air_w = 0.0;
                 let t_surf_in = s.cached_interior_surface_temp_c;
-                if vf_mrt_map.is_some() {
-                    q_to_air_w += h_in_total * (t_surf_in - t_eff) * s.area_m2;
-                } else {
-                    q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
-                }
+                // Air node receives convective exchange only.
+                q_to_air_w += h_conv * (t_surf_in - t_air) * s.area_m2;
                 if matches!(s.boundary, InternalMassBoundary::TwoSided) {
                     let t_surf_out = s.cached_exterior_surface_temp_c;
-                    if vf_mrt_map.is_some() {
-                        q_to_air_w += h_in_total * (t_surf_out - t_eff) * s.area_m2;
-                    } else {
-                        q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
-                    }
+                    q_to_air_w += h_conv * (t_surf_out - t_air) * s.area_m2;
                 }
                 q_to_air_w += direct_to_air_w;
                 if q_to_air_w != 0.0
@@ -1073,11 +1066,8 @@ impl SimModule for EnergyModule {
                 w.solver.step(self.config.dt_s, &bc_out, &bc_in, &[]);
                 w.cached_interior_surface_temp_c = w.solver.interior_surface_temperature(&bc_in);
                 let t_surf = w.cached_interior_surface_temp_c;
-                let q_in_w = if vf_mrt_map.is_some() {
-                    h_in_total * (t_surf - t_eff) * w.area_m2
-                } else {
-                    h_in_conv * (t_surf - t_air) * w.area_m2
-                };
+                // Air node receives convective exchange only.
+                let q_in_w = h_in_conv * (t_surf - t_air) * w.area_m2;
                 if let Some(g) = air_gains.get_mut(w.zone_idx) {
                     *g += q_in_w;
                 }
