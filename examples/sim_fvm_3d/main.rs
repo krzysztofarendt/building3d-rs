@@ -141,12 +141,7 @@ fn heat_color(t: f32) -> [u8; 4] {
         let s = (t - 0.5) * 2.0;
         (1.0, 1.0 - s, 1.0 - s)
     };
-    [
-        (r * 255.0) as u8,
-        (g * 255.0) as u8,
-        (b * 255.0) as u8,
-        255,
-    ]
+    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, 255]
 }
 
 fn main() -> Result<()> {
@@ -160,8 +155,8 @@ fn main() -> Result<()> {
     let mut extra = surface_pts;
     extra.extend(interior_pts.iter());
 
-    let tet_mesh = tetrahedralize_delaunay_refined(&mesh, &extra)
-        .expect("tetrahedralization failed");
+    let tet_mesh =
+        tetrahedralize_delaunay_refined(&mesh, &extra).expect("tetrahedralization failed");
     println!(
         "Tet mesh: {} vertices, {} tetrahedra, volume = {:.4}",
         tet_mesh.vertices.len(),
@@ -283,7 +278,12 @@ fn main() -> Result<()> {
     let num_steps = 600;
     let log_every = 10;
 
-    println!("Running {} steps (dt={} s, total={} s)...", num_steps, dt, num_steps as f64 * dt);
+    println!(
+        "Running {} steps (dt={} s, total={} s)...",
+        num_steps,
+        dt,
+        num_steps as f64 * dt
+    );
 
     for step in 0..=num_steps {
         if step > 0 {
@@ -332,9 +332,8 @@ fn main() -> Result<()> {
                 }
 
                 // 4 triangular faces of the tetrahedron
-                let tri = |a: u32, b: u32, c: u32| {
-                    rr::TriangleIndices(rr::datatypes::UVec3D([a, b, c]))
-                };
+                let tri =
+                    |a: u32, b: u32, c: u32| rr::TriangleIndices(rr::datatypes::UVec3D([a, b, c]));
                 triangles.push(tri(base, base + 1, base + 2));
                 triangles.push(tri(base, base + 1, base + 3));
                 triangles.push(tri(base, base + 2, base + 3));

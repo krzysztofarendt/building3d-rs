@@ -61,11 +61,7 @@ fn main() -> Result<()> {
     let n_cells = mesh.cells.len();
 
     // Compute cell x-positions (start, end) for drawing quads
-    let cell_dx: Vec<f64> = mesh
-        .cells
-        .iter()
-        .map(|c| c.volume / wall_area)
-        .collect();
+    let cell_dx: Vec<f64> = mesh.cells.iter().map(|c| c.volume / wall_area).collect();
     let mut cell_x_start = Vec::with_capacity(n_cells);
     let mut x = 0.0;
     for dx in &cell_dx {
@@ -105,7 +101,10 @@ fn main() -> Result<()> {
         session.log_static(
             "wall/boundaries",
             &rr::LineStrips3D::new(lines)
-                .with_colors(vec![rr::Color::from_rgb(180, 180, 180); layer_boundaries.len()])
+                .with_colors(vec![
+                    rr::Color::from_rgb(180, 180, 180);
+                    layer_boundaries.len()
+                ])
                 .with_radii(vec![rr::Radius::new_ui_points(1.0); layer_boundaries.len()]),
         )?;
     }
@@ -220,17 +219,14 @@ fn main() -> Result<()> {
                         format!("wall/cell_{i}"),
                         &rr::Mesh3D::new(vertices)
                             .with_triangle_indices(indices)
-                            .with_albedo_factor(
-                                rr::Rgba32::from_linear_unmultiplied_rgba_f32(r, g, b, 1.0),
-                            ),
+                            .with_albedo_factor(rr::Rgba32::from_linear_unmultiplied_rgba_f32(
+                                r, g, b, 1.0,
+                            )),
                     )?;
                 }
 
                 // Log temperature time series
-                session.log(
-                    "temperature/outdoor",
-                    &rr::Scalars::single(t_outdoor),
-                )?;
+                session.log("temperature/outdoor", &rr::Scalars::single(t_outdoor))?;
                 session.log(
                     "temperature/ext_surface",
                     &rr::Scalars::single(solver.exterior_surface_temp()),
@@ -242,10 +238,7 @@ fn main() -> Result<()> {
 
                 // Log heat flux time series
                 let q_int = solver.interior_heat_flux(&bc_int);
-                session.log(
-                    "heat_flux/interior",
-                    &rr::Scalars::single(q_int),
-                )?;
+                session.log("heat_flux/interior", &rr::Scalars::single(q_int))?;
 
                 minute += log_interval_minutes as i64;
             }

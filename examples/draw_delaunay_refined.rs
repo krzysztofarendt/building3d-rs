@@ -84,14 +84,12 @@ fn deduplicate_points(points: Vec<Point>, eps: f64) -> Vec<Point> {
     let eps_sq = eps * eps;
     let mut unique = Vec::with_capacity(points.len());
     for p in points {
-        let is_dup = unique
-            .iter()
-            .any(|q: &Point| {
-                let dx = p.x - q.x;
-                let dy = p.y - q.y;
-                let dz = p.z - q.z;
-                dx * dx + dy * dy + dz * dz < eps_sq
-            });
+        let is_dup = unique.iter().any(|q: &Point| {
+            let dx = p.x - q.x;
+            let dy = p.y - q.y;
+            let dz = p.z - q.z;
+            dx * dx + dy * dy + dz * dz < eps_sq
+        });
         if !is_dup {
             unique.push(p);
         }
@@ -130,7 +128,8 @@ fn main() -> Result<()> {
     // --- Convex box ---
     let box_solid = Solid::from_box(2.0, 2.0, 2.0, Some((0.0, 0.0, 0.0)), "box")?;
     let box_mesh = box_solid.copy_mesh();
-    let box_surface = deduplicate_points(generate_surface_points(&box_mesh, spacing), spacing * 0.1);
+    let box_surface =
+        deduplicate_points(generate_surface_points(&box_mesh, spacing), spacing * 0.1);
     let box_interior = generate_interior_points(&box_solid, spacing);
     let mut box_extra = box_surface;
     box_extra.extend(box_interior.iter());

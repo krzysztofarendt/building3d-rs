@@ -462,7 +462,13 @@ fn main() -> Result<()> {
     println!();
 
     let annual = run_transient_simulation_with_options(
-        &building, &cfg, &weather, &hvac, None, Some(&solar), &options,
+        &building,
+        &cfg,
+        &weather,
+        &hvac,
+        None,
+        Some(&solar),
+        &options,
     );
 
     let ref_annual_h = annual_kwh(&REF_MONTHLY_HEATING_KWH);

@@ -1077,8 +1077,8 @@ fn triangle_centroids(poly: &crate::Polygon) -> Vec<Point> {
 // Solar Interior Distribution Module
 // ---------------------------------------------------------------------------
 
-use crate::sim::coupling::ShortwaveTransmittedWPerPolygon;
 use crate::UID;
+use crate::sim::coupling::ShortwaveTransmittedWPerPolygon;
 
 /// Configuration for interior solar distribution.
 #[derive(Debug, Clone)]
@@ -1093,9 +1093,7 @@ pub struct SolarInteriorDistributionConfig {
 
 impl Default for SolarInteriorDistributionConfig {
     fn default() -> Self {
-        Self {
-            beam_fraction: 0.5,
-        }
+        Self { beam_fraction: 0.5 }
     }
 }
 

@@ -14,8 +14,8 @@
 
 use crate::sim::energy::hvac::HvacIdealLoads;
 use crate::sim::energy::network::solve::solve_dense;
-use crate::sim::heat_transfer::mesh::BOUNDARY;
 use crate::sim::heat_transfer::FvmWallSolver;
+use crate::sim::heat_transfer::mesh::BOUNDARY;
 
 // ─── Topology types ─────────────────────────────────────────────────────
 

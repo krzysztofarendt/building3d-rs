@@ -1,12 +1,11 @@
 use anyhow::Result;
 use std::collections::HashSet;
 
-use crate::sim::coupling::{
-    InternalGainsWPerZone, InternalGainsWTotal, OutdoorAirTemperatureC,
-    OutdoorWindSpeedMPerS, ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerPolygon,
-    ShortwaveTransmittedWPerZone,
-};
 use super::convection::{exterior_convection_h, interior_convection_h};
+use crate::sim::coupling::{
+    InternalGainsWPerZone, InternalGainsWTotal, OutdoorAirTemperatureC, OutdoorWindSpeedMPerS,
+    ShortwaveAbsorbedWPerPolygon, ShortwaveTransmittedWPerPolygon, ShortwaveTransmittedWPerZone,
+};
 use crate::sim::framework::{Bus, SimContext, SimModule};
 use crate::sim::heat_transfer::{BoundaryCondition, FvmWallSolver, build_1d_mesh};
 
@@ -653,7 +652,8 @@ impl SimModule for EnergyModule {
             .map(|w| w.0)
             .unwrap_or(0.0);
 
-        let (mut air_gains, mut env_gains, mut internal_mass_sources) = self.gains_by_zone_split(bus);
+        let (mut air_gains, mut env_gains, mut internal_mass_sources) =
+            self.gains_by_zone_split(bus);
         if let Some(tg) = self.config.thermal.ground_temperature_c {
             let dt = tg - outdoor_temp_c;
             for (i, ua) in self.ground_ua_by_zone_w_per_k.iter().enumerate() {
@@ -694,8 +694,7 @@ impl SimModule for EnergyModule {
                     .get(ss.zone_idx)
                     .copied()
                     .unwrap_or(self.config.thermal.indoor_temperature);
-                let ratio =
-                    ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
+                let ratio = ss.u_value_w_per_m2_k / (ss.u_value_w_per_m2_k + ss.h_in_w_per_m2_k);
                 let t_surf = t_air_zone - ratio * (t_air_zone - outdoor_temp_c);
                 surf_temps.insert(SurfaceHandle::Polygon(ss.polygon_uid.clone()), t_surf);
             }
@@ -804,7 +803,10 @@ impl SimModule for EnergyModule {
             // When fvm_wall_solar_to_air is enabled, include FVM wall interior area
             // in the denominator (diluting mass flux) and redirect the wall share to air.
             if self.config.thermal.fvm_wall_solar_to_air
-                && self.config.thermal.distribute_transmitted_solar_to_fvm_walls
+                && self
+                    .config
+                    .thermal
+                    .distribute_transmitted_solar_to_fvm_walls
             {
                 let mut wall_area_by_zone = vec![0.0_f64; n];
                 for w in &self.fvm_walls {
@@ -854,7 +856,9 @@ impl SimModule for EnergyModule {
                     let h_conv = h_total; // h_total here is convection-only from TARP
                     let eps = self.config.thermal.interior_emissivity;
                     let h_rad = eps * vf_h_r;
-                    let handle = SurfaceHandle::InternalMass { index: s.mass_index };
+                    let handle = SurfaceHandle::InternalMass {
+                        index: s.mass_index,
+                    };
                     let t_mrt = mrts.get(&handle).copied().unwrap_or(t_air);
                     let h_t = h_conv + h_rad;
                     let t_eff = if h_t > 0.0 {
@@ -1067,8 +1071,7 @@ impl SimModule for EnergyModule {
                 };
 
                 w.solver.step(self.config.dt_s, &bc_out, &bc_in, &[]);
-                w.cached_interior_surface_temp_c =
-                    w.solver.interior_surface_temperature(&bc_in);
+                w.cached_interior_surface_temp_c = w.solver.interior_surface_temperature(&bc_in);
                 let t_surf = w.cached_interior_surface_temp_c;
                 let q_in_w = if vf_mrt_map.is_some() {
                     h_in_total * (t_surf - t_eff) * w.area_m2

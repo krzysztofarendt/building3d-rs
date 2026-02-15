@@ -192,8 +192,7 @@ impl FvmSparseSolver {
                 }
                 let alpha = self.boundary_conduction_fraction(face_idx, h);
                 let q_into_wall = alpha * heat_flux;
-                (k_face_per_area * t_centroid + h * t_fluid + q_into_wall)
-                    / (k_face_per_area + h)
+                (k_face_per_area * t_centroid + h * t_fluid + q_into_wall) / (k_face_per_area + h)
             }
             BoundaryCondition::ConvectiveWithFluxToDomain {
                 h,
@@ -619,8 +618,12 @@ mod tests {
 
         let t_left = 0.0;
         let t_right = 30.0;
-        let bc_left = BoundaryCondition::Dirichlet { temperature: t_left };
-        let bc_right = BoundaryCondition::Dirichlet { temperature: t_right };
+        let bc_left = BoundaryCondition::Dirichlet {
+            temperature: t_left,
+        };
+        let bc_right = BoundaryCondition::Dirichlet {
+            temperature: t_right,
+        };
         let bcs = vec![(0, bc_left), (2, bc_right)];
         let sources = vec![0.0, 0.0];
 
@@ -736,8 +739,7 @@ mod tests {
 
         // Surface temp should be between centroid and fluid temp
         assert!(
-            t_surf > t_centroid.min(t_fluid) - 1e-6
-                && t_surf < t_centroid.max(t_fluid) + 1e-6,
+            t_surf > t_centroid.min(t_fluid) - 1e-6 && t_surf < t_centroid.max(t_fluid) + 1e-6,
             "surface temp {t_surf} should be between centroid {t_centroid} and fluid {t_fluid}"
         );
 
@@ -846,10 +848,8 @@ mod tests {
         );
 
         // Verify reported heat flux at left boundary (positive = outward = -q_in)
-        let flux_left = solver.boundary_heat_flux(
-            0,
-            &BoundaryCondition::Neumann { heat_flux: q_in },
-        );
+        let flux_left =
+            solver.boundary_heat_flux(0, &BoundaryCondition::Neumann { heat_flux: q_in });
         assert!(
             (flux_left + q_in).abs() < 1e-10,
             "left flux = {flux_left}, expected {}",
@@ -876,13 +876,7 @@ mod tests {
         // 1. Plain Convective (no solar)
         let mut solver_plain = FvmSparseSolver::new(mesh.clone(), 10.0);
         let bcs_plain = vec![
-            (
-                0,
-                BoundaryCondition::Convective {
-                    h,
-                    t_fluid,
-                },
-            ),
+            (0, BoundaryCondition::Convective { h, t_fluid }),
             (
                 2,
                 BoundaryCondition::Dirichlet {
@@ -1102,10 +1096,7 @@ mod tests {
         };
         let bcs = vec![
             (0, bc_left),
-            (
-                2,
-                BoundaryCondition::Dirichlet { temperature: 20.0 },
-            ),
+            (2, BoundaryCondition::Dirichlet { temperature: 20.0 }),
         ];
         let sources = vec![0.0, 0.0];
 
