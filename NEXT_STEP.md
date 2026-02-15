@@ -1,64 +1,41 @@
-# Next Step: Improve Case 900 BESTEST Results
+  Bugs / wrong assumptions (high confidence)
 
-## Current State
+  1. BESTEST regression harness drift.
+     tests/bestest_energy_suite.rs:478 and tests/bestest_energy_suite.rs:529 describe an older baseline, but current config path no
+     longer matches it, and with EPW present both reference tests fail.
+  2. Global VF path excludes windows from the radiation matrix.
+     VF builder includes all zone polygons (src/sim/energy/view_factors.rs:527), but global assembly only keeps fvm_walls +
+     internal_mass_surfaces (src/sim/energy/simulation.rs:2499), so window handles are dropped.
+  3. Sequential iterative VF coupling is not fully coupled.
+     Inside the iteration loop, MRT is recomputed but still uses t_air_start_c (src/sim/energy/simulation.rs:2685) and wall
+     callbacks still use t_rad_guess_c (src/sim/energy/simulation.rs:2713, src/sim/energy/simulation.rs:2771), so the “iterative”
+     solve is partially stale.
+  4. Inconsistent solar absorptance defaults across codepaths.
+     ThermalConfig::new() default is 0.6 (src/sim/energy/config.rs:325), while BESTEST example defaults to 1.0 unless env override
+     (examples/bestest_energy_suite/main.rs:414).
 
-**Baseline results** (VF OFF, TARP interior, 1R1C model):
-- 600: heating -1.4%, cooling -7.7% (excellent)
-- 900: heating +30.0%, cooling +15.4% (structural)
-- Total absolute deviation: 54.5pp
+  Model limitations vs EnergyPlus (not simple bugs)
 
-## What Was Tried (and failed)
+  1. No dynamic window surface-node heat balance.
+     Glazing is a UA sink on air node (src/sim/energy/global_solve.rs:86, src/sim/energy/global_solve.rs:590), unlike E+ inside/
+     outside window surface state solution.
+  2. Interior shortwave distribution is heuristic.
+     Beam/diffuse split and absorptance redistribution are simplified rules, not E+ full interior solar distribution.
+  3. Heavyweight mass representation is still coarse relative to E+ per-surface mass dynamics.
+  4. ScriptF implementation is approximate, not full radiosity solve (src/sim/energy/view_factors.rs:452).
 
-The iterative surface heat balance plan was **fully implemented** but does not
-improve BESTEST results with the 1R1C model. See `memory/iterative_balance_findings.md`
-for detailed experimental results (7+ configurations tested).
+  Concrete patch plan (ordered)
 
-**Root cause**: Adding interior radiation coupling (h_rad ≈ 4.6 W/m²K) to the
-1R1C model increases effective building U-value by ~14% and reduces floor mass
-time constant from 22.5h to 7.4h. Both effects worsen Case 900. The 1R1C model
-was implicitly calibrated with TARP-only h ≈ 2.5 W/m²K.
+  1. Patch A (quick): fix harness determinism and honesty.
+     Make BESTEST tests pin all critical toggles explicitly (alpha, VF, solver mode) and update assertions/comments to current
+     intended baseline.
+  2. Patch B (medium): include steady-state exterior surfaces (windows) in global radiation enclosure.
+     Add radiative nodes for ss_exterior_surfaces to global VF matrix assembly and couple each node to air/outdoor with its
+     existing U/h_in approximation.
+  3. Patch C (quick): fix iterative coupling bug.
+     In iteration loop, use current iterate air temp for MRT and stop passing stale t_rad_guess_c in VF mode.
+  4. Patch D (larger): add explicit window interior surface nodes (and optionally exterior nodes) to thermal state equations.
+     This is the first real step toward EnergyPlus-like behavior.
+  5. Patch E (larger): replace heuristic interior solar deposition with geometric per-surface distribution (ray/visibility based),
+     then compare again.
 
-All infrastructure remains in place but disabled by default:
-- `FvmSolverSnapshot` save/restore
-- `use_iterative_surface_balance` config flag
-- Iteration loop in 1R1C substep
-- Ground-coupled floor-as-FVM guard
-- `convective_only_air_gain` and `floor_beam_sources` step function params
-
-## Option A: Per-Surface Heat Balance Model
-
-Replace 1R1C with a **surface-by-surface simultaneous solve** (like EnergyPlus CTF):
-
-Each surface i has a heat balance equation:
-```
-q_cond_i + h_conv_i*(T_air - T_i) + h_rad*sum_j(F_ij*(T_j - T_i)) + q_solar_i = 0
-```
-
-All N surface equations + 1 zone air equation solved simultaneously via direct
-matrix solve (N+1 × N+1 system). No iteration needed.
-
-**Pros**: Physically correct, naturally handles radiation coupling, matches E+.
-**Cons**: Major refactor of the thermal model — new module, not a patch on 1R1C.
-
-## Option B: Empirical Correction for Case 900
-
-Adjust thermal mass parameters or add a second mass node to better represent
-the distributed mass in heavyweight construction:
-- Two-mass model: floor slab + wall mass with different time constants
-- Calibrate against Case 900 reference data
-- Quick implementation, limited generality
-
-## Option C: Accept Current Results
-
-54.5pp total deviation is reasonable for a simplified model. Case 600 is excellent.
-Case 900's +30% heating is a known limitation of single-mass models without
-interior radiation coupling.
-
-Focus development effort on other simulation domains instead.
-
----
-
-## Recommendation
-
-Option A is the correct long-term path but is a significant effort (~2-3 sessions).
-Option C is reasonable if BESTEST validation is not the primary goal.
