@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use building3d::sim::energy::config::ThermalConfig;
-use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::construction::WallConstruction;
+use building3d::sim::energy::convection::{ExteriorConvectionModel, InteriorConvectionModel};
 use building3d::sim::energy::hvac::HvacIdealLoads;
 use building3d::sim::energy::simulation::{
-    AnnualResult, TransientSimulationOptions, run_transient_simulation_with_options,
+    run_transient_simulation_with_options, AnnualResult, TransientSimulationOptions,
 };
 use building3d::sim::energy::solar_bridge::{
-    SolarGainConfig, SolarHourParams, compute_solar_gains_with_materials,
+    compute_solar_gains_with_materials, SolarGainConfig, SolarHourParams,
 };
 use building3d::sim::energy::weather::WeatherData;
 use building3d::sim::materials::Layer;
@@ -414,7 +414,7 @@ fn config_for_case_600(building: &Building) -> ThermalConfig {
     cfg.interior_solar_absorptance = std::env::var("BESTEST_SOLAR_ALPHA")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(1.0);
+        .unwrap_or(0.6);
 
     cfg.distribute_transmitted_solar_to_fvm_walls = false;
 
@@ -950,7 +950,10 @@ fn main() -> Result<()> {
         sum(&REF_900_MONTHLY_COOLING_KWH),
     );
     println!("FVM walls: {}", if use_fvm_walls { "ON" } else { "off" });
-    println!("Global FVM solve: {}", if use_global_solve { "ON" } else { "off" });
+    println!(
+        "Global FVM solve: {}",
+        if use_global_solve { "ON" } else { "off" }
+    );
     if enable_two_node_600 {
         println!(
             "Light-mass 2R2C enabled (600): mass_fraction={:.2}, solar→mass={:.2}, interior_h={:.2} W/(m²·K)",

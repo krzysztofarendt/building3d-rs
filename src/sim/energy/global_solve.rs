@@ -27,6 +27,9 @@ pub struct GlobalTopology {
     pub walls: Vec<WallTopology>,
     /// Per-surface-node topology (one per interior-facing wall face).
     pub surfaces: Vec<SurfaceTopology>,
+    /// Steady-state exterior surfaces represented as explicit interior nodes
+    /// (e.g. glazing) coupled to air and outdoors via h_in/U conductances.
+    pub steady_surfaces: Vec<SteadySurfaceTopology>,
     /// Per-zone air node topology.
     pub air_nodes: Vec<AirNodeTopology>,
 }
@@ -71,6 +74,22 @@ pub struct SurfaceTopology {
     pub area_m2: f64,
     /// Interior boundary face conductance [W/K] (half-cell: k*A/half_dx).
     pub k_face: f64,
+}
+
+/// Topology for an explicit steady-state interior surface node (no wall cells).
+pub struct SteadySurfaceTopology {
+    /// Index in the `steady_surfaces` array.
+    pub surface_idx: usize,
+    /// Global index of this steady-state surface node.
+    pub global_idx: usize,
+    /// Zone index (into `air_nodes`).
+    pub zone_idx: usize,
+    /// Surface area [m²].
+    pub area_m2: f64,
+    /// Interior convection coefficient [W/(m²·K)].
+    pub h_in_w_per_m2_k: f64,
+    /// Effective U-value to outdoors [W/(m²·K)].
+    pub u_to_out_w_per_m2_k: f64,
 }
 
 /// Topology for a zone air node.
@@ -147,12 +166,39 @@ pub struct FvmWallInfo<'a> {
     pub exterior_adiabatic: bool,
 }
 
+/// Information for a steady-state exterior surface represented as a global node.
+pub struct SteadySurfaceInfo {
+    pub zone_idx: usize,
+    pub area_m2: f64,
+    pub h_in_w_per_m2_k: f64,
+    pub u_to_out_w_per_m2_k: f64,
+}
+
 /// Build topology from FVM wall solvers and zone data.
 ///
 /// Called once during initialization. The caller provides wall info and zone
 /// parameters; this function assigns global indices and extracts mesh topology.
 pub fn build_topology(
     wall_infos: &[FvmWallInfo],
+    num_zones: usize,
+    zone_air_capacities: &[f64],
+    zone_infiltration_k: &[f64],
+    zone_glazing_ua: &[f64],
+) -> GlobalTopology {
+    build_topology_with_steady(
+        wall_infos,
+        &[],
+        num_zones,
+        zone_air_capacities,
+        zone_infiltration_k,
+        zone_glazing_ua,
+    )
+}
+
+/// Build topology including explicit steady-state exterior surface nodes.
+pub fn build_topology_with_steady(
+    wall_infos: &[FvmWallInfo],
+    steady_surface_infos: &[SteadySurfaceInfo],
     num_zones: usize,
     zone_air_capacities: &[f64],
     zone_infiltration_k: &[f64],
@@ -247,7 +293,10 @@ pub fn build_topology(
         let mut wall_to_surface = vec![0usize; walls.len()];
         for s in &surfaces {
             // First surface for each wall is the interior one
-            if wall_to_surface[s.wall_idx] == 0 || s.inner_cell_global_idx == walls[s.wall_idx].cell_offset + walls[s.wall_idx].n_cells.saturating_sub(1) {
+            if wall_to_surface[s.wall_idx] == 0
+                || s.inner_cell_global_idx
+                    == walls[s.wall_idx].cell_offset + walls[s.wall_idx].n_cells.saturating_sub(1)
+            {
                 wall_to_surface[s.wall_idx] = s.surface_idx;
             }
         }
@@ -256,7 +305,28 @@ pub fn build_topology(
         }
     }
 
-    // 3. Air nodes
+    // 3. Explicit steady-state surface nodes (e.g. glazing)
+    let mut steady_surfaces = Vec::new();
+    for info in steady_surface_infos {
+        if info.area_m2 <= 0.0 || info.h_in_w_per_m2_k <= 0.0 || info.u_to_out_w_per_m2_k <= 0.0 {
+            continue;
+        }
+        if info.zone_idx >= num_zones {
+            continue;
+        }
+        let si = steady_surfaces.len();
+        steady_surfaces.push(SteadySurfaceTopology {
+            surface_idx: si,
+            global_idx: idx,
+            zone_idx: info.zone_idx,
+            area_m2: info.area_m2,
+            h_in_w_per_m2_k: info.h_in_w_per_m2_k,
+            u_to_out_w_per_m2_k: info.u_to_out_w_per_m2_k,
+        });
+        idx += 1;
+    }
+
+    // 4. Air nodes
     let mut air_nodes = Vec::with_capacity(num_zones);
     for zi in 0..num_zones {
         air_nodes.push(AirNodeTopology {
@@ -273,8 +343,27 @@ pub fn build_topology(
         n: idx,
         walls,
         surfaces,
+        steady_surfaces,
         air_nodes,
     }
+}
+
+fn is_interior_surface_node(topo: &GlobalTopology, surf: &SurfaceTopology) -> bool {
+    let wall = &topo.walls[surf.wall_idx];
+    surf.inner_cell_global_idx == wall.cell_offset + wall.n_cells.saturating_sub(1)
+}
+
+fn collect_radiation_surface_nodes(topo: &GlobalTopology) -> Vec<usize> {
+    let mut nodes = Vec::new();
+    for surf in &topo.surfaces {
+        if is_interior_surface_node(topo, surf) {
+            nodes.push(surf.global_idx);
+        }
+    }
+    for ss in &topo.steady_surfaces {
+        nodes.push(ss.global_idx);
+    }
+    nodes
 }
 
 // ─── Global solve ───────────────────────────────────────────────────────
@@ -297,7 +386,16 @@ pub fn step_global(
     let n_zones = topo.air_nodes.len();
 
     // ── Free-float solve ────────────────────────────────────────────────
-    let free_temps = solve_system(topo, temperatures, wall_conditions, air_conditions, radiation, dt_s, wall_infos, None);
+    let free_temps = solve_system(
+        topo,
+        temperatures,
+        wall_conditions,
+        air_conditions,
+        radiation,
+        dt_s,
+        wall_infos,
+        None,
+    );
 
     let Ok(free_temps) = free_temps else {
         // Fallback: keep current temps, no HVAC
@@ -397,9 +495,20 @@ pub fn step_global(
             if surf.zone_idx != zi {
                 continue;
             }
+            if !is_interior_surface_node(topo, surf) {
+                continue;
+            }
             let wc = &wall_conditions[surf.wall_idx];
             let h_conv_a = wc.h_conv * surf.area_m2;
             let t_surf = constrained_temps[surf.global_idx];
+            q_hvac -= h_conv_a * (t_surf - t_new);
+        }
+        for ss in &topo.steady_surfaces {
+            if ss.zone_idx != zi {
+                continue;
+            }
+            let h_conv_a = ss.h_in_w_per_m2_k * ss.area_m2;
+            let t_surf = constrained_temps[ss.global_idx];
             q_hvac -= h_conv_a * (t_surf - t_new);
         }
 
@@ -477,9 +586,11 @@ fn solve_system(
             // TwoSided internal mass: exterior face connects to a surface node,
             // not directly to outdoors. Find the second surface node for this wall.
             // It's the surface whose inner_cell_global_idx == wall.cell_offset
-            if let Some(ext_surf) = topo.surfaces.iter().find(|s| {
-                s.wall_idx == wi && s.inner_cell_global_idx == wall.cell_offset
-            }) {
+            if let Some(ext_surf) = topo
+                .surfaces
+                .iter()
+                .find(|s| s.wall_idx == wi && s.inner_cell_global_idx == wall.cell_offset)
+            {
                 let gi_surf = ext_surf.global_idx;
                 let k_face = ext_surf.k_face;
 
@@ -510,12 +621,8 @@ fn solve_system(
 
     // ── 3. Surface nodes: coupling to inner cell and air ────────────────
     for surf in &topo.surfaces {
-        // Skip exterior surface nodes of TwoSided walls (handled above)
-        let wall = &topo.walls[surf.wall_idx];
-        let is_interior_surface = surf.inner_cell_global_idx
-            == wall.cell_offset + wall.n_cells.saturating_sub(1);
-
-        if !is_interior_surface {
+        // Skip exterior surface nodes of TwoSided walls (handled above).
+        if !is_interior_surface_node(topo, surf) {
             // This is an exterior surface node for a TwoSided wall, handled in step 2
             continue;
         }
@@ -543,22 +650,41 @@ fn solve_system(
         rhs[gi_surf] += wc.int_source_w;
     }
 
-    // ── 4. Radiation coupling between surface nodes ─────────────────────
+    // ── 4. Steady-state surface nodes (air <-> surface <-> outdoor) ─────
+    for ss in &topo.steady_surfaces {
+        let gi_surf = ss.global_idx;
+        let gi_air = topo.air_nodes[ss.zone_idx].global_idx;
+        let ac = &air_conditions[ss.zone_idx];
+
+        let h_in_a = ss.h_in_w_per_m2_k * ss.area_m2;
+        let u_out_a = ss.u_to_out_w_per_m2_k * ss.area_m2;
+
+        // Surface <-> air coupling (interior convection)
+        a_mat[gi_surf][gi_surf] += h_in_a;
+        a_mat[gi_surf][gi_air] -= h_in_a;
+        a_mat[gi_air][gi_air] += h_in_a;
+        a_mat[gi_air][gi_surf] -= h_in_a;
+
+        // Surface <-> outdoor coupling through effective U*A
+        a_mat[gi_surf][gi_surf] += u_out_a;
+        rhs[gi_surf] += u_out_a * ac.outdoor_temp_c;
+    }
+
+    // ── 5. Radiation coupling between surface nodes ─────────────────────
     if let Some(rad) = radiation {
         let ns = rad.n_surfaces;
-        // Only apply radiation to the first ns surfaces (interior surface nodes).
-        // Surface nodes beyond ns (e.g. exterior faces of TwoSided) don't participate
-        // in the enclosed radiation model.
-        //
-        // NOTE: The F matrix may not have row sums = 1 if some surfaces (e.g.
-        // windows) are not in the global system. Use actual row sums for the
+        let rad_nodes = collect_radiation_surface_nodes(topo);
+        let n_apply = ns.min(rad.surface_areas.len()).min(rad_nodes.len());
+
+        // NOTE: The F matrix may not have row sums = 1 if some surfaces are
+        // omitted from the radiation system. Use actual row sums for the
         // diagonal to avoid creating a spurious heat sink.
-        for i in 0..ns.min(topo.surfaces.len()) {
-            let gi_i = topo.surfaces[i].global_idx;
+        for i in 0..n_apply {
+            let gi_i = rad_nodes[i];
             let a_i = rad.surface_areas[i];
 
             // Compute actual row sum for this surface
-            let f_row_sum: f64 = (0..ns)
+            let f_row_sum: f64 = (0..n_apply)
                 .filter(|&j| j != i)
                 .map(|j| rad.f_matrix[i * ns + j])
                 .sum();
@@ -567,18 +693,18 @@ fn solve_system(
             a_mat[gi_i][gi_i] += rad.h_rad * a_i * f_row_sum;
 
             // Off-diagonal: -= h_rad * A_i * F_ij
-            for j in 0..ns.min(topo.surfaces.len()) {
+            for j in 0..n_apply {
                 if i == j {
                     continue;
                 }
-                let gi_j = topo.surfaces[j].global_idx;
+                let gi_j = rad_nodes[j];
                 let f_ij = rad.f_matrix[i * ns + j];
                 a_mat[gi_i][gi_j] -= rad.h_rad * a_i * f_ij;
             }
         }
     }
 
-    // ── 5. Air nodes ────────────────────────────────────────────────────
+    // ── 6. Air nodes ────────────────────────────────────────────────────
     for air in &topo.air_nodes {
         let gi = air.global_idx;
         let ac = &air_conditions[air.zone_idx];
@@ -596,7 +722,7 @@ fn solve_system(
         rhs[gi] += ac.direct_gains_w;
     }
 
-    // ── 6. Apply fixed nodes (Dirichlet elimination) ────────────────────
+    // ── 7. Apply fixed nodes (Dirichlet elimination) ────────────────────
     if let Some(fixed) = fixed_nodes {
         for &(fi, t_fixed) in fixed {
             // Move known terms to RHS for all other equations
@@ -616,7 +742,7 @@ fn solve_system(
         }
     }
 
-    // ── 7. Solve ────────────────────────────────────────────────────────
+    // ── 8. Solve ────────────────────────────────────────────────────────
     solve_dense(a_mat, rhs)
 }
 
@@ -625,6 +751,17 @@ pub fn extract_temperatures(
     topo: &GlobalTopology,
     wall_solvers: &[&FvmWallSolver],
     air_temperatures: &[f64],
+) -> Vec<f64> {
+    extract_temperatures_with_steady(topo, wall_solvers, air_temperatures, &[])
+}
+
+/// Extract initial temperature vector with explicit initialization for
+/// steady-state surface nodes.
+pub fn extract_temperatures_with_steady(
+    topo: &GlobalTopology,
+    wall_solvers: &[&FvmWallSolver],
+    air_temperatures: &[f64],
+    steady_surface_temperatures: &[f64],
 ) -> Vec<f64> {
     let mut temps = vec![20.0; topo.n];
 
@@ -645,12 +782,18 @@ pub fn extract_temperatures(
         temps[surf.global_idx] = cell_temps[local_idx];
     }
 
+    // Explicit steady-state surface nodes.
+    for ss in &topo.steady_surfaces {
+        let t_air = air_temperatures.get(ss.zone_idx).copied().unwrap_or(20.0);
+        temps[ss.global_idx] = steady_surface_temperatures
+            .get(ss.surface_idx)
+            .copied()
+            .unwrap_or(t_air);
+    }
+
     // Air nodes
     for air in &topo.air_nodes {
-        temps[air.global_idx] = air_temperatures
-            .get(air.zone_idx)
-            .copied()
-            .unwrap_or(20.0);
+        temps[air.global_idx] = air_temperatures.get(air.zone_idx).copied().unwrap_or(20.0);
     }
 
     temps
@@ -824,7 +967,16 @@ mod tests {
         let hvac = HvacIdealLoads::with_setpoints(-100.0, 100.0);
 
         for _ in 0..50 {
-            let _result = step_global(&topo, &mut temps, &wcs, &[ac.clone()], None, &hvac, 1e6, &wall_infos);
+            let _result = step_global(
+                &topo,
+                &mut temps,
+                &wcs,
+                &[ac.clone()],
+                None,
+                &hvac,
+                1e6,
+                &wall_infos,
+            );
         }
 
         // With no gains, air should approach outdoor
@@ -956,7 +1108,16 @@ mod tests {
         // Run a few steps
         let mut total_heating = 0.0;
         for _ in 0..100 {
-            let result = step_global(&topo, &mut temps, &[wc.clone()], &[ac.clone()], None, &hvac, 600.0, &wall_infos);
+            let result = step_global(
+                &topo,
+                &mut temps,
+                &[wc.clone()],
+                &[ac.clone()],
+                None,
+                &hvac,
+                600.0,
+                &wall_infos,
+            );
             total_heating += result.heating_w_per_zone[0];
         }
 
@@ -1047,7 +1208,16 @@ mod tests {
         let hvac = HvacIdealLoads::with_setpoints(20.0, 20.0);
 
         for _ in 0..10 {
-            let _r = step_global(&topo, &mut temps, &[wc.clone()], &[ac.clone()], None, &hvac, dt, &wall_infos);
+            let _r = step_global(
+                &topo,
+                &mut temps,
+                &[wc.clone()],
+                &[ac.clone()],
+                None,
+                &hvac,
+                dt,
+                &wall_infos,
+            );
         }
 
         // Compare cell temperatures
